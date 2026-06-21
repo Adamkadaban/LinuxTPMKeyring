@@ -63,7 +63,7 @@ esac
 # back to "*" (any source) with a loud warning if auto-detection fails.
 if [[ -n "${TESS_SSH_SOURCE:-}" ]]; then
   SSH_SOURCE="${TESS_SSH_SOURCE}"
-elif CALLER_IP="$(curl -fsS https://api.ipify.org 2>/dev/null)" && [[ -n "${CALLER_IP}" ]]; then
+elif CALLER_IP="$(curl -fsS --connect-timeout 3 --max-time 5 https://api.ipify.org 2>/dev/null)" && [[ -n "${CALLER_IP}" ]]; then
   SSH_SOURCE="${CALLER_IP}/32"
 else
   SSH_SOURCE="*"
