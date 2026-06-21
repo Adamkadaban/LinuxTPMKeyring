@@ -57,6 +57,7 @@ require qemu-img
 require swtpm
 require wget
 require cloud-localds
+require sha512sum
 
 [ -f "${SSH_PUBKEY}" ] || die "SSH public key not found at ${SSH_PUBKEY} (set QEMU_SSH_PUBKEY)"
 
@@ -65,6 +66,15 @@ mkdir -p "${RUNDIR}" "${SWTPM_DIR}"
 if [ ! -f "${BASE_IMG}" ]; then
   log "downloading Debian 13 cloud image"
   wget -O "${BASE_IMG}.tmp" "${IMAGE_URL}"
+  # Verify against Debian's published SHA512SUMS (same directory as the image). For stronger
+  # assurance, also verify SHA512SUMS.sign with the Debian cloud signing key (out of scope here).
+  log "verifying image checksum against published SHA512SUMS"
+  sums_url="${IMAGE_URL%/*}/SHA512SUMS"
+  img_name="${IMAGE_URL##*/}"
+  expected="$(wget -qO- "${sums_url}" | awk -v f="${img_name}" '$2 == f {print $1}')"
+  [ -n "${expected}" ] || die "could not find ${img_name} in ${sums_url}"
+  actual="$(sha512sum "${BASE_IMG}.tmp" | awk '{print $1}')"
+  [ "${expected}" = "${actual}" ] || die "checksum mismatch for ${img_name} (expected ${expected}, got ${actual})"
   mv "${BASE_IMG}.tmp" "${BASE_IMG}"
 fi
 
@@ -86,7 +96,7 @@ users:
     shell: /bin/bash
     lock_passwd: true
     ssh_authorized_keys:
-      - ${PUBKEY_CONTENT}
+      - "${PUBKEY_CONTENT}"
 packages:
   - tpm2-tools
 EOF

@@ -51,7 +51,7 @@ Captured from the Phase 1 research so future sessions don't re-derive them.
 `--tpmstate`, pidfile, bounded start/stop with SIGTERM→SIGKILL reap) and a `sim`-feature-gated
 `tess-tpm` smoke test that drives the script and asserts the mssim command port accepts a TCP
 connection, with an RAII `Drop` guard that stops swtpm + wipes its temp state dir.
-`testing/swtpm/run.sh` · `crates/tess-tpm/src/lib.rs` · PR #TBD.
+`testing/swtpm/run.sh` · `crates/tess-tpm/src/lib.rs` · PR #5.
 
 Gotchas worth remembering:
 - Phase 0 deliberately does **not** pull in `tss-esapi`; the issue's "read a TPM property" is

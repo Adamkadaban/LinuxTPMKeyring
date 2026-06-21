@@ -68,6 +68,11 @@ start() {
     return 1
   fi
 
+  if ! command -v timeout >/dev/null 2>&1; then
+    log "error: 'timeout' (coreutils) not found on PATH; required to bound the startup wait"
+    return 1
+  fi
+
   mkdir -p "${STATE_DIR}"
 
   log "starting on ${HOST}: command=${PORT} control=${CTRL_PORT} state=${STATE_DIR}"
