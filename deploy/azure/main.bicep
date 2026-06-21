@@ -25,6 +25,9 @@ param sshPublicKey string
 @description('Resource tag applied to every resource so teardown can target the project.')
 param projectTag string = 'LinuxTPMKeyring'
 
+@description('Source address/CIDR allowed to reach SSH (port 22). Defaults to "*" (any); provision.sh narrows this to the caller IP when it can.')
+param allowedSshSource string = '*'
+
 // Debian 13 (Trixie) Gen2 marketplace image. Gen2 is required for Trusted Launch / vTPM.
 // Override via the imageReference params if Debian renames the SKU.
 @description('Marketplace image publisher.')
@@ -63,7 +66,7 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
           access: 'Allow'
           protocol: 'Tcp'
           sourcePortRange: '*'
-          sourceAddressPrefix: '*'
+          sourceAddressPrefix: allowedSshSource
           destinationPortRange: '22'
           destinationAddressPrefix: '*'
         }

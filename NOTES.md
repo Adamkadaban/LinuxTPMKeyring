@@ -42,7 +42,7 @@ Captured from the Phase 1 research so future sessions don't re-derive them.
 - **Mug (Phase 5):** existing `~/Desktop/Mug` Rust skeleton (PAM FFI, V4L2, ONNX `ort`) is the seed.
   Brio exposes a separate greyscale IR V4L2 node; IR emitter is off by default → needs a UVC XU
   enable (cf. `linux-enable-ir-emitter`, also Rust). No FOSS "libfprint-for-face" exists; AOSP's
-  matcher is a proprietary blob. IR-reflectance is the realistic liveness signal.   Slint recommended
+  matcher is a proprietary blob. IR-reflectance is the realistic liveness signal. Slint recommended
   for the greeter UI (software renderer).
 
 ## 2026-06-21 — swtpm test substrate + tess-tpm connect smoke test (issue #2)

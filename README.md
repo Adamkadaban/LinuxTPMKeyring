@@ -79,16 +79,22 @@ never used to seal, unseal, enroll, or touch a TPM/keyring — that work happens
 # project=LinuxTPMKeyring. Defaults are overridable via env vars (see the script header).
 TESS_SSH_PUBKEY=~/.ssh/id_ed25519.pub deploy/azure/provision.sh
 
-# Self-check readiness on the VM (prints the same table as below):
+# Self-check readiness on the VM (prints the same table as below). NOTE: tess is pre-MVP and
+# is NOT preinstalled on the VM — build it (`cargo build --release`) and copy the `tess` binary
+# to the VM first; otherwise this fails with `tess: command not found`.
 ssh tess@<public-ip> tess doctor
 
 deploy/azure/deallocate.sh        # stop billing while idle (VM kept, disk persists)
 deploy/azure/teardown.sh          # delete everything (lists resources, then asks to confirm)
 ```
 
+By default `provision.sh` restricts the SSH firewall rule to your detected public IP (`<ip>/32`).
+Set `TESS_SSH_SOURCE` to override it (e.g. `TESS_SSH_SOURCE=203.0.113.4/32`, or `*` for any source);
+if IP detection fails it falls back to `*` with a warning.
+
 | Script | Purpose | Key env vars |
 |---|---|---|
-| `provision.sh` | create RG + Trusted-Launch vTPM VM via `main.bicep` | `TESS_RG`, `TESS_LOCATION`, `TESS_VM_NAME`, `TESS_VM_SIZE`, `TESS_ADMIN_USER`, `TESS_SSH_PUBKEY` |
+| `provision.sh` | create RG + Trusted-Launch vTPM VM via `main.bicep` | `TESS_RG`, `TESS_LOCATION`, `TESS_VM_NAME`, `TESS_VM_SIZE`, `TESS_ADMIN_USER`, `TESS_SSH_PUBKEY`, `TESS_SSH_SOURCE` |
 | `deallocate.sh` | stop the VM to halt compute billing (no delete) | `TESS_RG`, `TESS_VM_NAME` |
 | `teardown.sh` | delete the whole resource group (`--yes`/`TESS_CONFIRM=yes` to skip the prompt) | `TESS_RG` |
 

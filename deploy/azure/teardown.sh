@@ -39,6 +39,17 @@ if ! az group exists --name "${RG}" --output tsv | grep -qx "true"; then
   exit 0
 fi
 
+# Safety guard: refuse to delete a resource group that isn't ours. If TESS_RG is
+# mispointed at an unrelated group, the project=LinuxTPMKeyring tag check stops us
+# from nuking it.
+GROUP_TAG="$(az group show --name "${RG}" --query "tags.project" --output tsv 2>/dev/null || true)"
+if [[ "${GROUP_TAG}" != "${PROJECT_TAG}" ]]; then
+  echo "error: resource group '${RG}' is not tagged project=${PROJECT_TAG}" >&2
+  echo "       (found: '${GROUP_TAG:-<none>}'). Refusing to delete a group tess did not create." >&2
+  echo "       If this is intentional, retag the group or point TESS_RG at the right group." >&2
+  exit 1
+fi
+
 echo ">> The following resources in group '${RG}' (tag project=${PROJECT_TAG}) will be DELETED:"
 echo
 az resource list \

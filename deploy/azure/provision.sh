@@ -19,6 +19,8 @@
 #   TESS_VM_SIZE     VM size                  (default: Standard_B4ms)
 #   TESS_ADMIN_USER  admin username           (default: tess)
 #   TESS_SSH_PUBKEY  path to SSH PUBLIC key   (default: ~/.ssh/id_ed25519.pub)
+#   TESS_SSH_SOURCE  CIDR/IP allowed to SSH   (default: auto-detect caller IP as <ip>/32;
+#                    set explicitly to override, e.g. "203.0.113.4/32" or "*" for any)
 #
 # Image: Debian 13 (Trixie) Gen2 marketplace image "Debian:debian-13:13-gen2:latest".
 # Gen2 is mandatory for Trusted Launch / vTPM. Override the image* params in main.bicep
@@ -49,7 +51,11 @@ if [[ ! -f "${SSH_PUBKEY}" ]]; then
   exit 1
 fi
 
-case "$(cat "${SSH_PUBKEY}")" in
+# A .pub file holds a single key on one line. Take only the first line so a stray
+# trailing newline or extra content can't leak into the Bicep parameter.
+SSH_PUBKEY_DATA="$(head -n1 "${SSH_PUBKEY}")"
+
+case "${SSH_PUBKEY_DATA}" in
   ssh-* | ecdsa-* | sk-*) ;;
   *)
     echo "error: '${SSH_PUBKEY}' does not look like an SSH public key." >&2
@@ -58,7 +64,17 @@ case "$(cat "${SSH_PUBKEY}")" in
     ;;
 esac
 
-SSH_PUBKEY_DATA="$(cat "${SSH_PUBKEY}")"
+# Narrow the SSH firewall rule to the caller's public IP unless overridden. Falls
+# back to "*" (any source) with a loud warning if auto-detection fails.
+if [[ -n "${TESS_SSH_SOURCE:-}" ]]; then
+  SSH_SOURCE="${TESS_SSH_SOURCE}"
+elif CALLER_IP="$(curl -fsS https://api.ipify.org 2>/dev/null)" && [[ -n "${CALLER_IP}" ]]; then
+  SSH_SOURCE="${CALLER_IP}/32"
+else
+  SSH_SOURCE="*"
+  echo "!! WARNING: could not auto-detect your public IP; SSH will be open to ANY source ('*')." >&2
+  echo "!!          Set TESS_SSH_SOURCE=<ip>/32 to restrict it." >&2
+fi
 
 echo ">> Provisioning Gen2 Trusted-Launch Debian 13 VM (vTPM enabled)"
 echo "   resource group : ${RG}"
@@ -67,6 +83,7 @@ echo "   vm name        : ${VM_NAME}"
 echo "   vm size        : ${VM_SIZE}"
 echo "   admin user     : ${ADMIN_USER}"
 echo "   ssh public key : ${SSH_PUBKEY}"
+echo "   ssh source     : ${SSH_SOURCE}"
 echo "   tag            : project=${PROJECT_TAG}"
 echo
 
@@ -87,6 +104,7 @@ az deployment group create \
     vmSize="${VM_SIZE}" \
     adminUsername="${ADMIN_USER}" \
     sshPublicKey="${SSH_PUBKEY_DATA}" \
+    allowedSshSource="${SSH_SOURCE}" \
     projectTag="${PROJECT_TAG}" \
   --output none
 
