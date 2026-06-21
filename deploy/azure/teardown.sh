@@ -55,7 +55,7 @@ if [[ "${GROUP_TAG}" != "${PROJECT_TAG}" ]]; then
   exit 1
 fi
 
-echo ">> The following resources in group '${RG}' (tag project=${PROJECT_TAG}) will be DELETED:"
+echo ">> The entire resource group '${RG}' (verified tag project=${PROJECT_TAG}) will be DELETED, including all resources in it:"
 echo
 az resource list \
   --resource-group "${RG}" \
