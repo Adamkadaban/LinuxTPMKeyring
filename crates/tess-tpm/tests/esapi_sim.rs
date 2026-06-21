@@ -48,6 +48,11 @@ impl Swtpm {
                 return None;
             }
             Err(e) => panic!("failed to execute swtpm: {e}"),
+            Ok(out) if !out.status.success() => panic!(
+                "swtpm --version failed ({}): {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr)
+            ),
             Ok(_) => {}
         }
 
