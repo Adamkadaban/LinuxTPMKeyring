@@ -75,5 +75,5 @@ plan in [`PLAN.md`](../PLAN.md) §8.
 `tess doctor` (`crates/tess-cli/src/doctor.rs`) performs read-only readiness probes — `/dev/tpmrm0`
 and `/dev/tpm0` presence, a Secret Service daemon binary on `PATH` (the daemon is *not* contacted),
 and `fprintd` on `PATH` — and prints an OK/MISSING table with a one-line verdict. It never opens a
-D-Bus session, touches a secret, or unlocks anything, so it is safe to run anywhere including a fresh
-Azure VM for self-check. Only the TPM resource manager is required for the verdict.
+D-Bus session, touches a secret, or unlocks anything; per project policy it runs in CI or on a fresh
+Azure VM for self-check, not the developer host. Only the TPM resource manager is required for the verdict.

@@ -88,9 +88,9 @@ deploy/azure/deallocate.sh        # stop billing while idle (VM kept, disk persi
 deploy/azure/teardown.sh          # delete everything (lists resources, then asks to confirm)
 ```
 
-By default `provision.sh` restricts the SSH firewall rule to your detected public IP (`<ip>/32`).
-Set `TESS_SSH_SOURCE` to override it (e.g. `TESS_SSH_SOURCE=203.0.113.4/32`, or `*` for any source);
-if IP detection fails it falls back to `*` with a warning.
+By default `provision.sh` restricts the SSH firewall rule to your detected public IP (`/32` for IPv4,
+`/128` for IPv6). Set `TESS_SSH_SOURCE` to override it (e.g. `TESS_SSH_SOURCE=203.0.113.4/32`, or `*`
+for any source); if IP detection fails it falls back to `*` with a warning.
 
 | Script | Purpose | Key env vars |
 |---|---|---|

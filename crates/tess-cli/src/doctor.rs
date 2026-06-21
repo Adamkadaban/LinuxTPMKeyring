@@ -2,7 +2,8 @@
 //!
 //! Every probe is side-effect-free: it checks for the presence of device nodes or
 //! binaries on `PATH`. It never opens a D-Bus session, never touches a secret, and
-//! never unlocks anything. This is safe to run anywhere, including in CI.
+//! never unlocks anything. Per project policy it runs in CI or on the Azure VM, not
+//! the developer host.
 
 use std::env;
 use std::fmt::Write as _;

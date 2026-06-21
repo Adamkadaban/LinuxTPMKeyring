@@ -73,4 +73,5 @@ read-only `tess doctor` (`crates/tess-cli/src/doctor.rs:1`). Scripts were author
 **NOT executed**, zero Azure resources created. Default image `Debian:debian-13:13-gen2:latest`
 (Gen2 required for Trusted Launch / vTPM); default size `Standard_B4ms`; key-only SSH via
 `TESS_SSH_PUBKEY`. `tess doctor` does presence-only probes (`Path::exists`, binary-on-`PATH`); never
-opens D-Bus or touches secrets, so it's safe on any host. PR #6.
+opens D-Bus or touches secrets — read-only, but per policy run it in CI or on the Azure VM, not the
+host. PR #6.

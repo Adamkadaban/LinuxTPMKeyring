@@ -14,8 +14,8 @@
 #   TESS_VM_SIZE     VM size                  (default: Standard_B4ms)
 #   TESS_ADMIN_USER  admin username           (default: tess)
 #   TESS_SSH_PUBKEY  path to SSH PUBLIC key   (default: ~/.ssh/id_ed25519.pub)
-#   TESS_SSH_SOURCE  CIDR/IP allowed to SSH   (default: auto-detect caller IP as <ip>/32;
-#                    set explicitly to override, e.g. "203.0.113.4/32" or "*" for any)
+#   TESS_SSH_SOURCE  CIDR/IP allowed to SSH   (default: auto-detect caller IP, as /32 for IPv4
+#                    or /128 for IPv6; set explicitly to override, e.g. "203.0.113.4/32" or "*")
 #
 # Image: Debian 13 (Trixie) Gen2 marketplace image "Debian:debian-13:13-gen2:latest".
 # Gen2 is mandatory for Trusted Launch / vTPM. Override the image* params in main.bicep
@@ -64,11 +64,16 @@ esac
 if [[ -n "${TESS_SSH_SOURCE:-}" ]]; then
   SSH_SOURCE="${TESS_SSH_SOURCE}"
 elif CALLER_IP="$(curl -fsS --connect-timeout 3 --max-time 5 https://api.ipify.org 2>/dev/null)" && [[ -n "${CALLER_IP}" ]]; then
-  SSH_SOURCE="${CALLER_IP}/32"
+  # ipify may return IPv6; use the matching host mask (/128) so the NSG CIDR is valid.
+  if [[ "${CALLER_IP}" == *:* ]]; then
+    SSH_SOURCE="${CALLER_IP}/128"
+  else
+    SSH_SOURCE="${CALLER_IP}/32"
+  fi
 else
   SSH_SOURCE="*"
   echo "!! WARNING: could not auto-detect your public IP; SSH will be open to ANY source ('*')." >&2
-  echo "!!          Set TESS_SSH_SOURCE=<ip>/32 to restrict it." >&2
+  echo "!!          Set TESS_SSH_SOURCE=<ip>/<mask> to restrict it." >&2
 fi
 
 echo ">> Provisioning Gen2 Trusted-Launch Debian 13 VM (vTPM enabled)"
