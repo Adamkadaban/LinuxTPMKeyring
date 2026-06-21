@@ -56,6 +56,9 @@ pub enum Error {
     #[error("failed to unseal the key: {0}")]
     Unseal(String),
 
+    #[error("failed to flush a transient TPM handle: {0}")]
+    Flush(String),
+
     #[error("wrong PIN")]
     WrongPin,
 }

@@ -89,9 +89,10 @@ pub fn seal(
     let created = context.execute_with_session(Some(session), |ctx| {
         ctx.create(primary, public, Some(auth), Some(sensitive), None, None)
     });
-    flush(context, SessionHandle::from(session).into());
+    let session_flushed = flush(context, SessionHandle::from(session).into());
 
     let created = created.map_err(|e| Error::Seal(e.to_string()))?;
+    session_flushed?;
     Ok(SealedObject {
         public: created.out_public,
         private: created.out_private,
@@ -114,13 +115,18 @@ pub fn unseal(
     let loaded = context.execute_with_session(Some(load_session), |ctx| {
         ctx.load(primary, sealed.private.clone(), sealed.public.clone())
     });
-    flush(context, SessionHandle::from(load_session).into());
+    let load_session_flushed = flush(context, SessionHandle::from(load_session).into());
     let object: ObjectHandle = loaded.map_err(|e| Error::Load(e.to_string()))?.into();
+    load_session_flushed?;
 
-    let result = unseal_with_policy(context, object, auth);
+    let result = unseal_with_policy(context, primary, object, auth);
 
-    flush(context, object);
-    result
+    // Flush the loaded object regardless of outcome; if the unseal itself failed, that error takes
+    // precedence (the flush was still attempted), otherwise surface a flush failure.
+    let object_flushed = flush(context, object);
+    let secret = result?;
+    object_flushed?;
+    Ok(secret)
 }
 
 /// Run the policy session and unseal, isolated so the caller can flush the loaded object regardless
@@ -128,6 +134,7 @@ pub fn unseal(
 /// the salted/encrypting policy session.
 fn unseal_with_policy(
     context: &mut Context,
+    primary: KeyHandle,
     object: ObjectHandle,
     auth: Auth,
 ) -> Result<SecretBytes> {
@@ -135,14 +142,15 @@ fn unseal_with_policy(
         .tr_set_auth(object, auth)
         .map_err(|e| Error::Unseal(e.to_string()))?;
 
-    let policy = start_policy_session(context)?;
+    let policy = start_policy_session(context, primary)?;
     let result = (|| -> std::result::Result<SensitiveData, tss_esapi::Error> {
         context.policy_auth_value(PolicySession::try_from(policy)?)?;
         context.execute_with_session(Some(policy), |ctx| ctx.unseal(object))
     })();
-    flush(context, SessionHandle::from(policy).into());
+    let policy_flushed = flush(context, SessionHandle::from(policy).into());
 
     let sensitive = result.map_err(map_unseal_error)?;
+    policy_flushed?;
     Ok(SecretBytes::new(sensitive.value().to_vec()))
 }
 
@@ -168,19 +176,23 @@ fn policy_auth_value_digest(context: &mut Context) -> Result<Digest> {
         context.policy_auth_value(session)?;
         context.policy_get_digest(session)
     })();
-    flush(context, SessionHandle::from(trial).into());
+    let trial_flushed = flush(context, SessionHandle::from(trial).into());
 
-    digest.map_err(|e| Error::Policy(e.to_string()))
+    let digest = digest.map_err(|e| Error::Policy(e.to_string()))?;
+    trial_flushed?;
+    Ok(digest)
 }
 
-/// Start the real policy session that authorizes the unseal: salted by the storage primary and
-/// encrypting, so the unsealed key is parameter-encrypted on the bus like the seal path.
-fn start_policy_session(context: &mut Context) -> Result<AuthSession> {
+/// Start the real policy session that authorizes the unseal: **salted by the storage `primary`**
+/// (so the session has a non-empty session key) and encrypting, so the unsealed key is genuinely
+/// parameter-encrypted on the bus like the seal path. `continue_session` keeps it live across the
+/// `PolicyAuthValue` assertion and the subsequent `Unseal`.
+fn start_policy_session(context: &mut Context, primary: KeyHandle) -> Result<AuthSession> {
     use tss_esapi::attributes::SessionAttributesBuilder;
 
     let session = context
         .start_auth_session(
-            None,
+            Some(primary),
             None,
             None,
             SessionType::Policy,
@@ -193,6 +205,7 @@ fn start_policy_session(context: &mut Context) -> Result<AuthSession> {
     let (attributes, mask) = SessionAttributesBuilder::new()
         .with_decrypt(true)
         .with_encrypt(true)
+        .with_continue_session(true)
         .build();
     context
         .tr_sess_set_attributes(session, attributes, mask)
@@ -256,9 +269,13 @@ fn is_auth_failure(e: &tss_esapi::Error) -> bool {
     }
 }
 
-/// Best-effort flush of a transient TPM handle; a failed flush must not mask the operation's result.
-fn flush(context: &mut Context, handle: ObjectHandle) {
-    let _ = context.flush_context(handle);
+/// Flush a transient TPM handle. Callers attempt the flush even when the primary operation failed
+/// (so handles never leak), but surface a flush failure only when the primary operation succeeded —
+/// a leaked-handle error must never silently mask, nor be masked by, the real result.
+fn flush(context: &mut Context, handle: ObjectHandle) -> Result<()> {
+    context
+        .flush_context(handle)
+        .map_err(|e| Error::Flush(e.to_string()))
 }
 
 #[cfg(test)]
