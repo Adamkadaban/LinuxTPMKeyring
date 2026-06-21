@@ -55,3 +55,25 @@ reachability check in Phase 1 once `tss-esapi` is wired in.
 `deploy/qemu/up.sh` / `down.sh` bring up a throwaway Debian 13 KVM guest with an swtpm vTPM and
 key-only SSH for manual end-to-end exercise. **The agent and CI never run these on the developer's
 host** — they exist purely as a contributor convenience and only ever talk to an emulated TPM.
+
+## Deploy targets
+
+| Path | Purpose |
+|---|---|
+| `deploy/azure/main.bicep` | Declarative Gen2 Trusted-Launch Debian 13 VM: `securityType=TrustedLaunch`, vTPM + secure boot on, key-only SSH, every resource tagged `project=LinuxTPMKeyring`. |
+| `deploy/azure/provision.sh` | One-command bring-up: creates the resource group and deploys `main.bicep` via `az deployment group create`; prints the `ssh` command. Region/size/name/key are env-overridable. |
+| `deploy/azure/deallocate.sh` | Stops (deallocates) the VM to halt compute billing without deleting it. |
+| `deploy/azure/teardown.sh` | Lists the tagged resources, then (after explicit confirmation) deletes the whole resource group. |
+
+The Azure vTPM is the only real TPM 2.0 acceptance gate; its PCR values differ from bare metal, so
+the MVP TPM policy binds the PIN authValue only (no PCR binding). Cost discipline — deallocate when
+idle, delete at wind-down, kill-by date — is tracked in [`NOTES.md`](../NOTES.md) and the teardown
+plan in [`PLAN.md`](../PLAN.md) §8.
+
+## `tess doctor`
+
+`tess doctor` (`crates/tess-cli/src/doctor.rs`) performs read-only readiness probes — `/dev/tpmrm0`
+and `/dev/tpm0` presence, a Secret Service daemon binary on `PATH` (the daemon is *not* contacted),
+and `fprintd` on `PATH` — and prints an OK/MISSING table with a one-line verdict. It never opens a
+D-Bus session, touches a secret, or unlocks anything; per project policy it runs in CI or on a fresh
+Azure VM for self-check, not the developer host. Only the TPM resource manager is required for the verdict.

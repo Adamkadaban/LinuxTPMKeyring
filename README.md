@@ -65,6 +65,61 @@ tess doctor        # check TPM / keyring / fprintd readiness
 Active bootstrap. Roadmap and phase checklist live in [`PLAN.md`](./PLAN.md); contributor and agent
 rules in [`AGENTS.md`](./AGENTS.md); the security boundary in [`docs/threat-model.md`](./docs/threat-model.md).
 
+## Azure dev VM (real vTPM)
+
+CI exercises a software TPM (swtpm), but the only **real** TPM 2.0 acceptance gate is an Azure
+**Gen2 Trusted-Launch** Debian 13 VM with a hardware-backed vTPM. The developer's own laptop is
+never used to seal, unseal, enroll, or touch a TPM/keyring — that work happens on this VM or in CI.
+
+> **This spends money.** A running VM bills by the second. Deallocate when idle and delete at
+> wind-down. Budget and kill-by date live in [`NOTES.md`](./NOTES.md).
+
+```sh
+# Provision: Gen2 Trusted-Launch Debian 13 VM, vTPM + secure boot on, key-only SSH, all tagged
+# project=LinuxTPMKeyring. Defaults are overridable via env vars (see the script header).
+TESS_SSH_PUBKEY=~/.ssh/id_ed25519.pub deploy/azure/provision.sh
+
+# Self-check readiness on the VM (prints the same table as below). NOTE: tess is pre-MVP and
+# is NOT preinstalled on the VM — build it (`cargo build --release`) and copy the `tess` binary
+# to the VM first; otherwise this fails with `tess: command not found`.
+ssh tess@<public-ip> tess doctor
+
+deploy/azure/deallocate.sh        # stop billing while idle (VM kept, disk persists)
+deploy/azure/teardown.sh          # delete everything (lists resources, then asks to confirm)
+```
+
+By default `provision.sh` restricts the SSH firewall rule to your detected public IP (`/32` for IPv4,
+`/128` for IPv6). Set `TESS_SSH_SOURCE` to override it (e.g. `TESS_SSH_SOURCE=203.0.113.4/32`, or `*`
+for any source); if IP detection fails it falls back to `*` with a warning.
+
+| Script | Purpose | Key env vars |
+|---|---|---|
+| `provision.sh` | create RG + Trusted-Launch vTPM VM via `main.bicep` | `TESS_RG`, `TESS_LOCATION`, `TESS_VM_NAME`, `TESS_VM_SIZE`, `TESS_ADMIN_USER`, `TESS_SSH_PUBKEY`, `TESS_SSH_SOURCE` |
+| `deallocate.sh` | stop the VM to halt compute billing (no delete) | `TESS_RG`, `TESS_VM_NAME` |
+| `teardown.sh` | delete the whole resource group (`--yes`/`TESS_CONFIRM=yes` to skip the prompt) | `TESS_RG` |
+
+Default image: `Debian:debian-13:13-gen2:latest` (Gen2 is mandatory for Trusted Launch / vTPM).
+Default size: `Standard_B4ms`. Azure vTPM PCR values differ from bare metal, so the MVP TPM policy
+is PIN authValue only — no PCR binding.
+
+## `tess doctor`
+
+`tess doctor` runs **read-only** readiness probes (no D-Bus, no secret access, no unlock) and prints
+a table plus a one-line verdict:
+
+```text
+COMPONENT                           STATUS   DETAIL
+TPM resource manager (/dev/tpmrm0)  OK       present
+TPM raw device (/dev/tpm0)          OK       present
+Secret Service daemon               OK       gnome-keyring-daemon on PATH (not contacted)
+fprintd                             MISSING  fprintd not on PATH
+
+verdict: READY — TPM present; 1 optional component(s) missing.
+```
+
+Only the TPM resource manager is required for the core sealing guarantee; the keyring daemon and
+fprintd are reported but never fail the verdict.
+
 ## License
 
 [MIT](./LICENSE) © 2026 Adam Hassan

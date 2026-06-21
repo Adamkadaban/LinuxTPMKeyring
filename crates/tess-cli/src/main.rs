@@ -2,6 +2,8 @@
 
 use clap::{Parser, Subcommand};
 
+mod doctor;
+
 /// tess — Windows-Hello-style unlocking for the Linux keyring.
 #[derive(Parser)]
 #[command(name = "tess", version, about)]
@@ -33,7 +35,7 @@ enum Command {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Doctor => println!("tess doctor: not yet implemented (Phase 0/3)"),
+        Command::Doctor => doctor::run(),
         Command::Status => println!("tess status: not yet implemented (Phase 3)"),
         Command::Enroll
         | Command::Recover

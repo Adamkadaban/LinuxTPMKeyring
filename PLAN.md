@@ -155,8 +155,8 @@ a provisioned Azure VM `tess doctor` reports the vTPM present.
 - [x] `deny.toml` (advisories deny, license allowlist MIT/Apache/BSD/ISC, sources crates.io-only); pin `tss-esapi ≥ 7.1.0`
 - [x] `testing/swtpm/run.sh` + mssim/socket TCTI helper; `tess-tpm` connect smoke test
 - [x] `deploy/qemu/up.sh`/`down.sh`: local Debian 13 KVM guest with `swtpm` vTPM, SSH key-only — optional, for external contributors (the agent uses CI + Azure, never this host)
-- [ ] `deploy/azure/provision.sh` (+ Bicep) Gen2 Trusted-Launch Debian13 B-series, vTPM, SSH pubkey, tagged `project=LinuxTPMKeyring`; `teardown.sh`
-- [ ] `tess doctor` skeleton: probes `/dev/tpmrm0`, gnome-keyring, fprintd, swtpm
+- [x] `deploy/azure/provision.sh` (+ Bicep) Gen2 Trusted-Launch Debian13 B-series, vTPM, SSH pubkey, tagged `project=LinuxTPMKeyring`; `teardown.sh`
+- [x] `tess doctor` skeleton: probes `/dev/tpmrm0` + `/dev/tpm0`, a Secret Service daemon binary on PATH, and fprintd on PATH
 - [ ] `README.md` (pretty) + `docs/architecture.md` + `docs/threat-model.md` stubs
 
 | Wave | Worktree slug | Depends on | Tasks |

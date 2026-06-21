@@ -64,3 +64,14 @@ Gotchas worth remembering:
   it entirely (not `cfg(feature=sim)`), so no swtpm process is ever spawned by local validation.
 - shellcheck is not installed on this host; scripts were validated with `bash -n` only. CI/contributors
   should run shellcheck.
+
+## 2026-06-21 — Azure provisioning scripts + `tess doctor` (issue #3)
+
+**Resolution:** Added `deploy/azure/{main.bicep,provision.sh,deallocate.sh,teardown.sh}` and a real
+read-only `tess doctor` (`crates/tess-cli/src/doctor.rs:1`). Scripts were authored + validated only
+(shellcheck via `koalaman/shellcheck` docker = clean; `bash -n` clean; `az bicep build` compiles) —
+**NOT executed**, zero Azure resources created. Default image `Debian:debian-13:13-gen2:latest`
+(Gen2 required for Trusted Launch / vTPM); default size `Standard_B4ms`; key-only SSH via
+`TESS_SSH_PUBKEY`. `tess doctor` does presence-only probes (`Path::exists`, binary-on-`PATH`); never
+opens D-Bus or touches secrets — read-only, but per policy run it in CI or on the Azure VM, not the
+host. PR #6.
