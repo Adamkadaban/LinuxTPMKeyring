@@ -75,3 +75,34 @@ read-only `tess doctor` (`crates/tess-cli/src/doctor.rs:1`). Scripts were author
 `TESS_SSH_PUBKEY`. `tess doctor` does presence-only probes (`Path::exists`, binary-on-`PATH`); never
 opens D-Bus or touches secrets — read-only, but per policy run it in CI or on the Azure VM, not the
 host. PR #6.
+
+## 2026-06-21 — Phase 0 exit test passed on real Azure vTPM
+**Resolution:** provision.sh→ssh→build→`tess doctor`→teardown.sh ran end-to-end on a Debian 13 Gen2 Trusted-Launch VM; /dev/tpmrm0 + /dev/tpm0 present, ACPI "VRTUAL VTPM MSFT", tpm_version_major=2, doctor verdict READY. RG deleted, $0 left running. deploy/azure/* scripts work for real.
+
+## 2026-06-21 — tss-esapi wired: ESAPI context + ECC primary + salted HMAC/param-encryption session (issue #8)
+**Resolution:** Added `tss-esapi = "7.7"` to the workspace and `tess-tpm`; `TctiConfig::open_context()` opens a live `tss_esapi::Context`, `create_primary()` makes the deterministic ECC P-256 restricted-storage primary under the owner hierarchy, `start_salted_hmac_session()` opens the salted HMAC + AES-128-CFB param-encryption (SHA-256, decrypt+encrypt+continue) session for #9/#10. `crates/tess-tpm/src/esapi.rs:1` · `crates/tess-tpm/src/lib.rs:46` · PR for #8.
+
+Gotchas worth remembering:
+- **swtpm needs the swtpm TCTI, NOT mssim.** The issue assumed `TctiNameConf::Mssim`, but swtpm's
+  `--ctrl` control channel speaks swtpm's own protocol; the mssim TCTI's platform commands fail with
+  `WARNING ... Failed to send MS_SIM_NV_ON platform command` → `Could not initialize TCTI file: mssim`.
+  Switched to `TctiNameConf::Swtpm(NetworkTPMConfig)` (libtss2-tcti-swtpm) and it works. Same
+  host/port; the swtpm TCTI also hard-wires the control port to command+1, so the sim test reserves a
+  *consecutive* (P, P+1) port pair (the old Phase-0 reachability test used two arbitrary ephemerals,
+  which is fine for a pure TCP probe but would break a real TCTI).
+- `NetworkTPMConfig`/`DeviceConfig` are built via `FromStr`: `host=127.0.0.1,port=2321` and
+  `/dev/tpmrm0` respectively (verified in `tss-esapi-7.7.0/src/tcti_ldr.rs`).
+- ECC storage-primary template: `PublicEccParametersBuilder::new_restricted_decryption_key(
+  SymmetricDefinitionObject::AES_128_CFB, EccCurve::NistP256)` + object attrs
+  fixed_tpm/fixed_parent/sensitive_data_origin/user_with_auth/restricted/decrypt (NOT sign_encrypt).
+  The template builds with no TPM → unit-testable on any host.
+- `create_primary` authorizes the owner hierarchy with `execute_with_nullauth_session` (a transient
+  encrypted null-auth HMAC session ESAPI sets up + flushes); the *salted* session is separate, salted
+  by the primary as tpmKey for subsequent seal/unseal.
+- **No transient secret material in this layer yet** — the PIN authValue + random key (and their
+  `SecretBytes`/`zeroize`/`mlock` handling) arrive with seal/unseal in #9/#10. `forbid(unsafe_code)`
+  stays via the workspace lint; tss-esapi's safe API needs no `unsafe`.
+- swtpm sim integration test spawns swtpm **foreground** (no `--daemon`) so the `Child` handle reaps
+  reliably in a `Drop` guard (SIGTERM→SIGKILL + state-dir wipe); the daemon path left a stale pid and
+  noisy `kill: No such process` because swtpm self-exits on client disconnect. `pgrep -a swtpm` clean
+  after every run.

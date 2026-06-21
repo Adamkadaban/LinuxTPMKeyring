@@ -44,8 +44,8 @@ libc = "0.2"
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# TPM (pinned ≥7.1.0 — RUSTSEC-2023-0044). Added in Phase 1.
-# tss-esapi = "7.7"
+# TPM (pinned ≥7.1.0 — RUSTSEC-2023-0044).
+tss-esapi = "7.7"
 # D-Bus / Secret Service. Added in Phase 2.
 # zbus = "5"
 # secret-service = "5"

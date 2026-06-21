@@ -31,24 +31,38 @@ keyring-preservation invariant in `PLAN.md` §2.
 
 ### swtpm (TPM emulator)
 
-`testing/swtpm/run.sh {start|stop|status}` launches `swtpm` in mssim/socket (TCP) mode with a
-persistent `--tpmstate` directory and a pidfile. By convention the mssim command/server port is
-`2321` and the control port is `2322`; both, the host, the state dir, and the pidfile are
-overridable via `TESS_SWTPM_*` env vars. `start` blocks until the command port accepts a connection
+`testing/swtpm/run.sh {start|stop|status}` launches `swtpm` in socket (TCP) mode with a
+persistent `--tpmstate` directory and a pidfile. By convention the command/server port is
+`2321` and the control port is `2322` (command + 1); both, the host, the state dir, and the pidfile
+are overridable via `TESS_SWTPM_*` env vars. `start` blocks until the command port accepts a connection
 (bounded by `TESS_SWTPM_START_TIMEOUT`); `stop` reaps the process (SIGTERM then SIGKILL) so nothing
 leaks.
 
 `tess-tpm`'s `TctiConfig::Swtpm { host, port }` is the matching transport. `TctiConfig::swtpm_from_env()`
 resolves the address from `TESS_SWTPM_HOST` / `TESS_SWTPM_PORT` (default `127.0.0.1:2321`), mirroring
-the script's env contract. The Phase 0 connect smoke test lives behind the crate's `sim` feature:
+the script's env contract. `TctiConfig::open_context()` opens a live `tss_esapi::Context`: the swtpm
+transport uses the **swtpm TCTI** (swtpm's control channel speaks its own protocol, not the IBM
+mssim one — the mssim TCTI's platform commands fail against swtpm), and `TctiConfig::DeviceManager`
+uses the device TCTI against `/dev/tpmrm0`. From a context, `tess_tpm::create_primary()` creates the
+deterministic ECC NIST-P256 restricted-storage primary under the owner hierarchy, and
+`tess_tpm::start_salted_hmac_session()` opens the salted HMAC + AES-128-CFB parameter-encryption
+session (SHA-256) that every later seal/unseal runs under to defeat TPM bus interposers.
+
+The swtpm TCTI implicitly uses `command_port + 1` as its control port, and `TctiConfig` exposes only
+the command port — so swtpm must be launched with its control port set to command + 1. The
+`run.sh` `TESS_SWTPM_CTRL_PORT` override exists for the script's own control plumbing; setting it to
+anything other than command + 1 will make `open_context()` fail to connect.
+
+Two crate features gate the transports that need a TPM:
 
 ```sh
-cargo test -p tess-tpm --features sim   # starts swtpm, asserts the mssim port accepts, tears down
+cargo test -p tess-tpm --features sim   # starts swtpm, opens an ESAPI context, creates the ECC
+                                        # primary, starts the salted session, tears swtpm down
 ```
 
-It is off by default, so plain `cargo test --workspace` stays green and hardware-free; with `sim`
-enabled it skips cleanly if `swtpm` is not on `PATH`. A real TPM-property read replaces the
-reachability check in Phase 1 once `tss-esapi` is wired in.
+`sim` exercises swtpm; `hw` targets `/dev/tpmrm0` and is validated only on the Azure vTPM, never on
+the dev host. Both are off by default, so plain `cargo test --workspace` stays green and
+hardware-free; with `sim` enabled the integration test skips cleanly if `swtpm` is not on `PATH`.
 
 ### Local QEMU vTPM VM (optional, contributors only)
 
