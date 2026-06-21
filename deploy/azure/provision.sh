@@ -121,4 +121,4 @@ echo
 echo "     ssh ${ADMIN_USER}@${PUBLIC_IP} tess doctor"
 echo
 echo ">> Remember: deallocate when idle (deploy/azure/deallocate.sh),"
-echo "   delete at wind-down (deploy/azure/teardown.sh). See NOTES.md for the kill-by date."
+echo "   delete at wind-down (deploy/azure/teardown.sh)."
