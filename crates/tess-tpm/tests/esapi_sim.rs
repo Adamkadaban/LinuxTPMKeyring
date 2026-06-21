@@ -136,7 +136,9 @@ fn wait_for_port(addr: std::net::SocketAddr, child: &mut Child) -> Result<(), St
         // Fail fast if swtpm exited early (bad args / missing runtime deps) instead of waiting
         // out the full timeout.
         if let Ok(Some(status)) = child.try_wait() {
-            return Err(format!("swtpm exited early ({status}) while waiting for {addr}"));
+            return Err(format!(
+                "swtpm exited early ({status}) while waiting for {addr}"
+            ));
         }
         if TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok() {
             return Ok(());
