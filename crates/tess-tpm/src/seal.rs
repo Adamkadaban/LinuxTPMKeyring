@@ -2,7 +2,7 @@
 //! `PolicyAuthValue`, and unseal it back, both running under the salted HMAC + parameter-encryption
 //! session so the PIN authValue and the recovered key are encrypted on the TPM bus.
 
-use getrandom::getrandom;
+use getrandom::fill as getrandom_fill;
 use tess_core::SecretBytes;
 use tss_esapi::attributes::ObjectAttributesBuilder;
 use tss_esapi::constants::{SessionType, Tss2ResponseCodeKind};
@@ -51,7 +51,7 @@ impl SealedObject {
 /// asymmetric key (ROCA) and never trusting the TPM RNG alone.
 pub fn generate_sealing_key(context: &mut Context) -> Result<SecretBytes> {
     let mut key = vec![0u8; SEALED_KEY_LEN];
-    getrandom(&mut key).map_err(|e| Error::Rng(e.to_string()))?;
+    getrandom_fill(&mut key).map_err(|e| Error::Rng(e.to_string()))?;
 
     let tpm_random = collect_tpm_random(context, SEALED_KEY_LEN)?;
     for (k, t) in key.iter_mut().zip(&tpm_random) {
@@ -106,8 +106,8 @@ pub fn seal(
     let auth = pin_to_auth(pin)?;
     let policy_digest = policy_auth_value_digest(context)?;
     let public = sealed_object_template(policy_digest)?;
-    let sensitive = SensitiveData::try_from(secret.as_slice().to_vec())
-        .map_err(|e| Error::Seal(e.to_string()))?;
+    let sensitive =
+        SensitiveData::try_from(secret.as_slice()).map_err(|e| Error::Seal(e.to_string()))?;
 
     let session = start_salted_hmac_session(context, primary)?;
     let created = context.execute_with_session(Some(session), |ctx| {
@@ -271,7 +271,7 @@ fn pin_to_auth(pin: &SecretBytes) -> Result<Auth> {
             max: MAX_PIN_LEN,
         });
     }
-    Auth::try_from(pin.as_slice().to_vec()).map_err(|e| Error::Seal(e.to_string()))
+    Auth::try_from(pin.as_slice()).map_err(|e| Error::Seal(e.to_string()))
 }
 
 /// Map an unseal error: a TPM authorization-HMAC failure (wrong PIN) becomes [`Error::WrongPin`] so
