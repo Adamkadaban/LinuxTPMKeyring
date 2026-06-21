@@ -8,6 +8,12 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[features]
+# Exercises an actual swtpm (mssim TCTI) in tests. Off by default so
+# `cargo test --workspace` stays green and hardware-free on dev hosts; CI runs
+# `cargo test -p tess-tpm --features sim` with swtpm installed.
+sim = []
+
 [dependencies]
 tess-core.workspace = true
 thiserror.workspace = true

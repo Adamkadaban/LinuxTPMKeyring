@@ -44,3 +44,23 @@ Captured from the Phase 1 research so future sessions don't re-derive them.
   enable (cf. `linux-enable-ir-emitter`, also Rust). No FOSS "libfprint-for-face" exists; AOSP's
   matcher is a proprietary blob. IR-reflectance is the realistic liveness signal. Slint recommended
   for the greeter UI (software renderer).
+
+## 2026-06-21 — swtpm test substrate + tess-tpm connect smoke test (issue #2)
+
+**Resolution:** Added `testing/swtpm/run.sh` (mssim/TCP socket mode, ports 2321/2322, persistent
+`--tpmstate`, pidfile, bounded start/stop with SIGTERM→SIGKILL reap) and a `sim`-feature-gated
+`tess-tpm` smoke test that drives the script and asserts the mssim command port accepts a TCP
+connection, with an RAII `Drop` guard that stops swtpm + wipes its temp state dir.
+`testing/swtpm/run.sh` · `crates/tess-tpm/src/lib.rs` · PR #5.
+
+Gotchas worth remembering:
+- Phase 0 deliberately does **not** pull in `tss-esapi`; the issue's "read a TPM property" is
+  deferred to Phase 1 — a TCP-reachability check is the Phase 0 contract (per the wave task brief).
+- swtpm is feature-gated (`sim`) OFF by default so `cargo test --workspace` stays hardware-free and
+  green; CI adds an explicit `cargo test -p tess-tpm --features sim` step (swtpm installed there).
+- **swtpm IS actually installed on this dev host (`/usr/bin/swtpm`)** despite the bootstrap
+  assumption that it isn't. The `sim` test was therefore only compiled (`--no-run`), never executed
+  locally, to honour "nothing runs against a TPM on the host". The default workspace test excludes
+  it entirely (not `cfg(feature=sim)`), so no swtpm process is ever spawned by local validation.
+- shellcheck is not installed on this host; scripts were validated with `bash -n` only. CI/contributors
+  should run shellcheck.

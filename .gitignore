@@ -31,6 +31,9 @@ deploy/**/local.*
 /testing/**/state/
 *.tpmstate
 
+# Local QEMU contributor VM state (images, seeds, sockets, pidfiles)
+/deploy/qemu/.run/
+
 # Fuzzing
 **/fuzz/corpus/
 **/fuzz/artifacts/
