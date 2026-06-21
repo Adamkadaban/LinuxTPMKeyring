@@ -82,20 +82,14 @@ impl Swtpm {
             .spawn()
             .expect("spawn swtpm");
 
-        let guard = Self { child, state_dir };
+        let mut guard = Self { child, state_dir };
 
         // The swtpm TCTI connects to both the command port and the control port (command + 1), so
         // wait for both before opening a context, otherwise open_context() can flap.
         let cmd_addr: std::net::SocketAddr = format!("127.0.0.1:{cmd_port}").parse().unwrap();
         let ctrl_addr: std::net::SocketAddr = format!("127.0.0.1:{ctrl_port}").parse().unwrap();
-        assert!(
-            wait_for_port(cmd_addr),
-            "swtpm command port {cmd_addr} did not come up"
-        );
-        assert!(
-            wait_for_port(ctrl_addr),
-            "swtpm control port {ctrl_addr} did not come up"
-        );
+        wait_for_port(cmd_addr, &mut guard.child).expect("swtpm command port");
+        wait_for_port(ctrl_addr, &mut guard.child).expect("swtpm control port");
 
         let cfg = TctiConfig::Swtpm {
             host: "127.0.0.1".to_string(),
@@ -137,14 +131,19 @@ impl Drop for Swtpm {
     }
 }
 
-fn wait_for_port(addr: std::net::SocketAddr) -> bool {
+fn wait_for_port(addr: std::net::SocketAddr, child: &mut Child) -> Result<(), String> {
     for _ in 0..50 {
+        // Fail fast if swtpm exited early (bad args / missing runtime deps) instead of waiting
+        // out the full timeout.
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!("swtpm exited early ({status}) while waiting for {addr}"));
+        }
         if TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok() {
-            return true;
+            return Ok(());
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    false
+    Err(format!("timed out waiting for {addr}"))
 }
 
 #[test]

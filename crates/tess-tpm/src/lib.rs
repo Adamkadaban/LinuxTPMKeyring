@@ -58,7 +58,7 @@ impl TctiConfig {
         Self::Swtpm { host, port }
     }
 
-    /// The `host:port` the mssim command channel listens on, if this is an swtpm transport. IPv6
+    /// The `host:port` the swtpm command channel listens on, if this is a swtpm transport. IPv6
     /// literals are bracketed so the result parses as a `SocketAddr`.
     pub fn swtpm_socket_addr(&self) -> Option<String> {
         match self {
