@@ -53,21 +53,45 @@ pub fn generate_sealing_key(context: &mut Context) -> Result<SecretBytes> {
     let mut key = vec![0u8; SEALED_KEY_LEN];
     getrandom(&mut key).map_err(|e| Error::Rng(e.to_string()))?;
 
-    let tpm_random: Digest = context
-        .get_random(SEALED_KEY_LEN)
-        .map_err(|e| Error::Rng(e.to_string()))?;
-    if tpm_random.value().len() != SEALED_KEY_LEN {
-        return Err(Error::Rng(format!(
-            "TPM returned {} random bytes, expected {SEALED_KEY_LEN}",
-            tpm_random.value().len()
-        )));
-    }
-
-    for (k, t) in key.iter_mut().zip(tpm_random.value()) {
+    let tpm_random = collect_tpm_random(context, SEALED_KEY_LEN)?;
+    for (k, t) in key.iter_mut().zip(&tpm_random) {
         *k ^= t;
     }
 
     Ok(SecretBytes::new(key))
+}
+
+/// Collect exactly `len` random bytes from the TPM. `TPM2_GetRandom` may legitimately return fewer
+/// bytes than requested, so accumulate across calls; error only if the TPM makes no progress over
+/// several consecutive calls (a broken or empty RNG) rather than on a single short read.
+fn collect_tpm_random(context: &mut Context, len: usize) -> Result<Vec<u8>> {
+    const MAX_EMPTY_READS: u32 = 8;
+    let mut out = Vec::with_capacity(len);
+    let mut empty_reads = 0u32;
+
+    while out.len() < len {
+        let want = len - out.len();
+        let chunk = context
+            .get_random(want)
+            .map_err(|e| Error::Rng(e.to_string()))?;
+        let bytes = chunk.value();
+        if bytes.is_empty() {
+            empty_reads += 1;
+            if empty_reads >= MAX_EMPTY_READS {
+                return Err(Error::Rng(format!(
+                    "TPM GetRandom made no progress after {MAX_EMPTY_READS} empty reads"
+                )));
+            }
+            continue;
+        }
+        empty_reads = 0;
+        // The TPM never returns more than requested, but truncate defensively so `out` is exactly
+        // `len` and the XOR mix can't read past the key.
+        let take = bytes.len().min(len - out.len());
+        out.extend_from_slice(&bytes[..take]);
+    }
+
+    Ok(out)
 }
 
 /// Seal `secret` under `primary` as a keyedhash data object whose `userWithAuth` authValue is `pin`
@@ -117,12 +141,14 @@ pub fn unseal(
     });
     let load_session_flushed = flush(context, SessionHandle::from(load_session).into());
     let object: ObjectHandle = loaded.map_err(|e| Error::Load(e.to_string()))?.into();
-    load_session_flushed?;
 
-    let result = unseal_with_policy(context, primary, object, auth);
-
-    // Flush the loaded object regardless of outcome; if the unseal itself failed, that error takes
-    // precedence (the flush was still attempted), otherwise surface a flush failure.
+    // The object now exists and MUST be flushed on every exit path below. If the load-session flush
+    // failed (after a good load), still flush the object before surfacing that error; otherwise do
+    // the unseal. Either way the object flush runs.
+    let result = match load_session_flushed {
+        Err(e) => Err(e),
+        Ok(()) => unseal_with_policy(context, primary, object, auth),
+    };
     let object_flushed = flush(context, object);
     let secret = result?;
     object_flushed?;
