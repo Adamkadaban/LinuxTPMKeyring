@@ -63,7 +63,7 @@ esac
 # back to "*" (any source) with a loud warning if auto-detection fails.
 if [[ -n "${TESS_SSH_SOURCE:-}" ]]; then
   SSH_SOURCE="${TESS_SSH_SOURCE}"
-elif CALLER_IP="$(curl -fsS --connect-timeout 3 --max-time 5 https://api.ipify.org 2>/dev/null)" && [[ -n "${CALLER_IP}" ]]; then
+elif command -v curl >/dev/null 2>&1 && CALLER_IP="$(curl -fsS --connect-timeout 3 --max-time 5 https://api.ipify.org 2>/dev/null)" && [[ -n "${CALLER_IP}" ]]; then
   # ipify may return IPv6; use the matching host mask (/128) so the NSG CIDR is valid.
   if [[ "${CALLER_IP}" == *:* ]]; then
     SSH_SOURCE="${CALLER_IP}/128"
