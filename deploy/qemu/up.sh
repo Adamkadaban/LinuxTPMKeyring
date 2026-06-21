@@ -53,6 +53,7 @@ die() {
 require() { command -v "$1" >/dev/null 2>&1 || die "'$1' not found on PATH"; }
 
 require qemu-system-x86_64
+require qemu-img
 require swtpm
 require wget
 require cloud-localds

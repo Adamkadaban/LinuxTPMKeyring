@@ -48,7 +48,8 @@ wait_for_port() {
   local host="$1" port="$2" deadline
   deadline=$((SECONDS + START_TIMEOUT))
   while ((SECONDS < deadline)); do
-    if (exec 3<>"/dev/tcp/${host}/${port}") 2>/dev/null; then
+    # Bound each connect attempt (a blackholed host could otherwise block far past START_TIMEOUT).
+    if timeout 1 bash -c 'exec 3<>"/dev/tcp/$0/$1"' "${host}" "${port}" 2>/dev/null; then
       return 0
     fi
     sleep 0.2

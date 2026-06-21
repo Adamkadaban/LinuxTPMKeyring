@@ -28,10 +28,17 @@ impl TctiConfig {
     /// `127.0.0.1:2321`. Reads `TESS_SWTPM_HOST` and `TESS_SWTPM_PORT`; an unparseable port falls
     /// back to the default. This mirrors the env contract of `testing/swtpm/run.sh`.
     pub fn swtpm_from_env() -> Self {
-        let host = std::env::var("TESS_SWTPM_HOST")
-            .unwrap_or_else(|_| Self::DEFAULT_SWTPM_HOST.to_string());
-        let port = std::env::var("TESS_SWTPM_PORT")
-            .ok()
+        Self::resolve_swtpm(
+            std::env::var("TESS_SWTPM_HOST").ok(),
+            std::env::var("TESS_SWTPM_PORT").ok(),
+        )
+    }
+
+    /// Pure env-defaulting logic, separated from the process-global `std::env` read so it can be
+    /// tested deterministically. An absent or unparseable value falls back to the default.
+    fn resolve_swtpm(host: Option<String>, port: Option<String>) -> Self {
+        let host = host.unwrap_or_else(|| Self::DEFAULT_SWTPM_HOST.to_string());
+        let port = port
             .and_then(|s| s.parse::<u16>().ok())
             .unwrap_or(Self::DEFAULT_SWTPM_PORT);
         Self::Swtpm { host, port }
@@ -59,12 +66,33 @@ mod tests {
     }
 
     #[test]
-    fn swtpm_from_env_defaults_without_vars() {
-        // The defaults must hold regardless of whether the env vars are set in this process; only
-        // assert the shape and that a socket address is produced.
-        let cfg = TctiConfig::swtpm_from_env();
-        let addr = cfg.swtpm_socket_addr().expect("swtpm transport");
-        assert!(addr.contains(':'), "expected host:port, got {addr}");
+    fn resolve_swtpm_uses_defaults_when_absent() {
+        match TctiConfig::resolve_swtpm(None, None) {
+            TctiConfig::Swtpm { host, port } => {
+                assert_eq!(host, TctiConfig::DEFAULT_SWTPM_HOST);
+                assert_eq!(port, TctiConfig::DEFAULT_SWTPM_PORT);
+            }
+            _ => panic!("expected swtpm config"),
+        }
+    }
+
+    #[test]
+    fn resolve_swtpm_honors_explicit_values() {
+        match TctiConfig::resolve_swtpm(Some("10.0.0.5".to_string()), Some("12345".to_string())) {
+            TctiConfig::Swtpm { host, port } => {
+                assert_eq!(host, "10.0.0.5");
+                assert_eq!(port, 12345);
+            }
+            _ => panic!("expected swtpm config"),
+        }
+    }
+
+    #[test]
+    fn resolve_swtpm_falls_back_on_unparseable_port() {
+        match TctiConfig::resolve_swtpm(None, Some("not-a-port".to_string())) {
+            TctiConfig::Swtpm { port, .. } => assert_eq!(port, TctiConfig::DEFAULT_SWTPM_PORT),
+            _ => panic!("expected swtpm config"),
+        }
     }
 
     #[test]
@@ -98,11 +126,20 @@ mod tests {
             .canonicalize()
             .expect("locate testing/swtpm/run.sh");
 
-        // Isolated, non-conventional ports + state dir so the test never collides with a
-        // developer-run swtpm and leaves no shared state behind.
+        // Isolated, ephemeral ports + state dir so the test never collides with a developer-run
+        // swtpm or another concurrent test, and leaves no shared state behind. Bind both probe
+        // listeners simultaneously so the two ports are guaranteed distinct before we drop them.
         let host = "127.0.0.1";
-        let port = "21321";
-        let ctrl_port = "21322";
+        let (port, ctrl_port) = {
+            use std::net::TcpListener;
+            let l1 = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            let l2 = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            let p1 = l1.local_addr().expect("local addr").port().to_string();
+            let p2 = l2.local_addr().expect("local addr").port().to_string();
+            (p1, p2)
+        };
+        let port = port.as_str();
+        let ctrl_port = ctrl_port.as_str();
         let state_dir =
             std::env::temp_dir().join(format!("tess-swtpm-test-{}", std::process::id()));
 
