@@ -42,7 +42,7 @@ Captured from the Phase 1 research so future sessions don't re-derive them.
 - **Mug (Phase 5):** existing `~/Desktop/Mug` Rust skeleton (PAM FFI, V4L2, ONNX `ort`) is the seed.
   Brio exposes a separate greyscale IR V4L2 node; IR emitter is off by default → needs a UVC XU
   enable (cf. `linux-enable-ir-emitter`, also Rust). No FOSS "libfprint-for-face" exists; AOSP's
-  matcher is a proprietary blob. IR-reflectance is the realistic liveness signal. Slint recommended
+  matcher is a proprietary blob. IR-reflectance is the realistic liveness signal.   Slint recommended
   for the greeter UI (software renderer).
 
 ## 2026-06-21 — swtpm test substrate + tess-tpm connect smoke test (issue #2)
@@ -64,3 +64,13 @@ Gotchas worth remembering:
   it entirely (not `cfg(feature=sim)`), so no swtpm process is ever spawned by local validation.
 - shellcheck is not installed on this host; scripts were validated with `bash -n` only. CI/contributors
   should run shellcheck.
+
+## 2026-06-21 — Azure provisioning scripts + `tess doctor` (issue #3)
+
+**Resolution:** Added `deploy/azure/{main.bicep,provision.sh,deallocate.sh,teardown.sh}` and a real
+read-only `tess doctor` (`crates/tess-cli/src/doctor.rs:1`). Scripts were authored + validated only
+(shellcheck via `koalaman/shellcheck` docker = clean; `bash -n` clean; `az bicep build` compiles) —
+**NOT executed**, zero Azure resources created. Default image `Debian:debian-13:13-gen2:latest`
+(Gen2 required for Trusted Launch / vTPM); default size `Standard_B4ms`; key-only SSH via
+`TESS_SSH_PUBKEY`. `tess doctor` does presence-only probes (`Path::exists`, binary-on-`PATH`); never
+opens D-Bus or touches secrets, so it's safe on any host. PR #6.
