@@ -53,6 +53,27 @@ the command port — so swtpm must be launched with its control port set to comm
 `run.sh` `TESS_SWTPM_CTRL_PORT` override exists for the script's own control plumbing; setting it to
 anything other than command + 1 will make `open_context()` fail to connect.
 
+## Seal / unseal (`tess-tpm`)
+
+The core key-protection flow, gated by a PIN `PolicyAuthValue` and run under the salted HMAC +
+parameter-encryption session so neither the PIN authValue nor the recovered key crosses the TPM bus
+in the clear:
+
+- `generate_sealing_key(context)` produces a 256-bit key by XOR-mixing OS randomness (`getrandom`)
+  with the TPM's `GetRandom`. The key is unpredictable unless *both* sources are subverted, and it is
+  never a TPM-born asymmetric key (avoids ROCA-class weaknesses and a malicious TPM RNG).
+- `seal(context, primary, pin, secret)` computes the `PolicyAuthValue` policy digest via a trial
+  session, builds a keyedhash (sealed data) object whose `userWithAuth` authValue is the PIN and
+  whose authPolicy is that digest, and creates it under `primary` with the salted session. The object
+  is **dictionary-attack protected** (no `noDA`), so wrong PINs count toward TPM lockout. It returns a
+  `SealedObject` holding the public + private TPM2B blobs — the in-memory handoff the persistence
+  layer marshals and stores (persistence and DA-lockout reset are a separate concern).
+- `unseal(context, primary, sealed, pin)` loads the object, starts a real policy session (salted and
+  encrypting), satisfies `PolicyAuthValue` with the PIN as the object's authValue, and unseals,
+  returning the key as a zeroizing `SecretBytes`. A wrong PIN surfaces as a distinct wrong-PIN error
+  (mapped to `tess_core::Error::Auth`), not a generic TPM fault, so callers can react. All transient
+  handles (sessions, the loaded object) are flushed regardless of outcome.
+
 Two crate features gate the transports that need a TPM:
 
 ```sh

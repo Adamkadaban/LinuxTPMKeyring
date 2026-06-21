@@ -8,10 +8,12 @@ use tss_esapi::tcti_ldr::{DeviceConfig, NetworkTPMConfig, TctiNameConf};
 use tss_esapi::Context;
 
 mod esapi;
+mod seal;
 
 pub use esapi::{
     create_primary, ecc_storage_primary_template, start_salted_hmac_session, Error, Result,
 };
+pub use seal::{generate_sealing_key, seal, unseal, SealedObject};
 
 /// Selects the TPM transport: a software TPM (swtpm) for dev and CI, or the kernel resource
 /// manager (`/dev/tpmrm0`) for a real / virtual hardware TPM.

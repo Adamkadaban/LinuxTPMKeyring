@@ -37,13 +37,40 @@ pub enum Error {
 
     #[error("TPM returned no session handle")]
     NoSession,
+
+    #[error("failed to compute or run the PIN policy: {0}")]
+    Policy(String),
+
+    #[error("failed to generate the sealing key: {0}")]
+    Rng(String),
+
+    #[error("PIN is {len} bytes, exceeds the {max}-byte authValue limit")]
+    PinTooLong { len: usize, max: usize },
+
+    #[error("failed to seal the key: {0}")]
+    Seal(String),
+
+    #[error("failed to load the sealed object: {0}")]
+    Load(String),
+
+    #[error("failed to unseal the key: {0}")]
+    Unseal(String),
+
+    #[error("wrong PIN")]
+    WrongPin,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl From<Error> for tess_core::Error {
     fn from(e: Error) -> Self {
-        tess_core::Error::Tpm(e.to_string())
+        match e {
+            // A wrong PIN is an authentication failure, not a TPM fault — keep it distinguishable so
+            // the enrollment/recovery layers can react (retry, count toward lockout) rather than
+            // treating it as a hardware error.
+            Error::WrongPin => tess_core::Error::Auth(e.to_string()),
+            other => tess_core::Error::Tpm(other.to_string()),
+        }
     }
 }
 

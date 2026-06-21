@@ -182,9 +182,9 @@ swtpm in CI (`--features sim`).
 - [x] `TctiConfig` (swtpm TCTI vs `/dev/tpmrm0`) via feature/env
 - [x] ECC `create_primary()` under the owner hierarchy; deterministic template
 - [x] **Salted HMAC + parameter-encryption session** helper used by every seal/unseal
-- [ ] `seal(secret, pin)`: `PolicyAuthValue` policy, authValue = PIN, encrypted session
-- [ ] `unseal(pin)`: policy session → `unseal` → `SecretBytes` (mlock'd, zeroized)
-- [ ] Key-gen: `getrandom` mixed with TPM `GetRandom`; constant-time PIN handling
+- [x] `seal(secret, pin)`: `PolicyAuthValue` policy, authValue = PIN, encrypted session
+- [x] `unseal(pin)`: policy session → `unseal` → `SecretBytes` (mlock'd, zeroized)
+- [x] Key-gen: `getrandom` mixed with TPM `GetRandom`; constant-time PIN handling
 - [ ] Versioned blob+metadata persistence; **no secret/secret-hash ever on disk**
 - [ ] DA-lockout error mapping + owner-guarded `reset_lockout`
 - [ ] Tests: round-trip, wrong-PIN, lockout, persistence reload, **session-encryption assertion** — swtpm (CI) + vTPM (hw)

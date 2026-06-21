@@ -106,3 +106,25 @@ Gotchas worth remembering:
   reliably in a `Drop` guard (SIGTERM→SIGKILL + state-dir wipe); the daemon path left a stale pid and
   noisy `kill: No such process` because swtpm self-exits on client disconnect. `pgrep -a swtpm` clean
   after every run.
+
+## 2026-06-21 — seal/unseal a random key under a PIN PolicyAuthValue (issue #9)
+**Resolution:** `generate_sealing_key()` XOR-mixes `getrandom` with TPM `GetRandom` (256-bit);
+`seal()` computes the `PolicyAuthValue` digest via a trial session, builds a keyedhash data object
+(`userWithAuth` authValue = PIN, authPolicy = that digest, DA-protected) and creates it under the
+salted HMAC/param-encryption session, returning an in-memory `SealedObject {public, private}`;
+`unseal()` loads it, runs a salted encrypting policy session, satisfies `PolicyAuthValue`, and
+returns the key as `SecretBytes`. `crates/tess-tpm/src/seal.rs:52` · PR for #9.
+
+Gotchas worth remembering:
+- **Wrong PIN = TPM `AuthFail` (rc 0x98e), not a wrapper error.** Map via
+  `tss_esapi::Error::Tss2Error(rc).kind() == AuthFail|BadAuth` → `Error::WrongPin` →
+  `tess_core::Error::Auth` (distinguishable from a real TPM fault). The esys C layer logs the 0x98e
+  to stderr even when handled — that ERROR line in the wrong-PIN sim test is expected, not a failure.
+- **`unseal` needs `tr_set_auth(object, pin)` before the policy unseal**, even with `PolicyAuthValue`:
+  ESAPI folds the object's authValue into the policy-session HMAC, so the PIN must be set on the
+  loaded handle or the HMAC is computed with an empty auth and fails.
+- The sealed object is **keyedhash** (`PublicAlgorithm::KeyedHash`, `KeyedHashScheme::Null`), not ECC;
+  `with_keyed_hash_unique_identifier(Digest::default())`. Leave `noDA` **unset** so wrong PINs trip
+  DA-lockout — the whole anti-hammering point. Don't set `sensitive_data_origin` (we supply the data).
+- Persistence of the pub/priv blobs and DA-lockout reset are #10, deliberately not here — `SealedObject`
+  is the typed handoff (`from_blobs`/`public()`/`private()`), `Public` already impls `Marshall`.

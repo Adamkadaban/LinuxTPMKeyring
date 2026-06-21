@@ -22,6 +22,7 @@ hw = []
 tess-core.workspace = true
 thiserror.workspace = true
 tss-esapi.workspace = true
+getrandom.workspace = true
 
 [lints]
 workspace = true
