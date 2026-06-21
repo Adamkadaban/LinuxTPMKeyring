@@ -2,7 +2,6 @@
 //
 // COST WARNING: deploying this template starts billing a VM. Deallocate when idle
 // (deploy/azure/deallocate.sh) and delete at wind-down (deploy/azure/teardown.sh).
-// Kill-by date is tracked in NOTES.md.
 //
 // Every resource is tagged project=LinuxTPMKeyring so teardown can find and remove it.
 

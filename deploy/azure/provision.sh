@@ -2,15 +2,10 @@
 #
 # provision.sh — bring up a Gen2 Trusted-Launch Debian 13 VM with a real vTPM 2.0.
 #
-# ┌──────────────────────────────────────────────────────────────────────────┐
-# │  THIS SPENDS MONEY.  A running VM bills by the second.                      │
-# │  • Deallocate when idle:   deploy/azure/deallocate.sh                       │
-# │  • Delete at wind-down:     deploy/azure/teardown.sh                        │
-# │  • Budget + kill-by date are tracked in NOTES.md (~$50/week).               │
-# │  The developer's host TPM/keyring is NEVER used — Azure (this VM) + CI only.│
-# └──────────────────────────────────────────────────────────────────────────┘
-#
-# The vTPM here is the only "real" TPM 2.0 acceptance gate; swtpm covers CI.
+# WARNING: this provisions a billable Azure VM (bills by the second). Deallocate when idle
+# (deploy/azure/deallocate.sh) and delete at wind-down (deploy/azure/teardown.sh). The developer's
+# host TPM/keyring is never used — only this Azure VM and CI. The vTPM here is the only "real"
+# TPM 2.0 acceptance gate; swtpm covers CI.
 #
 # Configurable via environment variables (sane defaults shown):
 #   TESS_RG          resource group name      (default: tess-vtpm-rg)

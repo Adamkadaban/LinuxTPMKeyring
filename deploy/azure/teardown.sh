@@ -34,7 +34,12 @@ if ! command -v az >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! az group exists --name "${RG}" --output tsv | grep -qx "true"; then
+RG_EXISTS="$(az group exists --name "${RG}" --output tsv 2>/dev/null || true)"
+if [[ -z "${RG_EXISTS}" ]]; then
+  echo "error: could not query resource group '${RG}' — is 'az' logged in and the subscription set?" >&2
+  exit 1
+fi
+if [[ "${RG_EXISTS}" != "true" ]]; then
   echo ">> Resource group '${RG}' does not exist — nothing to tear down."
   exit 0
 fi
