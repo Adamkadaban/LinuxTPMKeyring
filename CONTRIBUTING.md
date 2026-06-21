@@ -28,6 +28,21 @@ Tests never touch real hardware or real secrets — TPM tests use **swtpm**, fin
 libfprint **virtual driver** + `python-dbusmock`. Never run the project against your own
 TPM/keyring/PAM.
 
+## Local TPM substrate
+
+The TPM tests talk to a software TPM (swtpm), never your real one:
+
+```sh
+testing/swtpm/run.sh start          # launch swtpm in mssim/socket mode (ports 2321/2322)
+cargo test -p tess-tpm --features sim   # connect smoke test (skips if swtpm is absent)
+testing/swtpm/run.sh stop           # reap it
+```
+
+Need a full VM? `deploy/qemu/up.sh` / `down.sh` spin up a throwaway Debian 13 KVM guest with an
+swtpm vTPM and key-only SSH. These are an **optional contributor convenience** — the agent and CI
+never run them on the developer's host. See [`docs/architecture.md`](./docs/architecture.md) for
+details.
+
 ## AI agents
 
 AI agents are welcome and contribute like any other contributor — follow [`AGENTS.md`](./AGENTS.md)
