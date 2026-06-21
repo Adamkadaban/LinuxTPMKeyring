@@ -85,6 +85,10 @@ fi
 
 log "building cloud-init seed (key-only SSH; password auth disabled)"
 PUBKEY_CONTENT="$(cat "${SSH_PUBKEY}")"
+# Escape backslashes then double-quotes so the key (incl. any comment) is a valid double-quoted
+# YAML scalar regardless of its contents.
+PUBKEY_ESCAPED="${PUBKEY_CONTENT//\\/\\\\}"
+PUBKEY_ESCAPED="${PUBKEY_ESCAPED//\"/\\\"}"
 USER_DATA="${RUNDIR}/user-data.yaml"
 cat >"${USER_DATA}" <<EOF
 #cloud-config
@@ -96,7 +100,7 @@ users:
     shell: /bin/bash
     lock_passwd: true
     ssh_authorized_keys:
-      - "${PUBKEY_CONTENT}"
+      - "${PUBKEY_ESCAPED}"
 packages:
   - tpm2-tools
 EOF
