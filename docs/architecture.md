@@ -48,6 +48,11 @@ deterministic ECC NIST-P256 restricted-storage primary under the owner hierarchy
 `tess_tpm::start_salted_hmac_session()` opens the salted HMAC + AES-128-CFB parameter-encryption
 session (SHA-256) that every later seal/unseal runs under to defeat TPM bus interposers.
 
+The swtpm TCTI implicitly uses `command_port + 1` as its control port, and `TctiConfig` exposes only
+the command port — so swtpm must be launched with its control port set to command + 1. The
+`run.sh` `TESS_SWTPM_CTRL_PORT` override exists for the script's own control plumbing; setting it to
+anything other than command + 1 will make `open_context()` fail to connect.
+
 Two crate features gate the transports that need a TPM:
 
 ```sh
