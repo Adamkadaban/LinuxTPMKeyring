@@ -13,8 +13,9 @@ use tess_tpm::{create_primary, start_salted_hmac_session, TctiConfig};
 
 /// Reserve a free command port `p` such that the control port `p + 1` is also free, returning
 /// `(command, control)`. The swtpm TCTI hard-wires the control channel to the command port + 1, so
-/// the two must be consecutive. Listeners are dropped before swtpm binds them; a brief reuse race
-/// is tolerated by retrying.
+/// the two must be consecutive. The retry here only covers a port being unavailable at *reservation*
+/// time; the small residual window between dropping the listeners and swtpm binding the ports is not
+/// retried — a lost race surfaces as a clear startup assertion, not a hang.
 fn reserve_consecutive_ports() -> (u16, u16) {
     for _ in 0..50 {
         let Ok(cmd) = TcpListener::bind("127.0.0.1:0") else {
@@ -152,12 +153,17 @@ fn opens_context_creates_primary_and_starts_salted_session() {
         .expect("start salted HMAC + parameter-encryption session");
 
     // The session is a real, started HMAC handle, not the password pseudo-session.
+    use tss_esapi::handles::SessionHandle;
     use tss_esapi::interface_types::session_handles::AuthSession;
     assert!(
         !matches!(session, AuthSession::Password),
         "expected a started HMAC session, not the password session"
     );
 
+    // Flush the session before the primary so neither leaks a TPM handle.
+    context
+        .flush_context(SessionHandle::from(session).into())
+        .expect("flush session");
     context
         .flush_context(primary.key_handle.into())
         .expect("flush primary");
