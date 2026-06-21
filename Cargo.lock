@@ -513,6 +513,7 @@ dependencies = [
  "tess-core",
  "thiserror",
  "tss-esapi",
+ "zeroize",
 ]
 
 [[package]]

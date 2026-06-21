@@ -53,8 +53,8 @@ pub fn generate_sealing_key(context: &mut Context) -> Result<SecretBytes> {
     let mut key = vec![0u8; SEALED_KEY_LEN];
     getrandom_fill(&mut key).map_err(|e| Error::Rng(e.to_string()))?;
 
-    let tpm_random = collect_tpm_random(context, SEALED_KEY_LEN)?;
-    for (k, t) in key.iter_mut().zip(&tpm_random) {
+    let tpm_random = zeroize::Zeroizing::new(collect_tpm_random(context, SEALED_KEY_LEN)?);
+    for (k, t) in key.iter_mut().zip(tpm_random.iter()) {
         *k ^= t;
     }
 
