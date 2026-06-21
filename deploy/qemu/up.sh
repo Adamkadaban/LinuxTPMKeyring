@@ -102,6 +102,20 @@ packages:
 EOF
 cloud-localds "${SEED_IMG}" "${USER_DATA}"
 
+started_swtpm=0
+# If anything below fails after we start swtpm (e.g. qemu can't launch), stop the swtpm we
+# started so it isn't orphaned. Only fires on a non-zero exit, so a successful daemonized qemu
+# keeps its vTPM.
+cleanup_on_error() {
+  local rc=$?
+  if [ "${rc}" -ne 0 ] && [ "${started_swtpm}" -eq 1 ] && [ -f "${SWTPM_PIDFILE}" ]; then
+    log "error (exit ${rc}); stopping swtpm started by this run"
+    kill "$(cat "${SWTPM_PIDFILE}")" 2>/dev/null || true
+    rm -f "${SWTPM_PIDFILE}"
+  fi
+}
+trap cleanup_on_error EXIT
+
 if [ -f "${SWTPM_PIDFILE}" ] && kill -0 "$(cat "${SWTPM_PIDFILE}")" 2>/dev/null; then
   log "swtpm already running"
 else
@@ -113,6 +127,7 @@ else
     --flags startup-clear \
     --daemon \
     --pid "file=${SWTPM_PIDFILE}"
+  started_swtpm=1
 fi
 
 ACCEL=()
