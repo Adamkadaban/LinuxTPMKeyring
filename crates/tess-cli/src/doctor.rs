@@ -8,6 +8,10 @@ use std::env;
 use std::fmt::Write as _;
 use std::path::Path;
 
+/// Display name of the TPM resource-manager probe. Shared between the probe
+/// construction and the verdict logic so the two can't drift.
+const TPM_RM_PROBE_NAME: &str = "TPM resource manager (/dev/tpmrm0)";
+
 /// Outcome of a single readiness probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeStatus {
@@ -48,7 +52,7 @@ impl Probe {
 /// overall verdict (fprintd is convenience; the keyring daemon is checked more
 /// thoroughly at enroll time).
 fn is_required(name: &str) -> bool {
-    name == "TPM resource manager (/dev/tpmrm0)"
+    name == TPM_RM_PROBE_NAME
 }
 
 /// Render the probes as an aligned OK/MISSING table followed by a one-line verdict.
@@ -119,7 +123,16 @@ fn binary_on_path(bin: &str) -> bool {
     let Some(path) = env::var_os("PATH") else {
         return false;
     };
-    env::split_paths(&path).any(|dir| dir.join(bin).is_file())
+    env::split_paths(&path).any(|dir| is_executable_file(&dir.join(bin)))
+}
+
+/// True if `path` is a regular file with at least one executable bit set.
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
 }
 
 fn probe_path(name: &str, path: &str) -> Probe {
@@ -160,7 +173,7 @@ fn probe_fprintd() -> Probe {
 /// Run all probes against the live system (read-only).
 pub fn run_probes() -> Vec<Probe> {
     vec![
-        probe_path("TPM resource manager (/dev/tpmrm0)", "/dev/tpmrm0"),
+        probe_path(TPM_RM_PROBE_NAME, "/dev/tpmrm0"),
         probe_path("TPM raw device (/dev/tpm0)", "/dev/tpm0"),
         probe_keyring(),
         probe_fprintd(),
@@ -255,5 +268,35 @@ mod tests {
     fn status_labels_are_stable() {
         assert_eq!(ProbeStatus::Ok.label(), "OK");
         assert_eq!(ProbeStatus::Missing.label(), "MISSING");
+    }
+
+    #[test]
+    fn executable_file_requires_executable_bit() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = env::temp_dir().join(format!("tess-doctor-exec-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let non_exec = dir.join("plain");
+        fs::write(&non_exec, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&non_exec, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!is_executable_file(&non_exec), "0o644 file must not count");
+
+        let exec = dir.join("script");
+        fs::write(&exec, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&exec, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(is_executable_file(&exec), "0o755 file must count");
+
+        assert!(
+            !is_executable_file(&dir),
+            "a directory is not a regular executable file"
+        );
+        assert!(
+            !is_executable_file(&dir.join("does-not-exist")),
+            "a missing path is not executable"
+        );
+
+        fs::remove_dir_all(&dir).ok();
     }
 }
