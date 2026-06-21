@@ -1,0 +1,32 @@
+name: audit-nightly
+
+# Re-audits the unchanged lockfile daily so an advisory disclosed after a PR
+# merged fails the next morning instead of silently lingering until the next push.
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install cargo-audit + cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
+
+      - name: Advisory scan (RustSec)
+        run: cargo audit
+
+      - name: cargo-deny advisories
+        run: cargo deny check advisories
