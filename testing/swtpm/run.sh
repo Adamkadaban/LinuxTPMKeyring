@@ -36,12 +36,20 @@ STOP_TIMEOUT="${TESS_SWTPM_STOP_TIMEOUT:-5}"
 
 log() { printf '[swtpm] %s\n' "$*" >&2; }
 
+pid_is_swtpm() {
+  local comm
+  comm="$(cat "/proc/$1/comm" 2>/dev/null || true)"
+  [[ "${comm}" == *swtpm* ]]
+}
+
 is_running() {
   [ -f "${PIDFILE}" ] || return 1
   local pid
   pid="$(cat "${PIDFILE}" 2>/dev/null || true)"
   [ -n "${pid}" ] || return 1
-  kill -0 "${pid}" 2>/dev/null
+  kill -0 "${pid}" 2>/dev/null || return 1
+  # A reused PID owned by an unrelated process must not count as "running".
+  pid_is_swtpm "${pid}"
 }
 
 wait_for_port() {
@@ -111,7 +119,7 @@ stop() {
   # Guard against a stale pidfile whose PID has been reused by an unrelated process.
   local comm
   comm="$(cat "/proc/${pid}/comm" 2>/dev/null || true)"
-  if [[ "${comm}" != *swtpm* ]]; then
+  if ! pid_is_swtpm "${pid}"; then
     log "pid ${pid} is '${comm}', not swtpm (reused PID); removing pidfile without killing"
     rm -f "${PIDFILE}"
     return 0
