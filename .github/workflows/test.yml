@@ -17,22 +17,27 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Install system dependencies (swtpm, tpm2-tss, fprintd mocks, keyring)
+      - name: Install system dependencies
         run: |
           sudo apt-get update
+          # Kept ahead of need so later phases don't have to edit this file:
+          #   build-essential/pkg-config/libclang-dev/libtss2-dev — C + bindgen
+          #     toolchain and tpm2-tss libs the tss-esapi FFI links against (Phase 1).
+          #   swtpm/swtpm-tools — software-TPM substrate CI tests run against (no hardware).
+          #   dbus-x11/gnome-keyring — session bus + keyring daemon for Secret
+          #     Service tests (Phase 2).
+          #   python3-dbusmock — mocks fprintd over D-Bus for headless verify tests (Phase 2).
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config \
+            build-essential pkg-config libclang-dev \
             libtss2-dev \
-            libclang-dev \
             swtpm swtpm-tools \
-            libfprint-2-dev \
-            python3-dbusmock dbus-x11 \
-            gnome-keyring libsecret-1-dev
+            dbus-x11 gnome-keyring \
+            python3-dbusmock
 
       - name: Set up Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           components: rustfmt, clippy
           cache: true
@@ -50,7 +55,7 @@ jobs:
         run: cargo test --workspace
 
       - name: cargo-audit + cargo-deny
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
         with:
           tool: cargo-audit,cargo-deny
 
