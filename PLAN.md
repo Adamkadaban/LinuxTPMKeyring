@@ -179,7 +179,7 @@ unsealed back correctly — fixing every design error the reference repo made.
 swtpm in CI (`--features sim`).
 
 **Deliverables:**
-- [x] `TctiConfig` (swtpm/mssim vs `/dev/tpmrm0`) via feature/env
+- [x] `TctiConfig` (swtpm TCTI vs `/dev/tpmrm0`) via feature/env
 - [x] ECC `create_primary()` under the owner hierarchy; deterministic template
 - [x] **Salted HMAC + parameter-encryption session** helper used by every seal/unseal
 - [ ] `seal(secret, pin)`: `PolicyAuthValue` policy, authValue = PIN, encrypted session

@@ -78,10 +78,17 @@ impl Swtpm {
 
         let guard = Self { child, state_dir };
 
-        let addr: std::net::SocketAddr = format!("127.0.0.1:{cmd_port}").parse().unwrap();
+        // The swtpm TCTI connects to both the command port and the control port (command + 1), so
+        // wait for both before opening a context, otherwise open_context() can flap.
+        let cmd_addr: std::net::SocketAddr = format!("127.0.0.1:{cmd_port}").parse().unwrap();
+        let ctrl_addr: std::net::SocketAddr = format!("127.0.0.1:{ctrl_port}").parse().unwrap();
         assert!(
-            wait_for_port(addr),
-            "swtpm command port {addr} did not come up"
+            wait_for_port(cmd_addr),
+            "swtpm command port {cmd_addr} did not come up"
+        );
+        assert!(
+            wait_for_port(ctrl_addr),
+            "swtpm control port {ctrl_addr} did not come up"
         );
 
         let cfg = TctiConfig::Swtpm {

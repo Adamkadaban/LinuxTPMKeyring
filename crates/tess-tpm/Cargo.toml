@@ -9,7 +9,7 @@ authors.workspace = true
 repository.workspace = true
 
 [features]
-# Exercises an actual swtpm (mssim TCTI) in tests: opens a real ESAPI context,
+# Exercises an actual swtpm (swtpm TCTI) in tests: opens a real ESAPI context,
 # creates the ECC primary, and starts the salted HMAC session. Off by default so
 # `cargo test --workspace` stays green and hardware-free on dev hosts; CI runs
 # `cargo test -p tess-tpm --features sim` with swtpm installed.
