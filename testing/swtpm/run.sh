@@ -108,6 +108,15 @@ stop() {
     return 0
   fi
 
+  # Guard against a stale pidfile whose PID has been reused by an unrelated process.
+  local comm
+  comm="$(cat "/proc/${pid}/comm" 2>/dev/null || true)"
+  if [[ "${comm}" != *swtpm* ]]; then
+    log "pid ${pid} is '${comm}', not swtpm (reused PID); removing pidfile without killing"
+    rm -f "${PIDFILE}"
+    return 0
+  fi
+
   log "stopping pid ${pid}"
   kill "${pid}" 2>/dev/null || true
 

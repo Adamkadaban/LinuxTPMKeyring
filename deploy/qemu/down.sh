@@ -24,7 +24,7 @@ SWTPM_PIDFILE="${RUNDIR}/swtpm.pid"
 log() { printf '[qemu-down] %s\n' "$*" >&2; }
 
 reap() {
-  local label="$1" pidfile="$2"
+  local label="$1" pidfile="$2" want="$3"
   if [ ! -f "${pidfile}" ]; then
     log "${label}: not running (no pidfile)"
     return 0
@@ -34,6 +34,15 @@ reap() {
   pid="$(cat "${pidfile}" 2>/dev/null || true)"
   if [ -z "${pid}" ] || ! kill -0 "${pid}" 2>/dev/null; then
     log "${label}: stale pidfile; removing"
+    rm -f "${pidfile}"
+    return 0
+  fi
+
+  # Guard against a stale pidfile whose PID has been reused by an unrelated process.
+  local comm
+  comm="$(cat "/proc/${pid}/comm" 2>/dev/null || true)"
+  if [[ "${comm}" != *"${want}"* ]]; then
+    log "${label}: pid ${pid} is '${comm}', not ${want} (reused PID); removing pidfile without killing"
     rm -f "${pidfile}"
     return 0
   fi
@@ -56,5 +65,5 @@ reap() {
   log "${label}: stopped"
 }
 
-reap qemu "${QEMU_PIDFILE}"
-reap swtpm "${SWTPM_PIDFILE}"
+reap qemu "${QEMU_PIDFILE}" qemu
+reap swtpm "${SWTPM_PIDFILE}" swtpm

@@ -115,9 +115,16 @@ mod tests {
         use std::process::Command;
         use std::time::Duration;
 
-        if Command::new("swtpm").arg("--version").output().is_err() {
-            eprintln!("skipping swtpm_mssim_port_accepts_connection: swtpm not found on PATH");
-            return;
+        // Skip only when swtpm is genuinely absent (ENOENT); any other failure to execute it
+        // (present but not executable, missing runtime deps) is a real error and must fail the
+        // test rather than silently passing the CI substrate step.
+        match Command::new("swtpm").arg("--version").output() {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("skipping swtpm_mssim_port_accepts_connection: swtpm not found on PATH");
+                return;
+            }
+            Err(e) => panic!("failed to execute swtpm: {e}"),
+            Ok(_) => {}
         }
 
         // testing/swtpm/run.sh lives two levels up from this crate's manifest dir.
