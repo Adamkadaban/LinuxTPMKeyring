@@ -31,10 +31,10 @@ keyring-preservation invariant in `PLAN.md` §2.
 
 ### swtpm (TPM emulator)
 
-`testing/swtpm/run.sh {start|stop|status}` launches `swtpm` in mssim/socket (TCP) mode with a
-persistent `--tpmstate` directory and a pidfile. By convention the mssim command/server port is
-`2321` and the control port is `2322`; both, the host, the state dir, and the pidfile are
-overridable via `TESS_SWTPM_*` env vars. `start` blocks until the command port accepts a connection
+`testing/swtpm/run.sh {start|stop|status}` launches `swtpm` in socket (TCP) mode with a
+persistent `--tpmstate` directory and a pidfile. By convention the command/server port is
+`2321` and the control port is `2322` (command + 1); both, the host, the state dir, and the pidfile
+are overridable via `TESS_SWTPM_*` env vars. `start` blocks until the command port accepts a connection
 (bounded by `TESS_SWTPM_START_TIMEOUT`); `stop` reaps the process (SIGTERM then SIGKILL) so nothing
 leaks.
 

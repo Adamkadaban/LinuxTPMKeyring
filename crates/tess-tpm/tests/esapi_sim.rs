@@ -62,7 +62,13 @@ impl Swtpm {
             std::process::id(),
             cmd_port
         ));
-        std::fs::create_dir_all(&state_dir).expect("create swtpm state dir");
+        // 0700 so the emulator state (TPM material) isn't readable by other local users.
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&state_dir)
+            .expect("create swtpm state dir");
 
         // Foreground (no --daemon): the spawned Child is swtpm itself, giving a reliable handle to
         // reap. swtpm exits when its client disconnects, so the guard mainly matters on a panic.
