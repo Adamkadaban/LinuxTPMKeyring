@@ -81,9 +81,9 @@ pub fn ecc_storage_primary_template() -> Result<Public> {
 }
 
 /// Create the ECC storage primary under [`Hierarchy::Owner`] from [`ecc_storage_primary_template`].
-/// The primary itself carries no authValue — the PIN binds the *sealed object* (ADR-0001), not the
-/// storage root. Owner-hierarchy authorization uses a transient null-auth HMAC session that the
-/// ESAPI helper sets up, encrypts, and flushes automatically.
+/// The primary itself carries no authValue — the PIN binds the *sealed object*, not the storage
+/// root. Owner-hierarchy authorization uses a transient null-auth HMAC session that the ESAPI helper
+/// sets up, encrypts, and flushes automatically.
 pub fn create_primary(context: &mut Context) -> Result<CreatePrimaryKeyResult> {
     let public = ecc_storage_primary_template()?;
     context
