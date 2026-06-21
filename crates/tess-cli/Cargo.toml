@@ -1,0 +1,24 @@
+[package]
+name = "tess-cli"
+description = "The tess command-line tool: enroll, recover, unenroll, status, unlock, test, doctor, install."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "tess"
+path = "src/main.rs"
+
+[dependencies]
+tess-core.workspace = true
+tess-tpm.workspace = true
+tess-keyring.workspace = true
+tess-fprint.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true

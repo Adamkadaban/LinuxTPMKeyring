@@ -1,0 +1,27 @@
+[package]
+name = "tess-pam"
+description = "pam_tess.so: non-blocking PAM module. The only crate permitted unsafe (in ffi only). (skeleton)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+# PAM modules must be a cdylib (.so) for dlopen; rlib lets us unit-test the safe logic.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tess-core.workspace = true
+tess-tpm.workspace = true
+tess-keyring.workspace = true
+tess-fprint.workspace = true
+libc.workspace = true
+thiserror.workspace = true
+
+# NOTE: this crate intentionally does NOT inherit the workspace `unsafe_code = "forbid"` lint.
+# Instead lib.rs sets `#![deny(unsafe_code)]` and only the `ffi` module is `#[allow(unsafe_code)]`,
+# so unsafe is confined to the FFI boundary. See AGENTS.md "Project quirks" and docs/adr/0006.
+[lints.clippy]
+all = { level = "warn", priority = -1 }

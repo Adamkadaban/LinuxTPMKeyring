@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tess-core",
+    "crates/tess-tpm",
+    "crates/tess-keyring",
+    "crates/tess-fprint",
+    "crates/tess-pam",
+    "crates/tess-cli",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+authors = ["Adam Hassan"]
+repository = "https://github.com/Adamkadaban/LinuxTPMKeyring"
+
+[workspace.dependencies]
+# Internal
+tess-core = { path = "crates/tess-core" }
+tess-tpm = { path = "crates/tess-tpm" }
+tess-keyring = { path = "crates/tess-keyring" }
+tess-fprint = { path = "crates/tess-fprint" }
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Secret hygiene
+zeroize = { version = "1.9", features = ["derive"] }
+secrecy = "0.10"
+getrandom = "0.2"
+
+# Serde / config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Syscalls / keyctl
+nix = { version = "0.29", features = ["fs", "process", "signal"] }
+libc = "0.2"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# TPM (pinned ≥7.1.0 — RUSTSEC-2023-0044). Added in Phase 1.
+# tss-esapi = "7.7"
+# D-Bus / Secret Service. Added in Phase 2.
+# zbus = "5"
+# secret-service = "5"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

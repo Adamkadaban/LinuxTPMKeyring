@@ -1,0 +1,17 @@
+[package]
+name = "tess-keyring"
+description = "KeyringBackend over the freedesktop Secret Service API. (skeleton)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+tess-core.workspace = true
+thiserror.workspace = true
+# Phase 2 adds: zbus = "5", secret-service = "5".
+
+[lints]
+workspace = true

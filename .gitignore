@@ -1,0 +1,44 @@
+# Rust / Cargo
+/target
+**/target
+Cargo.lock.orig
+*.rs.bk
+
+# Reference repos — read-only context, never committed
+/references/
+
+# Secrets / keys / TPM artifacts — never commit
+*.pem
+*.key
+*.priv
+*.pub.tpm
+id_*
+*_rsa
+*_ed25519
+*.sealed
+*.blob
+recovery-secret*
+.env
+.env.*
+!.env.example
+
+# Azure / deploy local state
+deploy/azure/.terraform/
+deploy/azure/*.tfstate*
+deploy/**/local.*
+
+# swtpm / test state
+/testing/**/state/
+*.tpmstate
+
+# Fuzzing
+**/fuzz/corpus/
+**/fuzz/artifacts/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/

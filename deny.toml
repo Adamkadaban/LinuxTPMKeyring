@@ -1,0 +1,36 @@
+# cargo-deny configuration — supply-chain gate (advisories / bans / licenses / sources).
+# See https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+version = 2
+yanked = "deny"
+# RUSTSEC-2023-0044 (tss-esapi FFI use-after-free) is closed by pinning >= 7.1.0 in Cargo.toml.
+ignore = []
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+# Copyleft crates that must never be linked into our binaries.
+deny = [
+    { name = "pamsm" },      # GPL-3.0
+    { name = "libbpf-rs" },  # LGPL-2.1
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

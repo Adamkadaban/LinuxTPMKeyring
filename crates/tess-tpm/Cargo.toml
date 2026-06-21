@@ -1,0 +1,17 @@
+[package]
+name = "tess-tpm"
+description = "TPM2 seal/unseal of a random key under a PIN authValue, with HMAC sessions. (skeleton)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+tess-core.workspace = true
+thiserror.workspace = true
+# Phase 1 adds: tss-esapi = "7.7" (pinned >=7.1.0, RUSTSEC-2023-0044), getrandom, zeroize.
+
+[lints]
+workspace = true
