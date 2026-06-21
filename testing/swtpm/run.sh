@@ -83,6 +83,10 @@ start() {
 
   mkdir -p "${STATE_DIR}"
 
+  # is_running() returned false, but a stale pidfile (reused/dead PID) can still exist and would
+  # make swtpm --pid refuse to start. Clear it so start is idempotent.
+  rm -f "${PIDFILE}"
+
   log "starting on ${HOST}: command=${PORT} control=${CTRL_PORT} state=${STATE_DIR}"
   "${SWTPM_BIN}" socket \
     --tpm2 \

@@ -35,19 +35,28 @@ impl TctiConfig {
     }
 
     /// Pure env-defaulting logic, separated from the process-global `std::env` read so it can be
-    /// tested deterministically. An absent or unparseable value falls back to the default.
+    /// tested deterministically. An absent, empty, or unparseable value falls back to the default.
     fn resolve_swtpm(host: Option<String>, port: Option<String>) -> Self {
-        let host = host.unwrap_or_else(|| Self::DEFAULT_SWTPM_HOST.to_string());
+        let host = host
+            .filter(|h| !h.trim().is_empty())
+            .unwrap_or_else(|| Self::DEFAULT_SWTPM_HOST.to_string());
         let port = port
             .and_then(|s| s.parse::<u16>().ok())
             .unwrap_or(Self::DEFAULT_SWTPM_PORT);
         Self::Swtpm { host, port }
     }
 
-    /// The `host:port` the mssim command channel listens on, if this is an swtpm transport.
+    /// The `host:port` the mssim command channel listens on, if this is an swtpm transport. IPv6
+    /// literals are bracketed so the result parses as a `SocketAddr`.
     pub fn swtpm_socket_addr(&self) -> Option<String> {
         match self {
-            Self::Swtpm { host, port } => Some(format!("{host}:{port}")),
+            Self::Swtpm { host, port } => {
+                if host.contains(':') && !host.starts_with('[') {
+                    Some(format!("[{host}]:{port}"))
+                } else {
+                    Some(format!("{host}:{port}"))
+                }
+            }
             Self::DeviceManager { .. } => None,
         }
     }
@@ -93,6 +102,25 @@ mod tests {
             TctiConfig::Swtpm { port, .. } => assert_eq!(port, TctiConfig::DEFAULT_SWTPM_PORT),
             _ => panic!("expected swtpm config"),
         }
+    }
+
+    #[test]
+    fn resolve_swtpm_treats_empty_host_as_absent() {
+        match TctiConfig::resolve_swtpm(Some("   ".to_string()), None) {
+            TctiConfig::Swtpm { host, .. } => assert_eq!(host, TctiConfig::DEFAULT_SWTPM_HOST),
+            _ => panic!("expected swtpm config"),
+        }
+    }
+
+    #[test]
+    fn swtpm_socket_addr_brackets_ipv6() {
+        let cfg = TctiConfig::Swtpm {
+            host: "::1".to_string(),
+            port: 2321,
+        };
+        let addr = cfg.swtpm_socket_addr().expect("swtpm transport");
+        assert_eq!(addr, "[::1]:2321");
+        assert!(addr.parse::<std::net::SocketAddr>().is_ok());
     }
 
     #[test]
