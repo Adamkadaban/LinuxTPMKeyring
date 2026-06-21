@@ -1,22 +1,34 @@
 //! TPM2 seal/unseal of a random key, gated by a PIN `PolicyAuthValue`, with mandatory HMAC +
-//! parameter-encryption sessions. Skeleton — implemented in Phase 1 (see `PLAN.md` §5, `docs/adr/0001`).
+//! parameter-encryption sessions. Phase 1 plumbing: an ESAPI context, the ECC storage primary, and
+//! the salted encrypted session that later seal/unseal builds on (seal/unseal itself is not here).
+
+use std::str::FromStr;
+
+use tss_esapi::tcti_ldr::{DeviceConfig, NetworkTPMConfig, TctiNameConf};
+use tss_esapi::Context;
+
+mod esapi;
+
+pub use esapi::{
+    create_primary, ecc_storage_primary_template, start_salted_hmac_session, Error, Result,
+};
 
 /// Selects the TPM transport: a software TPM (swtpm/mssim) for dev and CI, or the kernel resource
 /// manager (`/dev/tpmrm0`) for a real / virtual hardware TPM.
 #[derive(Debug, Clone)]
 pub enum TctiConfig {
-    /// swtpm via the mssim TCTI (host:port).
+    /// swtpm via the swtpm TCTI (host:port).
     Swtpm { host: String, port: u16 },
     /// Kernel resource manager device, e.g. `/dev/tpmrm0`.
     DeviceManager { path: String },
 }
 
 impl TctiConfig {
-    /// Conventional mssim host/command-port for a local swtpm.
+    /// Conventional host/command-port for a local swtpm.
     pub const DEFAULT_SWTPM_HOST: &'static str = "127.0.0.1";
     pub const DEFAULT_SWTPM_PORT: u16 = 2321;
 
-    /// Default for automated tests: a local swtpm on the conventional mssim port.
+    /// Default for automated tests: a local swtpm on the conventional command port.
     pub fn swtpm_default() -> Self {
         Self::Swtpm {
             host: Self::DEFAULT_SWTPM_HOST.to_string(),
@@ -24,7 +36,7 @@ impl TctiConfig {
         }
     }
 
-    /// Resolve a swtpm mssim address from the environment, falling back to the conventional
+    /// Resolve a swtpm address from the environment, falling back to the conventional
     /// `127.0.0.1:2321`. Reads `TESS_SWTPM_HOST` and `TESS_SWTPM_PORT`; an unparseable port falls
     /// back to the default. This mirrors the env contract of `testing/swtpm/run.sh`.
     pub fn swtpm_from_env() -> Self {
@@ -59,6 +71,30 @@ impl TctiConfig {
             }
             Self::DeviceManager { .. } => None,
         }
+    }
+
+    /// Build the `tss-esapi` TCTI descriptor for this transport: the swtpm TCTI for the software
+    /// emulator (its control channel speaks swtpm's own protocol, not the IBM mssim one — the
+    /// mssim TCTI's platform commands fail against swtpm), or a device-node config for the kernel
+    /// resource manager. The swtpm path backs the `sim` test feature; the device path backs the
+    /// `hw` feature, validated on the Azure vTPM rather than the dev host.
+    pub fn tcti_name_conf(&self) -> Result<TctiNameConf> {
+        match self {
+            Self::Swtpm { host, port } => {
+                let conf = NetworkTPMConfig::from_str(&format!("host={host},port={port}"))
+                    .map_err(|e| Error::Tcti(e.to_string()))?;
+                Ok(TctiNameConf::Swtpm(conf))
+            }
+            Self::DeviceManager { path } => {
+                let conf = DeviceConfig::from_str(path).map_err(|e| Error::Tcti(e.to_string()))?;
+                Ok(TctiNameConf::Device(conf))
+            }
+        }
+    }
+
+    /// Open a live ESAPI [`Context`] against this transport.
+    pub fn open_context(&self) -> Result<Context> {
+        Context::new(self.tcti_name_conf()?).map_err(|e| Error::Context(e.to_string()))
     }
 }
 

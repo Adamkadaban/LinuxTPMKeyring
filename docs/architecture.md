@@ -40,15 +40,24 @@ leaks.
 
 `tess-tpm`'s `TctiConfig::Swtpm { host, port }` is the matching transport. `TctiConfig::swtpm_from_env()`
 resolves the address from `TESS_SWTPM_HOST` / `TESS_SWTPM_PORT` (default `127.0.0.1:2321`), mirroring
-the script's env contract. The Phase 0 connect smoke test lives behind the crate's `sim` feature:
+the script's env contract. `TctiConfig::open_context()` opens a live `tss_esapi::Context`: the swtpm
+transport uses the **swtpm TCTI** (swtpm's control channel speaks its own protocol, not the IBM
+mssim one — the mssim TCTI's platform commands fail against swtpm), and `TctiConfig::DeviceManager`
+uses the device TCTI against `/dev/tpmrm0`. From a context, `tess_tpm::create_primary()` creates the
+deterministic ECC NIST-P256 restricted-storage primary under the owner hierarchy, and
+`tess_tpm::start_salted_hmac_session()` opens the salted HMAC + AES-128-CFB parameter-encryption
+session (SHA-256) that every later seal/unseal runs under to defeat TPM bus interposers.
+
+Two crate features gate the transports that need a TPM:
 
 ```sh
-cargo test -p tess-tpm --features sim   # starts swtpm, asserts the mssim port accepts, tears down
+cargo test -p tess-tpm --features sim   # starts swtpm, opens an ESAPI context, creates the ECC
+                                        # primary, starts the salted session, tears swtpm down
 ```
 
-It is off by default, so plain `cargo test --workspace` stays green and hardware-free; with `sim`
-enabled it skips cleanly if `swtpm` is not on `PATH`. A real TPM-property read replaces the
-reachability check in Phase 1 once `tss-esapi` is wired in.
+`sim` exercises swtpm; `hw` targets `/dev/tpmrm0` and is validated only on the Azure vTPM, never on
+the dev host. Both are off by default, so plain `cargo test --workspace` stays green and
+hardware-free; with `sim` enabled the integration test skips cleanly if `swtpm` is not on `PATH`.
 
 ### Local QEMU vTPM VM (optional, contributors only)
 

@@ -9,15 +9,19 @@ authors.workspace = true
 repository.workspace = true
 
 [features]
-# Exercises an actual swtpm (mssim TCTI) in tests. Off by default so
+# Exercises an actual swtpm (mssim TCTI) in tests: opens a real ESAPI context,
+# creates the ECC primary, and starts the salted HMAC session. Off by default so
 # `cargo test --workspace` stays green and hardware-free on dev hosts; CI runs
 # `cargo test -p tess-tpm --features sim` with swtpm installed.
 sim = []
+# Targets the kernel resource manager (`/dev/tpmrm0`, device TCTI) for a real /
+# virtual hardware TPM. Validated on the Azure vTPM, never on the dev host.
+hw = []
 
 [dependencies]
 tess-core.workspace = true
 thiserror.workspace = true
-# Phase 1 adds: tss-esapi = "7.7" (pinned >=7.1.0, RUSTSEC-2023-0044), getrandom, zeroize.
+tss-esapi.workspace = true
 
 [lints]
 workspace = true
