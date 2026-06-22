@@ -177,8 +177,16 @@ impl HelperSpec {
         command.args(&self.args);
         if self.fingerprint {
             command.arg(FINGERPRINT_FLAG);
-            if let Some(user) = &self.fingerprint_user {
-                command.env(FPRINT_USER_ENV, user);
+            match &self.fingerprint_user {
+                Some(user) => {
+                    command.env(FPRINT_USER_ENV, user);
+                }
+                // The environment is not a trusted channel in the privileged PAM context: clear any
+                // inherited value so the helper can only ever use the PAM-resolved user (or the
+                // empty-string default), never one an attacker planted in the parent environment.
+                None => {
+                    command.env_remove(FPRINT_USER_ENV);
+                }
             }
         }
         command
@@ -327,6 +335,19 @@ mod tests {
             .and_then(|(_, v)| v)
             .map(|v| v.to_owned());
         assert_eq!(user_env, Some(OsString::from("alice")));
+    }
+
+    #[test]
+    fn fingerprint_without_user_clears_inherited_env() {
+        // With the front gate on but no PAM-resolved user, the command must explicitly *remove*
+        // TESS_FPRINT_USER so an attacker-planted parent-environment value can't reach the helper.
+        let spec = HelperSpec::resolve(&["fingerprint=yes"]);
+        assert!(spec.fingerprint_user.is_none());
+        let command = spec.command();
+        let removed = command
+            .get_envs()
+            .any(|(k, v)| k == "TESS_FPRINT_USER" && v.is_none());
+        assert!(removed, "TESS_FPRINT_USER must be explicitly cleared");
     }
 
     #[test]

@@ -478,10 +478,12 @@ enabled, the module resolves `PAM_USER`, hands it and a `--fingerprint` flag to 
 widens the watchdog deadline (`Watchdog::FINGERPRINT_DEADLINE`, 12 s) so a real swipe has room ahead
 of the unseal. Inside the helper the verify is itself bounded through
 `tess_fprint::FprintClient::verify`, well inside the watchdog ceiling, and connects to the system
-fprintd. Both the verify deadline (default 8 s) and the fprintd bus are fixed in release builds: the
-helper never consults the environment in production, so a caller cannot redirect the privileged
-helper to an attacker-controlled D-Bus address or push the verify into watchdog-kill territory.
-Debug/test builds only honour `TESS_FPRINT_TIMEOUT_MS` (shorten the deadline) and
+fprintd. Both the verify deadline (default 8 s) and the fprintd bus are fixed in release builds: a
+caller's environment cannot change them, so it cannot redirect the privileged helper to an
+attacker-controlled D-Bus address or push the verify into watchdog-kill territory. The only
+environment the release helper reads is `TESS_FPRINT_USER`, a trusted channel the PAM module sets
+from `PAM_USER` (and clears when no user is resolved) to select whose finger fprintd matches.
+Debug/test builds additionally honour `TESS_FPRINT_TIMEOUT_MS` (shorten the deadline) and
 `TESS_FPRINT_BUS_ADDRESS` (point at a private `python-dbusmock` bus), mirroring how `TESS_PAM_HELPER`
 is debug-gated.
 

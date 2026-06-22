@@ -169,7 +169,13 @@ fn fingerprint_front_gate() -> FingerprintGate {
     match client.verify(fingerprint_deadline_ms()) {
         Ok(()) => FingerprintGate::Matched,
         Err(CoreError::Timeout(_)) => FingerprintGate::TimedOut,
-        Err(CoreError::Auth(_)) => FingerprintGate::NoMatch,
+        // `verify` reports both a clean no-match and other terminal failures (claim/start errors,
+        // device disconnect, closed stream) as `Auth`; only the no-match sentinel is a real
+        // no-match. Everything else is an unavailable reader, logged with its reason for diagnostics.
+        Err(CoreError::Auth(reason)) if reason == tess_fprint::NO_MATCH_REASON => {
+            FingerprintGate::NoMatch
+        }
+        Err(CoreError::Auth(reason)) => FingerprintGate::Unavailable(reason),
         Err(e) => FingerprintGate::Unavailable(e.to_string()),
     }
 }

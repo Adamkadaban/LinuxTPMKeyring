@@ -28,6 +28,12 @@ pub const VIRTUAL_DEVICE_ENV: &str = "FP_VIRTUAL_DEVICE";
 /// finger, matching `pam_fprintd`'s default.
 const VERIFY_ANY_FINGER: &str = "any";
 
+/// The exact [`Error::Auth`] message a bounded [`FprintClient::verify`] returns on a clean
+/// `verify-no-match` (a finger was read but matched no enrolled template). Callers distinguish this
+/// from other `Auth` failures (claim/start errors, disconnect, stream closed) by comparing against
+/// this sentinel, so a real no-match is never confused with an unavailable reader.
+pub const NO_MATCH_REASON: &str = "fingerprint did not match";
+
 /// Extra time the hard wall-clock backstop allows beyond `deadline_ms` so the graceful inner-deadline
 /// path can finish its `VerifyStop`/`Release` cleanup. The backstop only cancels mid-flight when the
 /// bus is genuinely wedged — and fprintd releases a claim automatically when the client disconnects.
@@ -220,9 +226,7 @@ async fn wait_for_outcome(
                     .map_err(|e| Error::Auth(format!("parse VerifyStatus signal: {e}")))?;
                 match classify_verify_result(&args.result, args.done) {
                     VerifyOutcome::Match => return Ok(()),
-                    VerifyOutcome::NoMatch => {
-                        return Err(Error::Auth("fingerprint did not match".to_owned()))
-                    }
+                    VerifyOutcome::NoMatch => return Err(Error::Auth(NO_MATCH_REASON.to_owned())),
                     VerifyOutcome::Failed(token) => {
                         return Err(Error::Auth(format!("fprintd verification failed: {token}")))
                     }
