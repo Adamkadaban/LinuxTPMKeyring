@@ -123,6 +123,10 @@ setup_dirs() {
   export XDG_CONFIG_HOME="${STATE_DIR}/config"
   export XDG_RUNTIME_DIR="${STATE_DIR}/run"
   mkdir -p "${XDG_DATA_HOME}" "${XDG_CONFIG_HOME}"
+  # XDG_DATA_HOME (keyring + sealed blobs) is deliberately persistent so the reboot phase can re-unlock
+  # it. XDG_RUNTIME_DIR is per-boot ephemeral by spec — recreate it fresh each run so stale dbus /
+  # gnome-keyring sockets left from before a reboot can't block the daemons from starting.
+  rm -rf -- "${XDG_RUNTIME_DIR}"
   mkdir -p "${XDG_RUNTIME_DIR}"
   chmod 700 "${XDG_RUNTIME_DIR}"
   RECOVERY_FILE="${STATE_DIR}/recovery-secret.txt"
