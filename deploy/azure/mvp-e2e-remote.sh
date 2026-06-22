@@ -364,8 +364,9 @@ assert_keyring_unlocked() {
 }
 
 # Post-install verification: `tess doctor --post-install` must exit 0 once enrolled (TPM present,
-# Secret Service daemon present, sealed metadata parseable). Proves the readiness gate the operator
-# runs after install on the real vTPM.
+# a Secret Service provider binary on PATH, sealed metadata parseable). Proves the readiness gate
+# the operator runs after install on the real vTPM. (It checks for a provider binary, not a running
+# daemon — the live daemon is exercised by the unlock assertions below.)
 assert_post_install_ready() {
   log "Verifying post-install readiness (tess doctor --post-install) ..."
   set +e

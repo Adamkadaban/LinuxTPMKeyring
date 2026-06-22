@@ -206,12 +206,18 @@ fn probe_keyring(required: bool) -> Probe {
     }
 }
 
-/// Probe whether `tess enroll` has completed: the sealed metadata must be present *and* parseable
-/// (a truncated/corrupt blob is treated as missing). Informational by default; promoted to required
-/// in post-install verification. Read-only — it loads metadata but never unseals or touches a
-/// secret, so it consumes no DA attempt.
+/// Probe whether `tess enroll` has completed: the sealed metadata must be present *and* fully
+/// usable — it must parse (JSON + schema version) *and* reconstruct into a `SealedObject`, which
+/// catches corrupt blobs (bad base64, unsupported policy) that bare JSON parsing would accept.
+/// Informational by default; promoted to required in post-install verification. Read-only — it
+/// never opens the TPM or unseals, so it consumes no DA attempt.
 fn probe_enrollment(required: bool) -> Probe {
     const NAME: &str = "tess enrollment";
+    let invalid = |detail: String| {
+        Probe::new(NAME, ProbeStatus::Missing, &detail)
+            .required_if(required)
+            .with_hint("re-run `tess enroll`, or `tess recover` if the TPM state changed")
+    };
     let paths = match enroll::Paths::for_user() {
         Ok(paths) => paths,
         Err(reason) => {
@@ -233,23 +239,19 @@ fn probe_enrollment(required: bool) -> Probe {
         .required_if(required)
         .with_hint("run `tess enroll`");
     }
-    match persist::load(&paths.metadata) {
-        Ok(_) => {
-            let recovery = if paths.recovery.exists() {
-                "recovery blob present"
-            } else {
-                "no recovery blob"
-            };
-            Probe::new(NAME, ProbeStatus::Ok, &format!("enrolled; {recovery}"))
-        }
-        Err(reason) => Probe::new(
-            NAME,
-            ProbeStatus::Missing,
-            &format!("sealed metadata unreadable: {reason}"),
-        )
-        .required_if(required)
-        .with_hint("re-run `tess enroll`, or `tess recover` if the TPM state changed"),
+    let metadata = match persist::load(&paths.metadata) {
+        Ok(metadata) => metadata,
+        Err(reason) => return invalid(format!("sealed metadata unreadable: {reason}")),
+    };
+    if let Err(reason) = persist::from_metadata(&metadata) {
+        return invalid(format!("sealed metadata invalid: {reason}"));
     }
+    let recovery = if paths.recovery.exists() {
+        "recovery blob present"
+    } else {
+        "no recovery blob"
+    };
+    Probe::new(NAME, ProbeStatus::Ok, &format!("enrolled; {recovery}"))
 }
 
 fn probe_fprintd() -> Probe {
