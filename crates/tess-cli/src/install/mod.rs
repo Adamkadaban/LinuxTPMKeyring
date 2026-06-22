@@ -91,8 +91,7 @@ pub fn install(plan: &InstallPlan) -> Result<InstallReport> {
     // Open the service file with O_NOFOLLOW and read its bytes + mode from that FD, closing the
     // TOCTOU window: a symlink swapped in after a separate metadata check can't redirect the read.
     let (original, mode) = match open_regular_nofollow(&plan.service_file)? {
-        Some(mut file) => {
-            let mode = file.metadata().ok().map(|m| m.permissions().mode());
+        Some((mut file, mode)) => {
             let mut original = String::new();
             file.read_to_string(&mut original).with_context(|| {
                 format!("read PAM service file {}", plan.service_file.display())
@@ -182,8 +181,7 @@ pub fn uninstall(plan: &InstallPlan) -> Result<UninstallReport> {
     let mut removed_block = false;
     // A missing service file is a no-op; a symlink or other non-regular file is refused. The
     // O_NOFOLLOW open + FD-based read closes the TOCTOU window (no separate metadata pre-check).
-    if let Some(mut file) = open_regular_nofollow(&plan.service_file)? {
-        let mode = file.metadata().ok().map(|m| m.permissions().mode());
+    if let Some((mut file, mode)) = open_regular_nofollow(&plan.service_file)? {
         let mut original = String::new();
         file.read_to_string(&mut original)
             .with_context(|| format!("read PAM service file {}", plan.service_file.display()))?;
@@ -308,7 +306,7 @@ fn remove_if_exists(path: &Path) -> io::Result<bool> {
 /// The temp file is created with an unpredictable suffix and `O_CREAT|O_EXCL` (`create_new`), so a
 /// pre-planted symlink at the temp path can't be followed: running as root against a `--service` in
 /// an attacker-writable directory can't be turned into a symlink-clobber primitive.
-fn atomic_write_preserving_mode(path: &Path, content: &str, mode: Option<u32>) -> Result<()> {
+fn atomic_write_preserving_mode(path: &Path, content: &str, mode: u32) -> Result<()> {
     // Guard against a path with no parent (e.g. a bare root); the temp sibling below relies on one.
     path.parent()
         .ok_or_else(|| anyhow!("{} has no parent directory", path.display()))?;
@@ -325,9 +323,7 @@ fn atomic_write_preserving_mode(path: &Path, content: &str, mode: Option<u32>) -
         file.write_all(content.as_bytes())?;
         // Set the mode before the final fsync so contents + permission bits are committed together;
         // otherwise a crash after rename could surface the file with default permissions.
-        if let Some(mode) = mode {
-            file.set_permissions(fs::Permissions::from_mode(mode))?;
-        }
+        file.set_permissions(fs::Permissions::from_mode(mode))?;
         file.sync_all()?;
         drop(file);
         fs::rename(&tmp, path)?;
@@ -342,11 +338,12 @@ fn atomic_write_preserving_mode(path: &Path, content: &str, mode: Option<u32>) -
 }
 
 /// Open a service path for reading with `O_NOFOLLOW` and confirm the opened descriptor is a regular
-/// file. Returns `None` if the path doesn't exist (a missing file is an install error / uninstall
-/// no-op). Refuses a symlink (`O_NOFOLLOW` → `ELOOP`) or any non-regular file. Opening and then
-/// reading/stat-ing the *same* descriptor closes the TOCTOU window a separate metadata pre-check
-/// would leave: a symlink swapped in after the check can't redirect the read or the mode.
-fn open_regular_nofollow(path: &Path) -> Result<Option<fs::File>> {
+/// file, returning the open file and its permission mode (from the same fstat). Returns `None` if
+/// the path doesn't exist (a missing file is an install error / uninstall no-op). Refuses a symlink
+/// (`O_NOFOLLOW` → `ELOOP`) or any non-regular file. Opening and then reading/stat-ing the *same*
+/// descriptor closes the TOCTOU window a separate metadata pre-check would leave: a symlink swapped
+/// in after the check can't redirect the read or the mode.
+fn open_regular_nofollow(path: &Path) -> Result<Option<(fs::File, u32)>> {
     match fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
@@ -359,7 +356,8 @@ fn open_regular_nofollow(path: &Path) -> Result<Option<fs::File>> {
             if !meta.file_type().is_file() {
                 bail!("PAM service file {} is not a regular file", path.display());
             }
-            Ok(Some(file))
+            let mode = meta.permissions().mode();
+            Ok(Some((file, mode)))
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) if e.raw_os_error() == Some(libc::ELOOP) => bail!(
