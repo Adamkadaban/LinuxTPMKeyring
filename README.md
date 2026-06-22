@@ -103,7 +103,8 @@ tess unlock        # one-shot manual unlock (unseal with PIN → unlock keyring)
 tess test          # dry-run the session unlock path (no changes)
 tess recover       # re-unlock using the recovery secret (add --reseal to re-seal under a new PIN)
 tess unenroll      # restore the password-based keyring (items preserved)
-tess doctor        # check TPM / keyring / fprintd readiness
+tess doctor        # check TPM / keyring / fprintd / enrollment readiness (non-zero exit when not ready)
+tess doctor --post-install   # stricter check: also require a keyring provider binary on PATH + a completed enrollment
 tess install       # wire pam_tess.so into the session stack (idempotent, fail-open)
 tess install --uninstall   # remove the tess block + module (best-effort), un-wiring the stack
 ```
@@ -204,20 +205,31 @@ is PIN authValue only — no PCR binding.
 ## `tess doctor`
 
 `tess doctor` runs **read-only** readiness probes (no D-Bus, no secret access, no unlock) and prints
-a table plus a one-line verdict:
+a table plus a one-line verdict. It exits **non-zero** when a required component is missing, so it
+works as a scriptable readiness gate:
 
 ```text
 COMPONENT                           STATUS   DETAIL
-TPM resource manager (/dev/tpmrm0)  OK       present
+TPM resource manager (/dev/tpmrm0)  OK       present; TPM 2.0; DA lockout 0/3
 TPM raw device (/dev/tpm0)          OK       present
 Secret Service daemon               OK       gnome-keyring-daemon on PATH (not contacted)
 fprintd                             MISSING  fprintd not on PATH
+tess enrollment                     OK       enrolled; recovery blob present
 
-verdict: READY — TPM present; 1 optional component(s) missing.
+verdict: READY — 1 optional component(s) missing.
 ```
 
-Only the TPM resource manager is required for the core sealing guarantee; the keyring daemon and
-fprintd are reported but never fail the verdict.
+By default only the TPM resource manager is required for the core sealing guarantee; the keyring
+daemon, fprintd, and enrollment state are reported but never fail the verdict. The TPM check
+requires the resource manager to be **openable** (not merely present) — a present-but-unopenable
+node (missing TCTI library, permission denied) reports MISSING, since enroll/unlock would fail too;
+the version/DA-lockout detail is read best-effort and never fails the verdict on its own. Run
+`tess doctor --post-install` after installing and enrolling to additionally **require** a Secret
+Service provider binary on PATH and a completed, parseable enrollment — this is the post-install
+verification the Azure acceptance harness asserts. (The keyring check looks for a provider binary,
+not a running daemon / active session bus — see the `not contacted` note in the table.) When a
+required probe is missing the verdict appends a one-line remediation hint (e.g.
+`→ tess enrollment: run \`tess enroll\``).
 
 ## License
 

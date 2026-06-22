@@ -363,6 +363,19 @@ assert_keyring_unlocked() {
     || die "tess status does not report the keyring as unlocked after the session"
 }
 
+# Post-install verification: `tess doctor --post-install` must exit 0 once enrolled (TPM present,
+# a Secret Service provider binary on PATH, sealed metadata parseable). Proves the readiness gate
+# the operator runs after install on the real vTPM. (It checks for a provider binary, not a running
+# daemon — the live daemon is exercised by the unlock assertions below.)
+assert_post_install_ready() {
+  log "Verifying post-install readiness (tess doctor --post-install) ..."
+  set +e
+  "${PRIV[@]}" "${TESS_BIN}" doctor --post-install
+  local rc=$?
+  set -e
+  [[ "${rc}" -eq 0 ]] || die "tess doctor --post-install reported NOT READY (exit ${rc})"
+}
+
 # The probe item is only readable when the collection is unlocked; reading it back without typing a
 # password is the end-to-end proof. Bounded so a still-locked collection can never hang the harness.
 assert_probe_readable() {
@@ -392,6 +405,7 @@ phase_full() {
 
   log "Enrolling: sealing a fresh random key to the vTPM under the PIN ..."
   run_enroll
+  assert_post_install_ready
 
   start_fprint_mock
   lock_login_collection

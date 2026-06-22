@@ -286,7 +286,7 @@ survives reboot; stall-injection proves login never freezes; teardown removes al
 - [x] Reboot-persistence test
 - [x] `docs/threat-model.md` finalized (root out of scope, at-rest guarantee, biometric host-trusted, recovery/uninstall)
 - [x] README: real install/use/uninstall + supported-platform matrix
-- [ ] `tess doctor` full readiness + post-install verification
+- [x] `tess doctor` full readiness + post-install verification
 
 | Wave | Worktree slug | Depends on | Tasks |
 |---|---|---|---|
