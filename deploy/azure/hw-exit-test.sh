@@ -107,8 +107,16 @@ if ! command -v cargo >/dev/null 2>&1; then
   echo ">> Installing the Rust toolchain via rustup ..."
   curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
 fi
-# shellcheck disable=SC1091
-source "${HOME}/.cargo/env"
+# rustup writes this env file; source it only if present — a cargo installed another way (apt, a
+# pre-baked image) won't have it, and sourcing a missing file under `set -e` would abort.
+if [[ -f "${HOME}/.cargo/env" ]]; then
+  # shellcheck disable=SC1091
+  source "${HOME}/.cargo/env"
+fi
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "error: cargo is not on PATH after toolchain setup." >&2
+  exit 1
+fi
 
 # Wrap a command with sudo only when the login user can't read+write the TPM device directly,
 # preserving the toolchain PATH and build cache (HOME) so root reuses the user's target/ + registry.
