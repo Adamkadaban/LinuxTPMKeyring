@@ -213,17 +213,23 @@ fn probe_tpm_rm() -> Probe {
 /// Best-effort read-only capability read over the device TCTI: TPM version + DA-lockout state. The
 /// error is rendered to a string so the caller can fold it into the probe detail rather than panic.
 fn read_tpm_caps() -> Result<(TpmVersion, LockoutState), String> {
-    let cfg = TctiConfig::DeviceManager {
+    read_caps(&TctiConfig::DeviceManager {
         path: TPM_RM_PATH.to_string(),
-    };
-    let mut context = cfg.open_context().map_err(|e| e.to_string())?;
+    })
+}
+
+/// Open a read-only ESAPI context against `tcti` and read the TPM version and DA-lockout state. No
+/// authorization, no session, no mutation — shared by `doctor` and `status`/`test`. Errors are
+/// stringified so callers can surface the reason in their report instead of failing hard.
+pub(crate) fn read_caps(tcti: &TctiConfig) -> Result<(TpmVersion, LockoutState), String> {
+    let mut context = tcti.open_context().map_err(|e| e.to_string())?;
     let version = read_tpm_version(&mut context).map_err(|e| e.to_string())?;
     let lockout = read_lockout_state(&mut context).map_err(|e| e.to_string())?;
     Ok((version, lockout))
 }
 
 /// One-line DA-lockout summary: disabled, locked out, or `counter/max` remaining headroom.
-fn lockout_summary(state: &LockoutState) -> String {
+pub(crate) fn lockout_summary(state: &LockoutState) -> String {
     if state.max_auth_fail == 0 {
         "DA lockout disabled".to_string()
     } else if state.is_locked_out() {
