@@ -284,8 +284,10 @@ impl DryRun {
             Ok(_) => {}
             Err(e) => reasons.push(format!("TPM unavailable ({e})")),
         }
-        if let Some(Err(e)) = &self.keyring_locked {
-            reasons.push(format!("keyring unavailable ({e})"));
+        match &self.keyring_locked {
+            Some(Ok(_)) => {}
+            Some(Err(e)) => reasons.push(format!("keyring unavailable ({e})")),
+            None => reasons.push("keyring state was not probed".to_string()),
         }
         reasons
     }
