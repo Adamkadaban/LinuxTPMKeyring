@@ -81,7 +81,9 @@ module looks for the helper at the compiled default `/usr/lib/tess/tess-pam-help
 `install -Dm755` step above), or at an **absolute** `helper=/path` argument on the PAM line —
 relative paths are ignored. The packaged `.deb` (issue #38) is the smooth path: it installs the
 `tess` binary, the `tess-pam-helper`, and `pam_tess.so` to these canonical paths automatically.
-`tess install` itself only wires the module and is idempotent and fail-open.
+`tess install` copies `pam_tess.so` into the system PAM module directory and wires the session stack
+(idempotent, fail-open); it does **not** install the `tess` binary or the helper — that's what the
+`.deb` (or the manual steps above) handles.
 
 ## Use
 
