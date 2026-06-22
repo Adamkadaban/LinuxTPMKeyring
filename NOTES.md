@@ -575,3 +575,39 @@ the packaged module with `--module /usr/lib/x86_64-linux-gnu/security/pam_tess.s
 passes it automatically; README + `postinst` show the explicit form for the manual/`--no-pam` path.
 The redundant re-copy (dpkg already placed the module there) is an idempotent no-op. `deploy/install.sh:157`
 · `deploy/debian/postinst:15` · `README.md` · PR #42.
+## 2026-06-22 — Scripted MVP vTPM E2E acceptance harness (issue #39)
+**Resolution:** `deploy/azure/mvp-e2e.sh` (driver) + `deploy/azure/mvp-e2e-remote.sh` (VM-side body,
+phases `full`/`reboot`) + `deploy/azure/reboot-persistence.sh` drive the Phase 4 demo on an
+already-provisioned Trusted-Launch vTPM VM: install → build (or `.deb`) → throwaway login keyring →
+`tess enroll` (random key sealed to the real vTPM under a PIN) → scripted fprint+PIN session via the
+real `tess-pam-helper` → assert the keyring unlocks with no password (`tess status` +
+`secret-tool` probe). Scripts only; the orchestrator owns provision/teardown (no `az` here). All
+three shellcheck-clean + `bash -n`-valid; no Rust touched. `deploy/azure/mvp-e2e-remote.sh:1` · PR for #39.
+
+Gotchas worth remembering:
+- **`rpassword` 7.5.4 reads the keyring password from `/dev/tty`, not stdin.** `DEFAULT_INPUT_PATH`
+  is `"/dev/tty"`, so `tess enroll`'s "Current keyring password:" prompt fails over a tty-less
+  `ssh host bash -s`. The harness wraps enroll in `script -qec "<cmd>" /dev/null`, which allocates a
+  PTY so `/dev/tty` exists; the password is fed on `script`'s stdin (`printf '%s\n' | script ...`),
+  the PIN via `--pin`. `--pin` is acceptable here only because it is a throwaway demo VM value.
+- **Persistent state under the remote dir is what makes reboot-persistence real.** `XDG_DATA_HOME`
+  points at `$REMOTE_DIR/e2e-state/data` (NOT a `/tmp` tempdir), so both the sealed `tess` metadata
+  and gnome-keyring's `login.keyring` (rekeyed to the sealed key) survive the reboot. After reboot a
+  fresh `gnome-keyring-daemon --components=secrets` (no `--unlock`) loads that login keyring LOCKED;
+  the helper unseals the key from the rebooted vTPM and `UnlockWithMasterPassword` re-unlocks it with
+  no password. `reboot-persistence.sh` does NOT re-upload — it reuses what `mvp-e2e.sh` left.
+- **Two private buses, like the `fprint_gate_session` test.** The keyring runs on a `dbus-daemon
+  --session` bus; the `python-dbusmock` fprintd mock runs under its own `setsid dbus-run-session` (so
+  the whole group is reapable via `kill -- -PGID`). The helper's debug build honours
+  `TESS_FPRINT_BUS_ADDRESS`/`TESS_FPRINT_TIMEOUT_MS` to reach the mock; a release `.deb` ignores them,
+  the front gate degrades to the PIN, and the keyring still unlocks — so the assertion is the unlock
+  outcome, never the fingerprint log line.
+- **Sudo-for-TPM forwards the session/keyring env.** Reusing `hw-exit-test.sh`'s `type -P`/sanitized-
+  PATH idea, the `PRIV` prefix is `sudo --preserve-env=HOME,...,DBUS_SESSION_BUS_ADDRESS,XDG_*,
+  TESS_FPRINT_* env PATH=<abs-only>` so root reuses the login user's bus, keyring state and the mock
+  bus. The build runs as the user (no sudo) so only the small `tess` blob is root-owned; the `EXIT`
+  trap chowns the state dir back and reaps dbus/keyring/mock.
+- **`secret-tool lookup` is `timeout`-bounded.** Looking up the probe while still locked would try to
+  spawn a prompt on a headless bus and hang; `timeout 20 secret-tool lookup ...` makes a failed
+  unlock surface as FAIL, not a hang. The probe is seeded while unlocked, before the explicit
+  D-Bus `Secret.Service.Lock`.
