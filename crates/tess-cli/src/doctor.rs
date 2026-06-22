@@ -69,10 +69,11 @@ impl Probe {
         self
     }
 
-    /// Mark this probe required only when `yes` — used by probes that are informational by default
-    /// but mandatory in post-install verification mode.
+    /// Mark this probe required when `yes` — used by probes that are informational by default but
+    /// mandatory in post-install verification mode. Monotonic: it only ever *promotes* (never clears
+    /// a prior `required`), so call order can't silently downgrade a required probe.
     fn required_if(mut self, yes: bool) -> Self {
-        self.required = yes;
+        self.required |= yes;
         self
     }
 
@@ -275,11 +276,12 @@ pub fn run_probes(post_install: bool) -> Vec<Probe> {
     ]
 }
 
-/// Probe the TPM resource manager. When the device node is present this additionally opens a
-/// read-only ESAPI context to report the TPM version and DA-lockout state. The capability read is
-/// best-effort: any failure (no runtime TCTI library, a busy or refusing TPM) downgrades to a
-/// "detail unavailable" note carrying the reason — the node's presence alone still satisfies the
-/// verdict, and nothing here is ever a secret or a mutation.
+/// Probe the TPM resource manager. Readiness requires not just that `/dev/tpmrm0` exists but that
+/// an ESAPI context can actually be *opened* against it — a present-but-unopenable node (missing
+/// TCTI library, permission denied) means `tess enroll`/`unlock` would fail too, so it reports
+/// MISSING. Once opened, the TPM version and DA-lockout state are read best-effort for detail only:
+/// a busy/refusing read downgrades to "detail unavailable" without failing the verdict. Read-only
+/// throughout — no authorization, no session, no mutation, never a secret.
 fn probe_tpm_rm() -> Probe {
     if !Path::new(TPM_RM_PATH).exists() {
         return Probe::new(
@@ -290,23 +292,32 @@ fn probe_tpm_rm() -> Probe {
         .required()
         .with_hint("no TPM 2.0 resource manager — this host has no usable TPM, or the kernel TPM driver is not loaded");
     }
-    let detail = match read_tpm_caps() {
+    let tcti = TctiConfig::DeviceManager {
+        path: TPM_RM_PATH.to_string(),
+    };
+    let mut context = match tcti.open_context() {
+        Ok(context) => context,
+        Err(reason) => {
+            return Probe::new(
+                TPM_RM_PROBE_NAME,
+                ProbeStatus::Missing,
+                &format!("present but cannot be opened: {reason}"),
+            )
+            .required()
+            .with_hint("ensure the invoking user can open /dev/tpmrm0 (TPM access permissions) and a TPM2 TCTI library is installed");
+        }
+    };
+    let caps = read_tpm_version(&mut context)
+        .and_then(|version| read_lockout_state(&mut context).map(|lockout| (version, lockout)));
+    let detail = match caps {
         Ok((version, lockout)) => format_tpm_detail(
             Some(&version.to_string()),
             Some(&lockout_summary(&lockout)),
             None,
         ),
-        Err(reason) => format_tpm_detail(None, None, Some(&reason)),
+        Err(reason) => format_tpm_detail(None, None, Some(&reason.to_string())),
     };
     Probe::new(TPM_RM_PROBE_NAME, ProbeStatus::Ok, &detail).required()
-}
-
-/// Best-effort read-only capability read over the device TCTI: TPM version + DA-lockout state. The
-/// error is rendered to a string so the caller can fold it into the probe detail rather than panic.
-fn read_tpm_caps() -> Result<(TpmVersion, LockoutState), String> {
-    read_caps(&TctiConfig::DeviceManager {
-        path: TPM_RM_PATH.to_string(),
-    })
 }
 
 /// Open a read-only ESAPI context against `tcti` and read the TPM version and DA-lockout state. No
@@ -418,6 +429,22 @@ mod tests {
         let verdict = overall_verdict(&probes);
         assert!(verdict.contains("NOT READY"));
         assert!(verdict.contains("→ tess enrollment: run `tess enroll`"));
+    }
+
+    #[test]
+    fn required_if_is_monotonic() {
+        // Promotion sticks; a later required_if(false) must not clear it.
+        let p = Probe::new("x", ProbeStatus::Ok, "d")
+            .required()
+            .required_if(false);
+        assert!(
+            p.required,
+            "required_if(false) must not downgrade a required probe"
+        );
+        let p = Probe::new("x", ProbeStatus::Ok, "d").required_if(true);
+        assert!(p.required);
+        let p = Probe::new("x", ProbeStatus::Ok, "d").required_if(false);
+        assert!(!p.required);
     }
 
     #[test]

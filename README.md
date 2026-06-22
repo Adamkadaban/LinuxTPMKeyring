@@ -220,7 +220,10 @@ verdict: READY — 1 optional component(s) missing.
 ```
 
 By default only the TPM resource manager is required for the core sealing guarantee; the keyring
-daemon, fprintd, and enrollment state are reported but never fail the verdict. Run
+daemon, fprintd, and enrollment state are reported but never fail the verdict. The TPM check
+requires the resource manager to be **openable** (not merely present) — a present-but-unopenable
+node (missing TCTI library, permission denied) reports MISSING, since enroll/unlock would fail too;
+the version/DA-lockout detail is read best-effort and never fails the verdict on its own. Run
 `tess doctor --post-install` after installing and enrolling to additionally **require** a Secret
 Service provider binary on PATH and a completed, parseable enrollment — this is the post-install
 verification the Azure acceptance harness asserts. (The keyring check looks for a provider binary,
