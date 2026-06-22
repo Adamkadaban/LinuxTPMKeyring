@@ -4,6 +4,7 @@
 use anyhow::{Context, Result};
 use tess_core::SecretBytes;
 use tess_keyring::SecretServiceBackend;
+use zeroize::Zeroizing;
 
 use super::sealer::TpmSealer;
 use super::{enroll, Paths};
@@ -12,19 +13,22 @@ use crate::tcti;
 /// Run `tess enroll`. `pin` comes from `--pin`; when absent it is prompted without echo. The current
 /// keyring password is always prompted without echo.
 pub fn run(pin: Option<String>) -> Result<()> {
-    let pin = match pin {
-        Some(p) => SecretBytes::new(p.into_bytes()),
-        None => SecretBytes::new(
-            rpassword::prompt_password("PIN to gate the TPM-sealed key: ")
-                .context("read PIN")?
-                .into_bytes(),
-        ),
+    // Keep each secret in a Zeroizing buffer until it reaches the zeroizing SecretBytes.
+    let pin = {
+        let entered = Zeroizing::new(match pin {
+            Some(p) => p,
+            None => rpassword::prompt_password("PIN to gate the TPM-sealed key: ")
+                .context("read PIN")?,
+        });
+        SecretBytes::new(entered.as_bytes().to_vec())
     };
-    let old = SecretBytes::new(
-        rpassword::prompt_password("Current keyring password: ")
-            .context("read current keyring password")?
-            .into_bytes(),
-    );
+    let old = {
+        let entered = Zeroizing::new(
+            rpassword::prompt_password("Current keyring password: ")
+                .context("read current keyring password")?,
+        );
+        SecretBytes::new(entered.as_bytes().to_vec())
+    };
 
     let paths = Paths::for_user().context("resolve tess data directory")?;
     let mut sealer = TpmSealer::open(&tcti::from_env()).context("open the TPM")?;

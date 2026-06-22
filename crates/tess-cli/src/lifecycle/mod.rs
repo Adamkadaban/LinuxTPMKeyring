@@ -1,6 +1,6 @@
 //! The post-enrollment lifecycle subcommands — `recover`, `unenroll`, `status`, `unlock`, `test` —
-//! built on the same seal/unseal, recovery (ADR-0009), and in-place rekey building blocks the
-//! enrollment transaction uses. No cryptography is reimplemented here: this module composes
+//! built on the same seal/unseal, recovery, and in-place rekey building blocks the enrollment
+//! transaction uses. No cryptography is reimplemented here: this module composes
 //! [`crate::enroll::recovery`], [`crate::enroll::sealer`], and `tess_tpm::persist`/`unseal` into the
 //! remaining user-facing flows, reusing the credential-first rollback discipline for the one other
 //! destructive path (`unenroll`).
