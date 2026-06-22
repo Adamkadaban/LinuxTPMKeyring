@@ -176,6 +176,40 @@ build_deb() {
 	deb=$(cargo deb -p tess-cli --no-build)
 }
 
+# Add the human running this installer to the `tss` group so they can read/write /dev/tpmrm0 and run
+# `tess enroll`/`unlock`/`status`. The packaged udev rule also tags the device uaccess (the active
+# seat user gets access automatically), but the group add covers headless/SSH and is harmless
+# otherwise. The group change only takes effect in a NEW login session — surface that loudly. Pick
+# the real user, not root: $SUDO_USER when invoked via sudo, else the current user when the script is
+# run unprivileged (it sudo's only the individual root operations).
+grant_tpm_access() {
+	local user
+	user=${SUDO_USER:-}
+	if [ -z "$user" ] && [ "$(id -u)" -ne 0 ]; then
+		user=$(id -un)
+	fi
+	if [ -z "$user" ] || [ "$user" = "root" ]; then
+		cat >&2 <<'EOF'
+==> note: could not determine a non-root login user to grant TPM access.
+    Add your login user to the tss group manually, then log out and back in:
+      sudo usermod -aG tss <your-login-user>
+EOF
+		return
+	fi
+	# The package postinst creates the group; create defensively for a prebuilt --deb that predates it.
+	getent group tss >/dev/null 2>&1 || run_root groupadd --system tss
+	if id -nG "$user" 2>/dev/null | tr ' ' '\n' | grep -qx tss; then
+		echo "==> $user is already in the tss group (TPM access already granted)"
+		return
+	fi
+	echo "==> adding $user to the tss group for TPM device access"
+	run_root usermod -aG tss "$user"
+	cat <<EOF
+==> $user was added to the 'tss' group. Group membership applies only to NEW login
+    sessions — log out and back in (or reboot) before running 'tess enroll'.
+EOF
+}
+
 install_deb() {
 	local path=$1
 	# A relative path is either the cargo-deb output (relative to repo_root) or a caller-provided
@@ -214,11 +248,14 @@ fi
 
 install_deb "$deb"
 
+grant_tpm_access
+
 if [ "$run_pam" -eq 1 ]; then
 	echo "==> wiring the fail-open PAM session module via tess install"
 	run_root tess install --module "$pam_module"
 	cat <<'EOF'
-==> done. Next, as your login user on this machine:
+==> done. Next, as your login user on this machine (in a fresh login session if you were just
+    added to the tss group above):
   tess enroll                 # set a PIN, seal a random key, rekey your keyring (transactional)
 Undo the PAM wiring at any time with:  sudo tess install --uninstall
 EOF
@@ -226,6 +263,6 @@ else
 	cat <<EOF
 ==> package installed; PAM wiring skipped (--no-pam).
   sudo tess install --module $pam_module   # wire the fail-open PAM session module when ready
-  tess enroll                                                       # then enroll
+  tess enroll                                                       # then enroll (fresh session if just added to tss)
 EOF
 fi

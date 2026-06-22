@@ -47,7 +47,7 @@ isolation, which doesn't exist on commodity hardware. This is the same boundary 
 | Component | Supported | Notes |
 |---|---|---|
 | OS | **Debian 13** (trixie) | The reference target. Other systemd + PAM distros are likely workable but untested. |
-| TPM | **TPM 2.0** — discrete/firmware, or an **Azure Gen2 Trusted-Launch vTPM** | Operations go through the kernel TPM **resource manager** `/dev/tpmrm0` (required by enroll/unlock and `tess doctor`'s verdict). Debian 13 exposes it by default for a TPM 2.0. The MVP policy binds the PIN authValue only (no PCR binding), so Azure's differing vTPM PCRs are fine. |
+| TPM | **TPM 2.0** — discrete/firmware, or an **Azure Gen2 Trusted-Launch vTPM** | Operations go through the kernel TPM **resource manager** `/dev/tpmrm0` (required by enroll/unlock and `tess doctor`'s verdict). Debian 13 exposes it by default for a TPM 2.0; the active seat user gets access automatically (udev `uaccess`), with mode `0660` + group `tss` as a headless/SSH fallback (the installer arranges both — see [Install](#install)). The MVP policy binds the PIN authValue only (no PCR binding), so Azure's differing vTPM PCRs are fine. |
 | Keyring | **GNOME** login keyring (freedesktop **Secret Service**, `org.freedesktop.secrets`) | Reference daemon. KWallet/KeePassXC expose the same API, so lock-state works, but headless rekey/unlock on non-GNOME daemons is future work. |
 | Login stack | **PAM** session phase (`pam_tess.so`, fail-open `optional`) | Wired by `tess install`; never blocks or fails a login. |
 | Fingerprint | **fprintd** (`net.reactivated.Fprint`), consumed unmodified | Optional front gate (opt-in); convenience only. |
@@ -75,6 +75,25 @@ module. It is idempotent. Flags: `--deb PATH` installs a prebuilt package instea
 `sudo tess install --module /usr/lib/x86_64-linux-gnu/security/pam_tess.so`; `--yes` runs apt
 non-interactively (`-y` plus `DEBIAN_FRONTEND=noninteractive`).
 
+### TPM device access (the `tss` group)
+
+`tess enroll`/`unlock`/`status` run **as your login user** (they need your D-Bus session bus to reach
+the keyring) and talk to the TPM resource manager at `/dev/tpmrm0`. On a normal graphical/console
+login the **active seat user gets access automatically** (the packaged udev rule tags the device
+`uaccess`), so there's nothing to do. Running the commands under `sudo` does *not* work — a session
+bus authorizes only its owner UID, so root is refused.
+
+The installer ships a udev rule (`/usr/lib/udev/rules.d/70-tess-tpm.rules`) that tags `/dev/tpm*` and
+`/dev/tpmrm*` `uaccess` (seat user) and also sets mode `0660` with group `tss` as a fallback for
+**headless/SSH or multi-user** setups; `deploy/install.sh` additionally adds the user who ran it to
+the `tss` group. If you need the group fallback, note **group membership only applies to a new login
+session** — log out and back in (or reboot). When you install the `.deb` directly on a headless box
+(not via `deploy/install.sh`), add yourself to `tss` manually:
+
+```sh
+sudo usermod -aG tss "$USER"   # then log out and back in
+```
+
 To build the package by hand:
 
 ```sh
@@ -83,8 +102,11 @@ cargo deb -p tess-cli --no-build           # -> target/debian/tess_<ver>_amd64.d
 ```
 
 The package installs `tess` to `/usr/bin/tess`, the PAM helper to `/usr/lib/tess/tess-pam-helper`
-(the path the module resolves at runtime), and `pam_tess.so` to the Debian PAM module directory
-(`/usr/lib/x86_64-linux-gnu/security/`). It **does not** edit `/etc/pam.d` — PAM wiring is always the
+(the path the module resolves at runtime), `pam_tess.so` to the Debian PAM module directory
+(`/usr/lib/x86_64-linux-gnu/security/`), and the TPM-access udev rule to
+`/usr/lib/udev/rules.d/70-tess-tpm.rules`. Its `postinst` creates the `tss` group if missing, reloads
+udev, and prints the `usermod -aG tss <user>` step (a package can't know your seat user). It **does
+not** edit `/etc/pam.d` — PAM wiring is always the
 explicit, fail-open `tess install`, so installing the package can never lock you out. Because the
 packaged `tess` lands in `/usr/bin` with no module beside it (`tess install` looks next to the
 binary by default), point it at the installed module with

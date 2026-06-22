@@ -7,14 +7,41 @@ set -e
 
 case "$1" in
 configure)
+	# TPM device access for `tess enroll`/`unlock`/`status`: the packaged udev rule tags the device
+	# with uaccess (the active seat user gets an ACL automatically on login — no group needed) and
+	# falls back to MODE 0660 + GROUP tss for headless/SSH/service users. Create the `tss` group
+	# defensively so the rule's GROUP="tss" always resolves (tpm2-tss usually creates it already).
+	getent group tss >/dev/null 2>&1 || groupadd --system tss
+
+	# Apply the packaged udev rule to the already-present TPM device without a reboot. Skip in a
+	# chroot/container with no running udev (e.g. an image build) — there the rule applies on first
+	# boot. tpm0 lives in the `tpm` subsystem and tpmrm0 in the separate `tpmrm` subsystem, so trigger
+	# each on its own (one unambiguous --subsystem-match per call). Surface, never swallow, a failure:
+	# the rule is in place and a reboot will apply it.
+	if [ -d /run/udev ] && command -v udevadm >/dev/null 2>&1; then
+		if ! { udevadm control --reload-rules &&
+			udevadm trigger --subsystem-match=tpm &&
+			udevadm trigger --subsystem-match=tpmrm; }; then
+			echo "tess: warning: udev reload failed; the TPM access rule applies after reboot." >&2
+		fi
+	fi
+
+	# A package cannot reliably know which human will run tess (install front-ends drop $SUDO_USER,
+	# and a machine may have several login users), so we do not guess and add a user here. Instead we
+	# print the one command the admin must run. `deploy/install.sh` adds the invoking user for you.
 	cat <<'EOF'
 tess installed. PAM wiring is NOT applied automatically, so installing the package can never
 lock you out of login. To finish setup:
 
+  Grant TPM device access. On a normal graphical/console login, the active seat user already
+  has access automatically (udev uaccess) — nothing to do. For a headless/SSH or multi-user
+  setup, add that user to the `tss` group and have them re-login so it takes effect:
+    sudo usermod -aG tss <your-login-user>
+
   As root — wire pam_tess.so into the session stack (idempotent, fail-open):
     sudo tess install --module /usr/lib/x86_64-linux-gnu/security/pam_tess.so
 
-  As your login user — set a PIN, seal a random key, rekey your keyring (transactional):
+  As your login user — set a PIN, seal a random key, rekey your keyring:
     tess enroll
 
 Undo the PAM wiring at any time with:  sudo tess install --uninstall
