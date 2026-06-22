@@ -403,9 +403,22 @@ Phase 4.
 | `deploy/azure/provision.sh` | One-command bring-up: creates the resource group and deploys `main.bicep` via `az deployment group create`; prints the `ssh` command. Region/size/name/key are env-overridable. |
 | `deploy/azure/deallocate.sh` | Stops (deallocates) the VM to halt compute billing without deleting it. |
 | `deploy/azure/teardown.sh` | Lists the tagged resources, then (after explicit confirmation) deletes the whole resource group. |
-| `deploy/azure/hw-exit-test.sh` | Runs the Phase 1 hardware exit test against an **already-provisioned** VM: tars the workspace over SSH, installs the toolchain + tpm2-tss deps, runs `cargo test -p tess-tpm --features hw` against `/dev/tpmrm0`, then `tess doctor`. Provisions/tears down nothing and runs no `az` — lifecycle stays with the orchestrator. Inputs: `TESS_HW_SSH`, `TESS_SSH_KEY`. |
+| `deploy/azure/hw-exit-test.sh` | Runs the Phase 1 hardware exit test against an **already-provisioned** VM: tars the workspace over SSH, installs the toolchain + tpm2-tss deps, runs `cargo test -p tess-tpm --features hw` against `/dev/tpmrm0`, then `tess doctor`. Provisions/tears down nothing and runs no `az` — lifecycle stays with the orchestrator. Inputs: `TESS_HW_SSH`, `TESS_SSH_KEY`, `TESS_HW_DIR`. |
 | `deploy/install.sh` | One-command Debian 13 install: build (or take `--deb`) the `.deb`, install it with its runtime dependencies, then wire the fail-open PAM module via `tess install`. Idempotent; never edits `/etc/pam.d` directly. |
 | `deploy/debian/postinst` | Package post-install script. Prints the next steps (`tess install`, `tess enroll`); deliberately does **not** touch `/etc/pam.d`, so installing the package can never lock a user out. |
+| `deploy/azure/mvp-e2e.sh` | Phase 4 MVP acceptance harness against an **already-provisioned** VM: tars the workspace over SSH and runs the full demo on the guest — install deps, build tess (or install a `.deb` if present), `tess enroll` (a random key sealed to the real vTPM under a PIN), a scripted virtual-fprint + PIN session through the real `tess-pam-helper`, then asserts the login keyring is UNLOCKED with no password (`tess status` + a `secret-tool` probe). Provisions/tears down nothing, runs no `az`. Inputs: `TESS_HW_SSH`, `TESS_SSH_KEY`, `TESS_HW_DIR`. |
+| `deploy/azure/reboot-persistence.sh` | Run after `mvp-e2e.sh` against the same VM: reboots the guest, waits (bounded) for it to return, then re-runs only the session unlock over the *persisted* (locked) login keyring — proving the sealed key survives a reboot. The PIN-only policy (no PCR binding) means no reboot brittleness. Same inputs as `mvp-e2e.sh`. |
+| `deploy/azure/mvp-e2e-remote.sh` | The VM-side body the two drivers pipe over SSH (`bash -s -- full` / `bash -s -- reboot`). Reuses `hw-exit-test.sh`'s sudo + sanitized-PATH handling: the build runs **unprivileged**, and only the TPM-touching `tess` / `tess-pam-helper` invocations (enroll, status, the session unseal) are wrapped in sudo, and only when the login user can't access `/dev/tpmrm0` directly. Reaps every spawned process (private `dbus-daemon`, `gnome-keyring-daemon`, the `python-dbusmock` fprintd mock) in an `EXIT` trap. Never run directly on the host. |
+
+**Orchestrator invocation.** The wave-3 acceptance step provisions a Trusted-Launch VM
+(`provision.sh`), then runs, against that VM, `TESS_HW_SSH=tess@<ip> deploy/azure/mvp-e2e.sh`
+followed by `deploy/azure/reboot-persistence.sh` (same env). A zero exit from both is the MVP demo
+PASS; the orchestrator then tears down (`teardown.sh`). The harness scripts themselves never call
+`az`, never provision, and never run against the developer host — every seal/unseal/keyring action
+happens on the Azure guest. The session is driven through `tess-pam-helper` directly (the same path
+`pam_tess.so` spawns); the helper's debug build wires the scripted fprintd mock bus, while a release
+`.deb` build degrades the fingerprint front gate to the PIN — either way the keyring unlocks, since
+the PIN authValue is the real gate and the fingerprint is host-trusted convenience.
 
 The Azure vTPM is the only real TPM 2.0 acceptance gate; its PCR values differ from bare metal, so
 the MVP TPM policy binds the PIN authValue only (no PCR binding). Cost discipline — deallocate when
