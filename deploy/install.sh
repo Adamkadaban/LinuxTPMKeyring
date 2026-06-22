@@ -35,7 +35,7 @@ Options:
                    DEBIAN_FRONTEND=noninteractive so it never blocks on a prompt).
   -h, --help       Show this help and exit.
 
-With no --deb, the script builds the workspace in release mode and runs `cargo deb` to produce the
+With no --deb, the script builds tess-cli and tess-pam in release mode and runs `cargo deb` to produce the
 .deb, then installs it (pulling in runtime dependencies). apt installs Recommends by default, so
 fprintd comes along unless you pass --no-recommends. Unless --no-pam is given it runs `tess install`
 to wire the fail-open PAM session module. Re-running is safe: the apt install and `tess install` are

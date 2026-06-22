@@ -78,7 +78,7 @@ non-interactively (`-y` plus `DEBIAN_FRONTEND=noninteractive`).
 To build the package by hand:
 
 ```sh
-cargo build --release --workspace          # builds tess, tess-pam-helper, and libpam_tess.so
+cargo build --release -p tess-cli -p tess-pam   # builds tess, tess-pam-helper, and libpam_tess.so
 cargo deb -p tess-cli --no-build           # -> target/debian/tess_<ver>_amd64.deb
 ```
 
@@ -87,8 +87,8 @@ The package installs `tess` to `/usr/bin/tess`, the PAM helper to `/usr/lib/tess
 (`/usr/lib/x86_64-linux-gnu/security/`). It **does not** edit `/etc/pam.d` — PAM wiring is always the
 explicit, fail-open `tess install`, so installing the package can never lock you out. Because the
 packaged `tess` lands in `/usr/bin` with no module beside it (`tess install` looks next to the
-binary by default), point it at the installed module with `--module
-/usr/lib/x86_64-linux-gnu/security/pam_tess.so` — which `deploy/install.sh` does for you. Runtime
+binary by default), point it at the installed module with
+`--module /usr/lib/x86_64-linux-gnu/security/pam_tess.so` — which `deploy/install.sh` does for you. Runtime
 dependencies (`gnome-keyring`, the tpm2-tss libraries) are pulled in automatically. `fprintd` (the
 optional fingerprint front gate; tess runs PIN-only without it) is a Recommends — apt installs it by
 default, but it is removable and you can skip it with `deploy/install.sh --no-recommends` (or
