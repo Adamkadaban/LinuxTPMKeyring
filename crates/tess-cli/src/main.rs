@@ -2,6 +2,7 @@
 
 use clap::{Parser, Subcommand};
 
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use tess_cli::{doctor, enroll, install, lifecycle};
@@ -86,8 +87,11 @@ fn main() -> anyhow::Result<()> {
         Command::Unlock { pin } => lifecycle::cli::run_unlock(pin)?,
         Command::Test => lifecycle::cli::run_test()?,
         Command::Doctor { post_install } => {
-            if !doctor::run(post_install) {
-                // read-only probes have already dropped any TPM context; nothing live to unwind.
+            let ready = doctor::run(post_install);
+            // `process::exit` skips normal shutdown; flush explicitly so a piped/captured readiness
+            // report is never truncated.
+            let _ = std::io::stdout().flush();
+            if !ready {
                 std::process::exit(1);
             }
         }
