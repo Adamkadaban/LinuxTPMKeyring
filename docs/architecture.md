@@ -74,11 +74,49 @@ in the clear:
   (mapped to `tess_core::Error::Auth`), not a generic TPM fault, so callers can react. All transient
   handles (sessions, the loaded object) are flushed regardless of outcome.
 
+## Persistence (`tess-tpm`)
+
+A `SealedObject` lives only in memory; enrollment must persist it so a later boot can reload and
+unseal. The blobs are stored inside the versioned `tess_core::Metadata`, never in a bespoke format:
+
+- `to_metadata(sealed)` marshals the structured `TPMT_PUBLIC` to its canonical TPM wire form and
+  takes the `TPM2B_PRIVATE` buffer verbatim, base64-encoding each into `Metadata.sealed_public` /
+  `sealed_private` with `policy = PinAuthValue` and `version = METADATA_VERSION`.
+- `from_metadata(metadata)` validates the schema version, base64-decodes both blobs, unmarshals the
+  public area and rebuilds the private buffer, yielding a `SealedObject` ready for `unseal` under the
+  same TPM's deterministic primary.
+- `save(metadata, path)` writes pretty JSON atomically (temp sibling + rename, mode `0600`); `load`
+  reads it back and re-checks the version.
+
+**No secret or secret-hash ever reaches disk** — only the public area, the (TPM-encrypted, primary-
+bound) private blob, and a policy descriptor. The blobs are inert without the TPM that created the
+primary and the PIN that gates the object. A reload survives a simulated reboot because the ECC
+primary is re-derived deterministically from the owner seed.
+
+## DA-lockout handling (`tess-tpm`)
+
+The sealed object is dictionary-attack protected, so wrong PINs accrue against the TPM's global
+lockout counter and eventually trip a hard lockout (anti-hammering — the at-rest defence's teeth).
+
+- `read_lockout_state(context)` reads `TPM2_PT_LOCKOUT_COUNTER` / `MAX_AUTH_FAIL` /
+  `LOCKOUT_INTERVAL` via `TPM2_GetCapability` into a `LockoutState { counter, max_auth_fail,
+  interval }` with `is_locked_out()` / `remaining_attempts()` helpers (read-only, no auth).
+- A TPM lockout response code maps to a distinct `tess_tpm::Error::Lockout` →
+  `tess_core::Error::Lockout`, so callers tell "locked out" apart from "wrong PIN" (`Error::Auth`)
+  and from a TPM fault. On a hard lockout even `TPM2_Load` of the object is refused; that path is
+  mapped too.
+- `pin_holder_recover(context, primary, sealed, pin)` is the PIN-holder recovery path: it refuses
+  when already hard-locked and otherwise proves the PIN with one successful unseal. It does **not**
+  reset the DA counter; the name `reset_lockout` is reserved for the privileged, non-destructive
+  `TPM2_DictionaryAttackLockReset` — deferred because the pinned `tss-esapi` exposes no safe wrapper
+  and `unsafe` FFI is disallowed in this crate (see ADR-0008, tracked in #16).
+
 Two crate features gate the transports that need a TPM:
 
 ```sh
 cargo test -p tess-tpm --features sim   # starts swtpm, opens an ESAPI context, creates the ECC
-                                        # primary, starts the salted session, tears swtpm down
+                                        # primary, seals/unseals, persists + reloads, exercises DA
+                                        # lockout, tears swtpm down
 ```
 
 `sim` exercises swtpm; `hw` targets `/dev/tpmrm0` and is validated only on the Azure vTPM, never on

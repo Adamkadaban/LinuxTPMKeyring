@@ -60,6 +60,12 @@ pub enum Error {
     #[error("failed to unseal the key: {0}")]
     Unseal(String),
 
+    #[error("failed to read a TPM capability: {0}")]
+    Capability(String),
+
+    #[error("TPM is in dictionary-attack lockout")]
+    Lockout,
+
     #[error("failed to flush a transient TPM handle: {0}")]
     Flush(String),
 
@@ -79,6 +85,13 @@ impl From<Error> for tess_core::Error {
             Error::WrongPin | Error::PinTooLong { .. } | Error::PinEmpty => {
                 tess_core::Error::Auth(e.to_string())
             }
+            // DA lockout is neither a wrong PIN nor a hardware fault: surface it distinctly so the
+            // enrollment/recovery layers can prompt for a lockout reset or recovery secret rather
+            // than retrying a PIN that will be rejected regardless.
+            Error::Lockout => tess_core::Error::Lockout(
+                "too many failed PIN attempts; locked out until the lockout interval elapses"
+                    .to_string(),
+            ),
             other => tess_core::Error::Tpm(other.to_string()),
         }
     }

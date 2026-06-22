@@ -22,6 +22,9 @@ pub enum Error {
     #[error("authentication gate error: {0}")]
     Auth(String),
 
+    #[error("TPM is in dictionary-attack lockout: {0}")]
+    Lockout(String),
+
     #[error("metadata error: {0}")]
     Metadata(String),
 

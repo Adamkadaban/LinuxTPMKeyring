@@ -509,7 +509,9 @@ dependencies = [
 name = "tess-tpm"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "getrandom",
+ "serde_json",
  "tess-core",
  "thiserror",
  "tss-esapi",
