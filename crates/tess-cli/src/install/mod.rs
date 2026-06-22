@@ -202,8 +202,14 @@ pub fn uninstall(plan: &InstallPlan) -> Result<UninstallReport> {
     };
 
     let backup = plan.backup_file();
-    let removed_backup =
-        remove_if_exists(&backup).with_context(|| format!("remove backup {}", backup.display()))?;
+    // Only remove the backup when we actually restored from a removed block. If no block was present
+    // (the service file is missing, or the markers were hand-edited away), the backup may be the
+    // only remaining rollback artifact, so deleting it would be unsafe — keep it.
+    let removed_backup = if removed_block {
+        remove_if_exists(&backup).with_context(|| format!("remove backup {}", backup.display()))?
+    } else {
+        false
+    };
 
     Ok(UninstallReport {
         service_file: plan.service_file.clone(),

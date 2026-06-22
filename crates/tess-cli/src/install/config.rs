@@ -508,11 +508,21 @@ session optional     pam_gnome_keyring.so auto_start
 
     #[test]
     fn dash_prefixed_tess_module_is_still_checked() {
-        // PAM's `-module` prefix (don't log if missing) must not let an unsafe tess line bypass the
-        // fail-open check.
+        // Defensive: even a `-` directly on the module token (not standard — Linux-PAM's `-` goes on
+        // the type) is stripped before matching, so it can't dodge the fail-open check.
         let parsed = parse_line("auth requisite -pam_tess.so").unwrap();
         assert!(parsed.module_is(MODULE_FILE));
         let err = validate_stack("auth requisite -pam_tess.so\n").unwrap_err();
+        assert!(matches!(err, ValidationError::NotFailOpen { line: 1, .. }));
+    }
+
+    #[test]
+    fn dash_prefixed_type_is_valid_pam_syntax() {
+        // Linux-PAM allows a leading `-` on the type (man 5 pam.conf): suppress the "module missing"
+        // log for an optional module. Such a line is well-formed and still subject to the tess
+        // fail-open check.
+        validate_stack("-session optional pam_tess.so\n").unwrap();
+        let err = validate_stack("-session required pam_tess.so\n").unwrap_err();
         assert!(matches!(err, ValidationError::NotFailOpen { line: 1, .. }));
     }
 }
