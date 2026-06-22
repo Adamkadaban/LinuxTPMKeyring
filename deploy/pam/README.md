@@ -44,6 +44,8 @@ session optional     pam_umask.so
 session required     pam_unix.so
 session optional     pam_gnome_keyring.so auto_start
 # >>> tess >>>
+# Managed by `tess install` — remove with `tess install --uninstall`. `optional` means a tess
+# failure is ignored and login proceeds with the keyring left locked; it can never lock you out.
 session optional pam_tess.so
 # <<< tess <<<
 ```

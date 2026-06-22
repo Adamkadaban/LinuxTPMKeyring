@@ -73,6 +73,8 @@ tess install --uninstall   # remove the wiring and module, restoring the origina
 
    ```pam
    # >>> tess >>>
+   # Managed by `tess install` — remove with `tess install --uninstall`. `optional` means a tess
+   # failure is ignored and login proceeds with the keyring left locked; it can never lock you out.
    session optional pam_tess.so
    # <<< tess <<<
    ```

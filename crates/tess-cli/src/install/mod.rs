@@ -2,13 +2,15 @@
 //!
 //! This wires `pam_tess.so` into a `pam.d` service stack and installs the module into the system
 //! PAM module directory, idempotently and fail-safe. The string-only edit and validation logic lives
-//! in [`config`]; this module adds the side effects: detect the module directory, back up the
-//! original service file *before* editing, validate the candidate stack, write it atomically, and
-//! copy the module. Uninstall reverses all of it and is safe to run when nothing is installed.
+//! in [`config`]; this module adds the side effects: detect the module directory, validate the
+//! candidate stack, copy the module, back up the original service file, then atomically write the
+//! edited stack as the final commit. Uninstall reverses all of it and is safe to run when nothing is
+//! installed.
 //!
-//! Safety posture: the edit is only committed after [`config::validate_stack`] confirms the result
-//! is well-formed and the tess line is fail-open. If validation fails the original file is left
-//! untouched (it is never the partially-written temp), and a backup always exists to restore from.
+//! Safety posture: the stack is only written after [`config::validate_stack`] confirms the result is
+//! well-formed and the tess line is fail-open, and after the module is in place — so a failure before
+//! the final atomic write leaves the original file untouched (it is never the partially-written
+//! temp), and a backup always exists to restore from.
 
 pub mod cli;
 pub mod config;
