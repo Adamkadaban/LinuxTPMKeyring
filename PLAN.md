@@ -353,7 +353,7 @@ audit`/`cargo deny`/`cargo vet` gate every PR; `cargo +nightly -Z minimal-versio
 - [x] `fuzz_tpm_blob` — the sealed pub/priv blob loader before it crosses into `tss-esapi` FFI
 - [x] `fuzz_dbus_reply` — our interpretation of Secret Service / fprintd replies
 - [x] Seeded corpora (structurally-valid; real sealed-blob capture is swtpm-CI-only, never on host); short-in-PR / long-nightly CI
-- [x] `cargo vet` supply-chain audit set imported; `tess-tpm`/`secret-service` manually certified
+- [x] `cargo vet` supply-chain audit set imported (Mozilla/Google/etc.); exemptions bootstrap — full `safe-to-deploy` certification of `tess-esapi`/`secret-service` deferred (still `audit`/`deny`-gated)
 - [x] `cargo +nightly -Z minimal-versions` CI job (prove declared lower bounds build)
 - [x] `auditd` tamper-evidence config in packaging (documented as *audit*, not a security boundary)
 

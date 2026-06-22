@@ -671,7 +671,7 @@ Gotchas worth remembering:
 **Resolution:** `cargo vet init` bootstrap-exempted all 175 deps; importing Mozilla/Google/
 bytecodealliance/embark audit sets (`--locked` against `imports.lock`) fully-audits 18, leaving 157
 exemptions (the accepted MVP state). New `vet` + `minimal-versions` jobs in `test.yml`; auditd rules
-ship in the `.deb` at `/usr/share/tess/auditd/tess.rules`. `supply-chain/config.toml:6` ·
+ship in the `.deb` at `/usr/share/tess/auditd/tess.rules`. `supply-chain/audits.toml` ·
 `.github/workflows/test.yml` · `deploy/auditd/tess.rules:1` · #52
 
 Gotchas worth remembering:

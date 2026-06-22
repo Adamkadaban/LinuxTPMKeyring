@@ -3,6 +3,9 @@ name: test
 on:
   pull_request:
     branches: [main]
+  schedule:
+    # Nightly minimal-versions floor check (04:23 UTC); kept off the per-PR gate (nightly toolchain).
+    - cron: "23 4 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -166,6 +169,8 @@ jobs:
 
   minimal-versions:
     name: minimal-versions
+    # Nightly / on-demand only — a nightly-toolchain floor regression must not block unrelated PRs.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
