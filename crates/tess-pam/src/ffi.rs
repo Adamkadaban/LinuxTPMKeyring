@@ -114,14 +114,20 @@ pub fn get_rhost(pamh: *const pam_handle_t) -> Option<String> {
 
 /// Collect the PAM module arguments (the tokens after the module path in the PAM config line) into
 /// owned UTF-8 strings. This is the root-controlled configuration channel for the module.
-fn module_args(argc: c_int, argv: *const *const c_char) -> Vec<String> {
+///
+/// # Safety
+///
+/// `argv` must be null, or point to `argc` entries each of which is null or a valid pointer to a
+/// NUL-terminated C string that stays valid for the duration of the call — the contract PAM
+/// guarantees for the arguments passed to `pam_sm_*`.
+unsafe fn module_args(argc: c_int, argv: *const *const c_char) -> Vec<String> {
     if argv.is_null() || argc <= 0 {
         return Vec::new();
     }
-    let raw = unsafe { std::slice::from_raw_parts(argv, argc as usize) };
+    let raw = std::slice::from_raw_parts(argv, argc as usize);
     raw.iter()
         .filter(|entry| !entry.is_null())
-        .filter_map(|&entry| unsafe { CStr::from_ptr(entry) }.to_str().ok())
+        .filter_map(|&entry| CStr::from_ptr(entry).to_str().ok())
         .map(str::to_owned)
         .collect()
 }
@@ -137,7 +143,9 @@ fn run_default_gate(
     // open succeeds so login proceeds.
     let gate = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let env = GateEnv::detect(get_rhost(pamh).as_deref());
-        let args = module_args(argc, argv);
+        // SAFETY: argc/argv are the arguments PAM passed straight into the entrypoint, which it
+        // guarantees are a valid count/array of NUL-terminated C strings.
+        let args = unsafe { module_args(argc, argv) };
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         crate::run_gate(
             phase,
