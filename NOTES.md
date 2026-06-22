@@ -537,17 +537,18 @@ Doc/behavior mismatch noted (no code fix — out of this docs PR's scope):
   landing with #38, incl. the helper resolving from `/usr/lib/tess/tess-pam-helper`.
 ## 2026-06-22 — Debian packaging: cargo-deb .deb + one-command install.sh (issue #38)
 **Resolution:** `[package.metadata.deb]` in `crates/tess-cli/Cargo.toml` builds package `tess`;
-`cargo build --release --workspace && cargo deb -p tess-cli --no-build` produces
+`cargo build --release -p tess-cli -p tess-pam && cargo deb -p tess-cli --no-build` produces
 `target/debian/tess_<ver>_amd64.deb`. `deploy/install.sh` is the one-command path; `deploy/debian/postinst`
 prints next steps without touching pam.d. `crates/tess-cli/Cargo.toml` · `deploy/install.sh` ·
 `deploy/debian/postinst` · `.github/workflows/test.yml` · PR for #38.
 
 Gotchas worth remembering:
-- **`--no-build` + a prior `cargo build --release --workspace` is mandatory.** `cargo deb -p tess-cli`
+- **`--no-build` + a prior build of `tess-cli` + `tess-pam` is mandatory.** `cargo deb -p tess-cli`
   on its own only builds the `tess-cli` package, so the `tess-pam` cdylib `libpam_tess.so` (a
-  different workspace member) is absent and packaging fails. Building the whole workspace first, then
-  packaging without a rebuild, is the deterministic path used by `install.sh` and CI alike. Asset
-  paths use the special `target/release/...` prefix cargo-deb rewrites to the real target dir.
+  different workspace member) is absent and packaging fails. Build `-p tess-cli -p tess-pam` first
+  (tess-cli pulls in the other workspace libs as deps), then package without a rebuild — the
+  deterministic path used by `install.sh` and CI alike. Asset paths use the special
+  `target/release/...` prefix cargo-deb rewrites to the real target dir.
 - **Three runtime paths must match what the PAM module/installer resolve.** `tess` → `/usr/bin/tess`;
   `tess-pam-helper` → `/usr/lib/tess/tess-pam-helper` (the compiled `DEFAULT_HELPER_PATH` in
   `crates/tess-pam/src/gate.rs`); `libpam_tess.so` → `pam_tess.so` under

@@ -191,7 +191,8 @@ install_deb() {
 	}
 	echo "==> installing $path with its runtime dependencies"
 	apt_get update
-	apt_get install "${apt_args[@]}" "$path"
+	# `--` so a package path beginning with `-` can never be parsed as an apt option under root.
+	apt_get install "${apt_args[@]}" -- "$path"
 }
 
 require_debian_13
