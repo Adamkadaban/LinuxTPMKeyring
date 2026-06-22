@@ -191,9 +191,9 @@ if [ "$run_pam" -eq 1 ]; then
 	echo "==> wiring the fail-open PAM session module via tess install"
 	run_root tess install --module "$pam_module"
 	cat <<'EOF'
-==> done. Next, on this machine:
+==> done. Next, as your login user on this machine:
   tess enroll                 # set a PIN, seal a random key, rekey your keyring (transactional)
-Undo the PAM wiring at any time with:  tess install --uninstall
+Undo the PAM wiring at any time with:  sudo tess install --uninstall
 EOF
 else
 	cat <<EOF
