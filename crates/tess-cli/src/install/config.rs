@@ -86,10 +86,14 @@ fn marker_byte_span(content: &str) -> Option<(usize, usize)> {
     let mut offset = 0usize;
     for line in content.split_inclusive('\n') {
         let trimmed = line.trim_end_matches(['\n', '\r']).trim_end();
-        match begin {
-            None if trimmed == BEGIN_MARKER => begin = Some(offset),
-            Some(start) if trimmed == END_MARKER => return Some((start, offset + line.len())),
-            _ => {}
+        if trimmed == BEGIN_MARKER {
+            // Reset to the most recent BEGIN so a later END pairs with it, never with a stray
+            // earlier unmatched BEGIN — that would delete a large unintended span of the stack.
+            begin = Some(offset);
+        } else if trimmed == END_MARKER {
+            if let Some(start) = begin {
+                return Some((start, offset + line.len()));
+            }
         }
         offset += line.len();
     }
@@ -102,10 +106,12 @@ fn marker_line_indices(content: &str) -> Option<(usize, usize)> {
     let mut begin: Option<usize> = None;
     for (idx, line) in content.lines().enumerate() {
         let trimmed = line.trim_end().trim_end_matches('\r').trim_end();
-        match begin {
-            None if trimmed == BEGIN_MARKER => begin = Some(idx),
-            Some(start) if trimmed == END_MARKER => return Some((start, idx)),
-            _ => {}
+        if trimmed == BEGIN_MARKER {
+            begin = Some(idx);
+        } else if trimmed == END_MARKER {
+            if let Some(start) = begin {
+                return Some((start, idx));
+            }
         }
     }
     None
@@ -171,9 +177,11 @@ struct PamLine {
 
 impl PamLine {
     /// Whether the module path is, or ends in, `name` (so both `pam_tess.so` and an absolute
-    /// `/lib/.../pam_tess.so` match).
+    /// `/lib/.../pam_tess.so` match). A leading `-` (PAM's "don't log if the module is missing"
+    /// prefix) is stripped first, so `-pam_tess.so` still matches and can't dodge the safety check.
     fn module_is(&self, name: &str) -> bool {
-        self.module == name || self.module.rsplit('/').next() == Some(name)
+        let module = self.module.strip_prefix('-').unwrap_or(&self.module);
+        module == name || module.rsplit('/').next() == Some(name)
     }
 }
 
@@ -437,5 +445,32 @@ session optional     pam_gnome_keyring.so auto_start
     fn non_tess_required_line_is_allowed() {
         // The fail-open rule is tess-specific: a stock `required pam_unix.so` must pass validation.
         validate_stack("session required pam_unix.so\n").unwrap();
+    }
+
+    #[test]
+    fn stray_begin_marker_does_not_delete_unrelated_lines() {
+        // A real block preceded by a stray, unmatched BEGIN: removing the block must pair the END
+        // with the most recent BEGIN and leave the earlier lines intact, never deleting a big span.
+        let stray = format!(
+            "session required pam_unix.so\n{BEGIN_MARKER}\nsession required pam_deny.so\n{}",
+            add_block("session optional pam_gnome_keyring.so\n")
+        );
+        let cleaned = remove_block(&stray);
+        // The real tess block (the most recent BEGIN..END) is gone…
+        assert!(!cleaned.contains(SNIPPET_LINE));
+        // …but the unrelated lines between the stray BEGIN and the real block survive.
+        assert!(cleaned.contains("session required pam_unix.so"));
+        assert!(cleaned.contains("session required pam_deny.so"));
+        assert!(cleaned.contains("session optional pam_gnome_keyring.so"));
+    }
+
+    #[test]
+    fn dash_prefixed_tess_module_is_still_checked() {
+        // PAM's `-module` prefix (don't log if missing) must not let an unsafe tess line bypass the
+        // fail-open check.
+        let parsed = parse_line("auth requisite -pam_tess.so").unwrap();
+        assert!(parsed.module_is(MODULE_FILE));
+        let err = validate_stack("auth requisite -pam_tess.so\n").unwrap_err();
+        assert!(matches!(err, ValidationError::NotFailOpen { line: 1, .. }));
     }
 }
