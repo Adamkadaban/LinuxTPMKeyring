@@ -119,6 +119,10 @@ build_deb() {
 	if ! command -v cargo-deb >/dev/null 2>&1; then
 		echo "==> installing cargo-deb"
 		cargo install cargo-deb --locked
+		# `cargo install` drops the binary in the cargo bin dir, which isn't on PATH when cargo came
+		# from a distro package — prepend it so the `cargo deb` subcommand below resolves.
+		PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+		export PATH
 	fi
 	echo "==> building tess (release) and packaging the .deb"
 	cargo build --release --workspace
