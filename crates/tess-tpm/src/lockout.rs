@@ -1,4 +1,5 @@
-//! Read the TPM's dictionary-attack (DA) lockout state and clear an accumulated failure count.
+//! Read the TPM's dictionary-attack (DA) lockout state and let the legitimate PIN holder recover
+//! before hard lockout.
 //!
 //! The sealed object is DA-protected, so each wrong PIN counts toward the TPM's global
 //! `lockoutCounter`. Once it reaches `maxAuthFail` the TPM refuses further DA-protected

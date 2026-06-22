@@ -5,6 +5,7 @@
 //! that gates the object.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -13,6 +14,9 @@ use tss_esapi::structures::{Private, Public};
 use tss_esapi::traits::{Marshall, UnMarshall};
 
 use crate::seal::SealedObject;
+
+/// Process-local sequence so concurrent `save` calls in one process get distinct temp names.
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Encode a sealed object into versioned metadata: the structured `TPMT_PUBLIC` is marshalled to its
 /// canonical TPM wire form and the `TPM2B_PRIVATE` buffer is taken verbatim, each base64-encoded.
@@ -35,6 +39,13 @@ pub fn to_metadata(sealed: &SealedObject) -> Result<Metadata> {
 /// [`crate::unseal`] under the same TPM's primary.
 pub fn from_metadata(metadata: &Metadata) -> Result<SealedObject> {
     metadata.validate_version()?;
+    if metadata.policy != Policy::PinAuthValue {
+        return Err(Error::Metadata(format!(
+            "unsupported sealing policy {:?}; this build only reloads {:?}",
+            metadata.policy,
+            Policy::PinAuthValue
+        )));
+    }
 
     let public_bytes = decode(&metadata.sealed_public, "sealed_public")?;
     let private_bytes = decode(&metadata.sealed_private, "sealed_private")?;
@@ -47,9 +58,10 @@ pub fn from_metadata(metadata: &Metadata) -> Result<SealedObject> {
     Ok(SealedObject::from_blobs(public, private))
 }
 
-/// Serialize `metadata` to pretty JSON and write it to `path` atomically (write a sibling temp file,
-/// then rename) so a crash mid-write can never leave a truncated, unparseable metadata file. The
-/// file is created mode `0600`; it holds no secret, but enrollment metadata is not world-business.
+/// Serialize `metadata` to pretty JSON and write it to `path` atomically (write a fresh sibling temp
+/// file, then rename) so a crash mid-write can never leave a truncated, unparseable metadata file.
+/// The temp file is created with `create_new` (never reusing a stale file) at mode `0600`; it holds
+/// no secret, but enrollment metadata is not world-business.
 pub fn save(metadata: &Metadata, path: &Path) -> Result<()> {
     let json = serde_json::to_vec_pretty(metadata)
         .map_err(|e| Error::Metadata(format!("serializing metadata: {e}")))?;
@@ -61,17 +73,36 @@ pub fn save(metadata: &Metadata, path: &Path) -> Result<()> {
         }
     }
 
-    let tmp = temp_sibling(path);
-    write_private(&tmp, &json).map_err(|e| Error::Io(format!("writing {}: {e}", tmp.display())))?;
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        Error::Io(format!(
-            "renaming {} -> {}: {e}",
-            tmp.display(),
-            path.display()
-        ))
-    })?;
-    Ok(())
+    // Create a brand-new temp file, retrying with a fresh unique name only on a name collision so a
+    // pre-existing stale temp can never be silently reused (which would defeat the 0600 guarantee).
+    let mut last_err: Option<std::io::Error> = None;
+    for _ in 0..16 {
+        let tmp = temp_sibling(path);
+        match write_new_private(&tmp, &json) {
+            Ok(()) => {
+                return std::fs::rename(&tmp, path).map_err(|e| {
+                    let _ = std::fs::remove_file(&tmp);
+                    Error::Io(format!(
+                        "renaming {} -> {}: {e}",
+                        tmp.display(),
+                        path.display()
+                    ))
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                last_err = Some(e);
+                continue;
+            }
+            Err(e) => return Err(Error::Io(format!("writing {}: {e}", tmp.display()))),
+        }
+    }
+    Err(Error::Io(format!(
+        "could not create a unique temp file next to {}: {}",
+        path.display(),
+        last_err
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "unknown error".to_string())
+    )))
 }
 
 /// Read and parse metadata from `path`, rejecting an incompatible schema version. The returned
@@ -92,19 +123,23 @@ fn decode(value: &str, field: &str) -> Result<Vec<u8>> {
 }
 
 fn temp_sibling(path: &Path) -> std::path::PathBuf {
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(format!(".tmp.{}", std::process::id()));
+    name.push(format!(".tmp.{}.{seq}.{nanos}", std::process::id()));
     path.with_file_name(name)
 }
 
 #[cfg(unix)]
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+fn write_new_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .open(path)?;
     file.write_all(bytes)?;
@@ -112,8 +147,14 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, bytes)
+fn write_new_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 #[cfg(test)]

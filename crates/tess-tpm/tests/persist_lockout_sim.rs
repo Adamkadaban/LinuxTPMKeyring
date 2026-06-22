@@ -110,7 +110,7 @@ fn wrong_pin_increments_counter_and_pin_holder_recovers() {
         let after = read_lockout_state(&mut context).expect("read lockout state");
         assert_eq!(
             after.counter,
-            before.counter + 1,
+            before.counter.saturating_add(1),
             "a wrong PIN must increment the DA lockout counter"
         );
         assert!(
@@ -146,8 +146,14 @@ fn hard_lockout_surfaces_distinct_error() {
     let sealed = seal(&mut context, primary.key_handle, &pin, &key).expect("seal");
 
     let initial = read_lockout_state(&mut context).expect("read lockout state");
-    if initial.max_auth_fail == 0 {
-        eprintln!("DA lockout disabled on this TPM (max_auth_fail=0); skipping hard-lockout test");
+    // Skip when DA lockout is disabled (max_auth_fail == 0) or configured so high that hammering to
+    // a hard lockout would make the test runtime unreasonable; this harness targets swtpm's small
+    // default (maxTries = 3).
+    if initial.max_auth_fail == 0 || initial.max_auth_fail > 32 {
+        eprintln!(
+            "skipping hard-lockout test: max_auth_fail={} is unsuitable for a bounded loop",
+            initial.max_auth_fail
+        );
         context
             .flush_context(primary.key_handle.into())
             .expect("flush primary");
@@ -155,8 +161,8 @@ fn hard_lockout_surfaces_distinct_error() {
     }
 
     // Hammer wrong PINs until the TPM stops reporting "wrong PIN" and instead reports lockout. The
-    // cap is defensive so a misbehaving TPM can't spin this loop forever.
-    let cap = initial.max_auth_fail + 5;
+    // cap is a bounded saturating add so an untrusted property value can't overflow or spin forever.
+    let cap = initial.max_auth_fail.saturating_add(5);
     let mut saw_wrong_pin = false;
     let mut saw_lockout = false;
     for _ in 0..cap {
