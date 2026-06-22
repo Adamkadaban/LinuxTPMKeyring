@@ -5,11 +5,11 @@
 
 #![allow(dead_code)]
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 use tess_tpm::TctiConfig;
@@ -258,6 +258,73 @@ fn wait_for_secrets(address: &str, keyring: &mut Child) -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(100));
     }
     Err("timed out waiting for org.freedesktop.secrets".to_string())
+}
+
+// ---------------------------------------------------------------------------------------------
+// tess-pam-helper
+// ---------------------------------------------------------------------------------------------
+
+/// Run the `tess-pam-helper` binary the way the PAM module does: `pin` on stdin, a bounded wait, and
+/// a guaranteed reap, so a stuck helper can never hang the test. Returns the exit success flag and
+/// the captured (secret-free) stderr, never leaving the child behind. The helper resolves its
+/// enrollment metadata from `$XDG_DATA_HOME/tess` and selects the swtpm transport from
+/// `TESS_SWTPM_HOST`/`TESS_SWTPM_PORT`, both derived from `tcti`.
+///
+/// The PAM module hands the PIN to the helper over a `memfd`, not a pipe; this test feeds stdin via
+/// a pipe, since the SIGPIPE hazard the memfd avoids only applies inside the login process.
+pub fn run_pam_helper(
+    tcti: &TctiConfig,
+    bus_address: &str,
+    data_home: &Path,
+    pin: &[u8],
+) -> (bool, String) {
+    let (host, port) = match tcti {
+        TctiConfig::Swtpm { host, port } => (host.clone(), port.to_string()),
+        TctiConfig::DeviceManager { .. } => panic!("sim test must use swtpm"),
+    };
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tess-pam-helper"))
+        .env("DBUS_SESSION_BUS_ADDRESS", bus_address)
+        .env("XDG_DATA_HOME", data_home)
+        .env("TESS_SWTPM_HOST", host)
+        .env("TESS_SWTPM_PORT", port)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn tess-pam-helper");
+
+    child
+        .stdin
+        .take()
+        .expect("helper stdin")
+        .write_all(pin)
+        .expect("write PIN to helper stdin");
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("try_wait helper") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            // Bounded reap after the kill — never an unbounded `wait()` that could itself hang CI if
+            // the helper were stuck in uninterruptible I/O.
+            for _ in 0..40 {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            panic!("tess-pam-helper did not finish within the deadline");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    (status.success(), stderr)
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -19,17 +19,13 @@ mod common;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
-use common::{GnomeKeyring, Swtpm};
+use common::{run_pam_helper, GnomeKeyring, Swtpm};
 use secret_service::blocking::SecretService;
 use secret_service::EncryptionType;
 use tess_core::{KeyringBackend, SecretBytes};
 use tess_keyring::SecretServiceBackend;
-use tess_tpm::TctiConfig;
 
 use tess_cli::enroll::sealer::TpmSealer;
 use tess_cli::enroll::{enroll, recovery, Paths};
@@ -147,66 +143,6 @@ fn lock_login(service: &SecretService<'_>, collection_path: &str) {
     collection.lock().expect("lock collection");
 }
 
-fn swtpm_host_port(tcti: &TctiConfig) -> (String, String) {
-    match tcti {
-        TctiConfig::Swtpm { host, port } => (host.clone(), port.to_string()),
-        TctiConfig::DeviceManager { .. } => panic!("sim test must use swtpm"),
-    }
-}
-
-/// Run the `tess-pam-helper` binary the way the PAM module does: `pin` on stdin, bounded wait, reap.
-/// Returns the exit success flag and captured (secret-free) stderr, never leaving the child behind.
-fn run_helper(
-    bus_address: &str,
-    data_home: &std::path::Path,
-    tcti: &TctiConfig,
-    pin: &[u8],
-) -> (bool, String) {
-    let (host, port) = swtpm_host_port(tcti);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tess-pam-helper"))
-        .env("DBUS_SESSION_BUS_ADDRESS", bus_address)
-        .env("XDG_DATA_HOME", data_home)
-        .env("TESS_SWTPM_HOST", host)
-        .env("TESS_SWTPM_PORT", port)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn tess-pam-helper");
-
-    child
-        .stdin
-        .take()
-        .expect("helper stdin")
-        .write_all(pin)
-        .expect("write PIN to helper stdin");
-
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let status = loop {
-        if let Some(status) = child.try_wait().expect("try_wait helper") {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            // Bounded reap after the kill — never an unbounded `wait()` that could itself hang CI.
-            for _ in 0..40 {
-                if matches!(child.try_wait(), Ok(Some(_))) {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            panic!("tess-pam-helper did not finish within the deadline");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.read_to_string(&mut stderr);
-    }
-    (status.success(), stderr)
-}
-
 /// The whole Phase 3 lifecycle, end to end, on one keyring seeded with N pre-existing secrets:
 /// enroll → simulated session (real helper) → recover (after a simulated TPM clear) → reseal →
 /// unenroll, asserting all N secrets survive at every step. Skips cleanly when swtpm or the keyring
@@ -264,9 +200,14 @@ fn full_phase3_cycle_preserves_all_items() {
     assert_items_intact(&service, "enroll");
 
     // The pre-enroll password is no longer the credential: the keyring is sealed to the TPM key.
+    // Attempt the unlock and assert it did NOT open — the security invariant is "still locked",
+    // which catches a broken `unlock` that returns `Ok` while actually opening with the wrong key.
+    // (gnome-keyring returns `Ok` from `unlock_with_master_password` even for a wrong password,
+    // leaving the collection locked, so requiring an `Err` here would be incorrect for this backend.)
     lock_login(&service, &collection_path);
+    let _ = backend.unlock(&old);
     assert!(
-        backend.unlock(&old).is_err() || backend.is_locked().expect("read lock state"),
+        backend.is_locked().expect("read lock state"),
         "the pre-enroll password must not unlock the enrolled keyring"
     );
 
@@ -275,7 +216,7 @@ fn full_phase3_cycle_preserves_all_items() {
         backend.is_locked().expect("read lock state"),
         "keyring locked before the session unlock"
     );
-    let (ok, stderr) = run_helper(&address, data_home.path(), &tcti, PIN);
+    let (ok, stderr) = run_pam_helper(&tcti, &address, data_home.path(), PIN);
     assert!(
         ok,
         "session helper must unseal and unlock; stderr: {stderr}"
@@ -313,7 +254,7 @@ fn full_phase3_cycle_preserves_all_items() {
     assert!(paths.metadata.exists(), "metadata rewritten by reseal");
     lock_login(&service, &collection_path);
     assert!(backend.is_locked().expect("read lock state"));
-    let (ok, stderr) = run_helper(&address, data_home.path(), &tcti, NEW_PIN);
+    let (ok, stderr) = run_pam_helper(&tcti, &address, data_home.path(), NEW_PIN);
     assert!(
         ok,
         "session helper must unlock with the re-sealed PIN; stderr: {stderr}"
@@ -352,11 +293,13 @@ fn full_phase3_cycle_preserves_all_items() {
     );
     assert_items_intact(&service, "unenroll");
 
-    // The old TPM-sealed key path is gone: neither the pre-enroll password nor the now-stale PIN can
-    // re-establish access (the recovery blob is removed, so there is nothing to unseal).
+    // The old TPM-sealed key path is gone: the pre-enroll password cannot re-establish access (the
+    // recovery blob is removed, so there is nothing to unseal). Assert the keyring stays locked after
+    // the attempt rather than only that it errored — the same still-locked invariant as above.
     lock_login(&service, &collection_path);
+    let _ = restored.unlock(&old);
     assert!(
-        restored.unlock(&old).is_err() || restored.is_locked().expect("read lock state"),
+        restored.is_locked().expect("read lock state"),
         "the pre-enroll password is not the restored credential"
     );
 

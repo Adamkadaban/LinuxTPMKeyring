@@ -11,17 +11,13 @@ mod common;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
-use common::{GnomeKeyring, Swtpm};
+use common::{run_pam_helper, GnomeKeyring, Swtpm};
 use secret_service::blocking::SecretService;
 use secret_service::EncryptionType;
 use tess_core::{KeyringBackend, SecretBytes};
 use tess_keyring::SecretServiceBackend;
-use tess_tpm::TctiConfig;
 
 use tess_cli::enroll::sealer::TpmSealer;
 use tess_cli::enroll::{enroll, Paths};
@@ -111,64 +107,6 @@ fn lock_login(service: &SecretService<'_>, collection_path: &str) {
     collection.lock().expect("lock collection");
 }
 
-fn swtpm_host_port(tcti: &TctiConfig) -> (String, String) {
-    match tcti {
-        TctiConfig::Swtpm { host, port } => (host.clone(), port.to_string()),
-        TctiConfig::DeviceManager { .. } => panic!("sim test must use swtpm"),
-    }
-}
-
-/// Run the helper binary the way the PAM module does: PIN on stdin, bounded wait, reap. Returns the
-/// exit status and captured stderr (secret-free error context), never leaving the child behind.
-fn run_helper(bus_address: &str, data_home: &std::path::Path, tcti: &TctiConfig) -> (bool, String) {
-    let (host, port) = swtpm_host_port(tcti);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tess-pam-helper"))
-        .env("DBUS_SESSION_BUS_ADDRESS", bus_address)
-        .env("XDG_DATA_HOME", data_home)
-        .env("TESS_SWTPM_HOST", host)
-        .env("TESS_SWTPM_PORT", port)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn tess-pam-helper");
-
-    child
-        .stdin
-        .take()
-        .expect("helper stdin")
-        .write_all(PIN)
-        .expect("write PIN to helper stdin");
-
-    // Bounded wait + reap, so a stuck helper can never hang the test.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let status = loop {
-        if let Some(status) = child.try_wait().expect("try_wait helper") {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            // Bounded reap after the kill — never an unbounded `wait()` that could itself hang CI if
-            // the helper were stuck in uninterruptible I/O. A leftover zombie (if even this loop is
-            // outlasted) is reaped by the OS when the test binary exits.
-            for _ in 0..40 {
-                if matches!(child.try_wait(), Ok(Some(_))) {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            panic!("tess-pam-helper did not finish within the deadline");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.read_to_string(&mut stderr);
-    }
-    (status.success(), stderr)
-}
-
 #[test]
 fn simulated_session_helper_unseals_and_unlocks_the_keyring() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -219,7 +157,7 @@ fn simulated_session_helper_unseals_and_unlocks_the_keyring() {
         "keyring locked before session"
     );
 
-    let (ok, stderr) = run_helper(keyring.address(), data_home.path(), &tcti);
+    let (ok, stderr) = run_pam_helper(&tcti, keyring.address(), data_home.path(), PIN);
     assert!(ok, "helper must succeed; stderr: {stderr}");
 
     assert!(
