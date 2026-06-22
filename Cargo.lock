@@ -1207,6 +1207,7 @@ name = "tess-pam"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "nix",
  "tess-core",
  "tess-fprint",
  "tess-keyring",

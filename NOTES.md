@@ -259,3 +259,37 @@ Gotchas worth remembering:
   `test.yml`) runs them for real. No `libfprint`/fprintd needed — only the D-Bus surface is mocked.
 - `clippy::doc-lazy-continuation` fires on a doc line that starts after a wrapped `(... + ...)` list-
   looking fragment; reflowed the test module docstring to avoid the false list.
+## 2026-06-21 — non-blocking PAM module + watchdog helper (issue #22)
+**Resolution:** `tess-pam` is now a loadable `cdylib` (`libpam_tess.so` → `pam_tess.so`) + `rlib`.
+Hand-rolled PAM FFI (`pam_get_item`/`pam_set_data`/`pam_get_data`/`pam_get_authtok` +
+`pam_conv`/`pam_message`/`pam_response` + the four `pam_sm_*` entrypoints) confined to
+`crates/tess-pam/src/ffi.rs` — the only `unsafe` in the workspace. `helper::run` supervises a child
+under a `Watchdog { deadline, term_grace, poll }`: poll `try_wait`, on deadline SIGTERM → grace →
+SIGKILL → `wait` (reaped, no zombie). `gate::{classify,decide}` map the outcome to PAM codes (auth
+fails open to `PAM_AUTHINFO_UNAVAIL`; session always `PAM_SUCCESS`); `GateEnv::detect` aborts
+`PAM_IGNORE` for SSH/remote (`PAM_RHOST`/`SSH_*`) and no-TPM. `crates/tess-pam/src/helper.rs:71` ·
+`crates/tess-pam/src/gate.rs:1` · `crates/tess-pam/src/ffi.rs:1` · PR for #22.
+
+Gotchas worth remembering:
+- **A PAM-module rlib that references `pam_get_item` won't link into test binaries unless the symbol
+  resolves.** `#[no_mangle]`/`#[export_name]` entrypoints are kept (treated as reachable) even in a
+  test harness, so their calls into undefined `pam_*` symbols become link errors for `cargo test`.
+  Fix: `build.rs` emits `cargo:rustc-link-lib=dylib=pam` — the `.so` and every test binary then link
+  `libpam` and resolve the symbols. Needs `libpam0g-dev` (the `libpam.so` dev symlink) at build time;
+  added to the CI apt list. The cdylib gains a harmless `NEEDED libpam.so.0` (always already loaded
+  by the PAM application).
+- **`[lib] name = "pam_tess"`** (not the default `tess_pam`) so the cdylib is `libpam_tess.so`; PAM
+  loads modules by file name. Dependents/tests then `use pam_tess::...`.
+- **SIGTERM-ignoring stall case must busy-loop, not `sleep`.** `sleep` dies on the default SIGTERM
+  disposition (never exercises the SIGKILL escalation), and a `sh`/`sleep` pair would orphan the
+  inner `sleep` on SIGKILL (a leaked child the reap-proof would catch). `sh -c "trap '' TERM; while
+  :; do :; done"` ignores SIGTERM, has no child, and is killed+reaped cleanly within
+  `deadline + term_grace`.
+- **No PID-reuse race in the watchdog:** we signal the child only *before* the final `wait`, so while
+  it may be an unreaped zombie its PID is still ours and cannot be recycled. `send_signal` swallows
+  only `ESRCH` (already gone); other errno propagate.
+- The real unseal→keyring-unlock helper is Phase 3. Until `TESS_PAM_HELPER` (default
+  `/usr/lib/tess/tess-pam-helper`) exists, a missing-helper spawn fails open — correct non-blocking
+  behaviour, and unit-tested as the spawn-failure → `Unavailable` path.
+- `pamtester`/`pam_wrapper` live-load smoke is left to CI (host runs no PAM per project policy); the
+  bounded + reap proof is the pure-Rust `tests/stall_injection.rs`.

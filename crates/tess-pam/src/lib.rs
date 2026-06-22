@@ -1,44 +1,44 @@
 //! `pam_tess.so` — the tess PAM module.
 //!
-//! Hard rule (`AGENTS.md`): this module must never freeze login. The heavy, fallible work (TPM
-//! unseal, D-Bus) runs in a watchdog'd helper process under a hard wall-clock deadline; on timeout
-//! the module returns `PAM_AUTHINFO_UNAVAIL`/`PAM_IGNORE` and the stack falls through to the
-//! password factor. The session-phase unseal returns success regardless.
+//! Hard rule: this module must never freeze login. Heavy, fallible work (TPM unseal, D-Bus) runs in
+//! a watchdog'd helper process under a hard wall-clock deadline; on timeout or helper failure the
+//! auth phase returns `PAM_AUTHINFO_UNAVAIL`/`PAM_IGNORE` so the stack falls through to the password
+//! factor, and the session phase returns success regardless of the unseal outcome. The real
+//! unseal/unlock helper is wired in a later phase; this is the non-blocking skeleton.
 //!
 //! `unsafe` is confined to the [`ffi`] module — every other line is safe Rust.
-//! Skeleton — implemented in Phases 2–4 (see `PLAN.md` §5).
 #![deny(unsafe_code)]
 
-/// Minimal hand-rolled PAM FFI over `libc` (the C ABI surface is tiny and frozen). This is the only
-/// place `unsafe` is permitted in the entire workspace. Populated in Phase 2 — `pam_get_item`,
-/// `pam_set_data`/`get_data`, `pam_get_authtok`, and the conversation struct.
 #[allow(unsafe_code)]
-pub mod ffi {}
+pub mod ffi;
+pub mod gate;
+pub mod helper;
 
-/// PAM return codes we use (subset). Real bindings land with the `ffi` module in Phase 2.
+pub use gate::{
+    classify, decide, should_abort_remote_session, GateEnv, GatePhase, GateResult, HelperSpec,
+};
+pub use helper::Watchdog;
+
+/// PAM return codes used by this module (subset).
 pub mod ret {
     pub const PAM_SUCCESS: i32 = 0;
-    pub const PAM_IGNORE: i32 = 25;
     pub const PAM_AUTHINFO_UNAVAIL: i32 = 9;
+    pub const PAM_IGNORE: i32 = 25;
 }
 
-/// Whether tess should abort cleanly (no gesture available) — e.g. in an SSH/remote session.
-pub fn should_abort_remote_session(is_remote: bool, tpm_present: bool) -> i32 {
-    if is_remote || !tpm_present {
-        ret::PAM_IGNORE
-    } else {
-        ret::PAM_SUCCESS
+/// Run the gate for `phase`: abort cleanly if no gesture is available (remote session / no TPM),
+/// otherwise run the helper under the watchdog and map its outcome to a PAM return code. Bounded by
+/// `watchdog.deadline + watchdog.term_grace`; never blocks login.
+pub fn run_gate(
+    phase: GatePhase,
+    env: &GateEnv,
+    helper_spec: &HelperSpec,
+    watchdog: &Watchdog,
+) -> i32 {
+    if env.aborts() {
+        return ret::PAM_IGNORE;
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn aborts_in_remote_session_and_without_tpm() {
-        assert_eq!(should_abort_remote_session(true, true), ret::PAM_IGNORE);
-        assert_eq!(should_abort_remote_session(false, false), ret::PAM_IGNORE);
-        assert_eq!(should_abort_remote_session(false, true), ret::PAM_SUCCESS);
-    }
+    let mut command = helper_spec.command();
+    let result = helper::run(&mut command, watchdog);
+    decide(phase, classify(&result))
 }

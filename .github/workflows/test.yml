@@ -29,12 +29,14 @@ jobs:
           #   dbus-x11/gnome-keyring — session bus + keyring daemon for Secret
           #     Service tests (Phase 2).
           #   python3-dbusmock — mocks fprintd over D-Bus for headless verify tests (Phase 2).
+          #   libpam0g-dev — libpam.so the tess-pam module links against (Phase 2).
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config libclang-dev \
             libtss2-dev \
             swtpm swtpm-tools \
             dbus-x11 gnome-keyring \
-            python3-dbusmock
+            python3-dbusmock \
+            libpam0g-dev
 
       - name: Set up Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
