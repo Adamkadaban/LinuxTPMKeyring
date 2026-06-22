@@ -120,8 +120,9 @@ pub fn get_rhost(pamh: *const pam_handle_t) -> Option<String> {
 
 /// Obtain the PIN from the PAM conversation (`pam_get_authtok`, which returns the cached
 /// `PAM_AUTHTOK` if a prior phase gathered it, else prompts via the conversation). The bytes are
-/// copied into a zeroizing buffer and never logged; the returned pointer is owned by libpam and must
-/// not be freed. `None` when no token is available (no conversation, or an empty entry).
+/// copied into an owned zeroizing buffer and never logged; the `authtok` pointer `pam_get_authtok`
+/// writes is owned by libpam and is only read, never freed here. `None` when no usable token is
+/// available (no conversation, an empty entry, or an implausibly long one).
 fn get_pin(pamh: *mut pam_handle_t) -> Option<Zeroizing<Vec<u8>>> {
     if pamh.is_null() {
         return None;
