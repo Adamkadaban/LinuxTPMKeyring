@@ -145,7 +145,8 @@ install_deps() {
     || ! dpkg -s libtss2-dev >/dev/null 2>&1 \
     || ! command -v gnome-keyring-daemon >/dev/null 2>&1 \
     || ! command -v secret-tool >/dev/null 2>&1 \
-    || ! command -v dbus-run-session >/dev/null 2>&1; then
+    || ! command -v dbus-run-session >/dev/null 2>&1 \
+    || ! python3 -c 'import dbus, dbusmock; from gi.repository import GLib' >/dev/null 2>&1; then
     sudo apt-get update -qq
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
       build-essential pkg-config libtss2-dev curl ca-certificates \
@@ -315,7 +316,12 @@ run_enroll() {
   printf '%s\n' "${KEYRING_PW}" | script -qec "${inner}" /dev/null > "${ENROLL_OUT}" 2>&1
   local rc=${PIPESTATUS[1]}
   set -e
-  [[ "${rc}" -eq 0 ]] || { sed 's/^/   enroll: /' "${ENROLL_OUT}" >&2; die "tess enroll failed (exit ${rc})"; }
+  # On failure, dump the enroll log for diagnosis, but redact any grouped-hex recovery secret first:
+  # some enroll error paths print it to stderr, and it must never reach orchestrator/CI logs.
+  [[ "${rc}" -eq 0 ]] || {
+    sed -E 's/[0-9a-f]{8}(-[0-9a-f]{8})+/<redacted-recovery-secret>/g; s/^/   enroll: /' "${ENROLL_OUT}" >&2
+    die "tess enroll failed (exit ${rc})"
+  }
 
   # The recovery secret is the lone grouped-hex token (lowercase hex in hyphen-separated 4-byte
   # groups) enroll prints exactly once. Persist it 0600 for the operator, mirroring a real enroll.
