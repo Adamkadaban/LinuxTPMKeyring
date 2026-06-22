@@ -8,7 +8,7 @@
 use std::io::Read;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use tess_core::{KeyringBackend, SecretBytes};
 use tess_keyring::SecretServiceBackend;
 use tess_tpm::{persist, TctiConfig};
@@ -64,14 +64,21 @@ pub fn unseal_and_unlock(
 
 /// Read the PIN from standard input (the channel the PAM module uses to hand it to the helper),
 /// bounded to [`MAX_PIN_BYTES`]. The bytes are taken verbatim — no trailing-newline trimming — so
-/// the PIN matches exactly what was sealed at enrollment.
+/// the PIN matches exactly what was sealed at enrollment. An empty or over-long PIN is a hard error
+/// (not silently truncated), so malformed input is distinguishable from a genuine wrong-PIN failure.
 fn read_pin_from_stdin() -> Result<SecretBytes> {
     let mut buf = Vec::new();
+    // Read one byte past the limit so an over-long PIN is detected rather than silently truncated.
     std::io::stdin()
         .lock()
-        .take(MAX_PIN_BYTES)
+        .take(MAX_PIN_BYTES + 1)
         .read_to_end(&mut buf)
         .context("read PIN from stdin")?;
+    ensure!(!buf.is_empty(), "no PIN supplied on stdin");
+    ensure!(
+        buf.len() as u64 <= MAX_PIN_BYTES,
+        "PIN on stdin exceeds the {MAX_PIN_BYTES}-byte maximum"
+    );
     Ok(SecretBytes::new(buf))
 }
 

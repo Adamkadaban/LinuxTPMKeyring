@@ -133,11 +133,13 @@ fn get_pin(pamh: *mut pam_handle_t) -> Option<Zeroizing<Vec<u8>>> {
         return None;
     }
     let bytes = unsafe { CStr::from_ptr(authtok) }.to_bytes();
-    if bytes.is_empty() {
+    // Treat an empty or implausibly long PIN as "no usable PIN" (so the session falls through with
+    // the keyring left locked) rather than truncating it, which would silently hand the helper a
+    // different, guaranteed-wrong PIN and mask the real cause.
+    if bytes.is_empty() || bytes.len() > MAX_PIN_BYTES {
         return None;
     }
-    let take = bytes.len().min(MAX_PIN_BYTES);
-    Some(Zeroizing::new(bytes[..take].to_vec()))
+    Some(Zeroizing::new(bytes.to_vec()))
 }
 
 /// Emit a best-effort, secret-free line to the auth-private syslog facility. A logging failure must
@@ -164,7 +166,7 @@ fn log_session_outcome(outcome: Option<GateResult>) {
             c"tess: session — wrong PIN or unseal/unlock failed; keyring left locked"
         }
         Some(GateResult::Unavailable) => {
-            c"tess: session — unlock unavailable (timeout or no PIN); keyring left locked"
+            c"tess: session — unlock unavailable (helper timeout/failure or no PIN); keyring left locked"
         }
     };
     syslog_info(message);
