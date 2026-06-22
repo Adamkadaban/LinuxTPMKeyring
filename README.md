@@ -58,7 +58,41 @@ tess enroll        # enroll (prints a recovery secret — keep it safe)
 tess recover       # re-unlock using the recovery secret
 tess unenroll      # restore the password-based keyring (items preserved)
 tess doctor        # check TPM / keyring / fprintd readiness
+tess install       # wire pam_tess.so into the session stack (idempotent, fail-open)
+tess install --uninstall   # remove the tess block + module (best-effort), un-wiring the stack
 ```
+
+### PAM wiring (`tess install`)
+
+`tess install` (run as root) does two things, idempotently:
+
+1. copies the built `pam_tess.so` into the system PAM module directory (auto-detected by locating a
+   stock module, `pam_permit.so`, under the common library roots `/lib`, `/usr/lib`, `/lib64`, and
+   `/usr/lib64` — the same locate-`pam_permit.so` trick the CI smoke test uses, which itself only
+   needs to search `/lib` and `/usr/lib`), and
+2. adds one line to the session stack (`/etc/pam.d/common-session` by default) inside a re-runnable
+   marked block:
+
+   ```pam
+   # >>> tess >>>
+   # Managed by `tess install` — remove with `tess install --uninstall`. `optional` means a tess
+   # failure is ignored and login proceeds with the keyring left locked; it can never lock you out.
+   session optional pam_tess.so
+   # <<< tess <<<
+   ```
+
+The control flag is `optional`, so a tess failure (no TPM, a slow or declined unseal) is ignored and
+login proceeds with the keyring simply left locked — **it can never lock you out**. Before editing,
+`tess install` backs up the original file and validates the result is well-formed and fail-open,
+aborting if not. `tess install --uninstall` removes the managed block (restoring the stack to its
+pre-tess state while preserving any admin edits made outside the block) and deletes the module on a
+best-effort basis (if module-dir auto-detection fails it still un-wires the stack and warns rather
+than aborting); it is safe to run when nothing is installed. Flags: `--service`, `--module`,
+`--module-dir` override the auto-detected paths. The snippet and exact placement are documented in
+[`deploy/pam/`](./deploy/pam/README.md).
+
+> tess never wires PAM on the developer host — the real wiring happens on the Azure VM (Phase 4) or
+> a user's machine. The install logic is exercised in tests against throwaway fixtures only.
 
 ## Status
 

@@ -1,0 +1,665 @@
+//! Filesystem orchestration for `tess install` / `tess install --uninstall`.
+//!
+//! This wires `pam_tess.so` into a `pam.d` service stack and installs the module into the system
+//! PAM module directory, idempotently and fail-safe. The string-only edit and validation logic lives
+//! in [`config`]; this module adds the side effects: detect the module directory, validate the
+//! candidate stack, copy the module, back up the original service file, then atomically write the
+//! edited stack as the final commit. Uninstall reverses all of it and is safe to run when nothing is
+//! installed.
+//!
+//! Safety posture: the stack is only written after [`config::validate_stack`] confirms the result is
+//! well-formed and the tess line is fail-open, and after the module is in place — so a failure before
+//! the final atomic write leaves the original file untouched (it is never the partially-written
+//! temp), and a backup always exists to restore from.
+
+pub mod cli;
+pub mod config;
+
+use std::ffi::OsStr;
+use std::fs;
+use std::io;
+use std::io::Read as _;
+use std::io::Write as _;
+use std::os::unix::fs::OpenOptionsExt as _;
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Path, PathBuf};
+
+use anyhow::{anyhow, bail, Context, Result};
+
+/// Default Debian 13 session stack tess wires into. Other login services include this file.
+pub const DEFAULT_SERVICE_FILE: &str = "/etc/pam.d/common-session";
+
+/// Suffix of the one-time backup tess writes before its first edit of a service file.
+const BACKUP_SUFFIX: &str = ".tess-backup";
+
+/// Roots searched for the PAM module directory, mirroring the CI smoke test's `find /lib /usr/lib`.
+const PAM_SEARCH_ROOTS: [&str; 4] = ["/lib", "/usr/lib", "/lib64", "/usr/lib64"];
+
+/// Bound on the module-directory search depth so a pathological symlink farm can't make detection
+/// run unbounded.
+const PAM_SEARCH_MAX_DEPTH: usize = 6;
+
+/// Where the install acts: the service file to edit, the built module to install, and the PAM module
+/// directory to install it into. Constructed explicitly so tests drive it entirely within a temp
+/// directory and never touch the host's real `/etc/pam.d` or module directory.
+#[derive(Debug, Clone)]
+pub struct InstallPlan {
+    pub service_file: PathBuf,
+    pub module_src: PathBuf,
+    pub module_dir: PathBuf,
+}
+
+impl InstallPlan {
+    /// Path of the `pam_tess.so` once installed into the module directory.
+    pub fn installed_module(&self) -> PathBuf {
+        self.module_dir.join(config::MODULE_FILE)
+    }
+
+    /// Path of the one-time backup of the service file.
+    pub fn backup_file(&self) -> PathBuf {
+        backup_path(&self.service_file)
+    }
+}
+
+/// What `install` did, for a clear user-facing summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallReport {
+    pub service_file: PathBuf,
+    pub installed_module: PathBuf,
+    pub backup_file: PathBuf,
+    /// True if the stack already contained the tess block before this run (re-run / no-op edit).
+    pub already_wired: bool,
+}
+
+/// What `uninstall` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UninstallReport {
+    pub service_file: PathBuf,
+    pub removed_block: bool,
+    pub removed_module: bool,
+    pub removed_backup: bool,
+}
+
+/// Wire `pam_tess.so` into the service stack and install the module, idempotently.
+///
+/// Order: compute the edited stack → **validate it before any side effect** → install the module →
+/// back up the original service file (once) → write the stack atomically as the final commit.
+/// Installing the module before editing the stack means a module-copy failure leaves the PAM stack
+/// untouched; and a module that is installed but not yet referenced is inert, so committing the
+/// stack last can never leave a half-applied install that affects login. Re-running is a no-op edit
+/// (the block is refreshed in place, never duplicated) and refreshes the module.
+pub fn install(plan: &InstallPlan) -> Result<InstallReport> {
+    // Open the service file with O_NOFOLLOW and read its bytes + mode from that FD, closing the
+    // TOCTOU window: a symlink swapped in after a separate metadata check can't redirect the read.
+    let (original, mode) = match open_regular_nofollow(&plan.service_file)? {
+        Some((mut file, mode)) => {
+            let mut original = String::new();
+            file.read_to_string(&mut original).with_context(|| {
+                format!("read PAM service file {}", plan.service_file.display())
+            })?;
+            (original, mode)
+        }
+        None => bail!(
+            "PAM service file {} does not exist (run as root?)",
+            plan.service_file.display()
+        ),
+    };
+
+    let already_wired = config::has_block(&original);
+
+    let edited = config::add_block(&original);
+    config::validate_stack(&edited).with_context(|| {
+        format!(
+            "refusing to write {}: candidate PAM stack failed the fail-open safety check",
+            plan.service_file.display()
+        )
+    })?;
+
+    install_module(plan)?;
+
+    let backup = plan.backup_file();
+    // Create the one-time backup only if absent, and only ever trust a regular file as the rollback
+    // artifact. A pre-existing directory or symlink at the backup path (possible in an
+    // attacker-writable --service directory) must abort rather than let the stack be edited without
+    // a valid backup.
+    match fs::symlink_metadata(&backup) {
+        Ok(meta) if meta.file_type().is_file() => {}
+        Ok(_) => bail!(
+            "backup path {} exists but is not a regular file; refusing to edit the PAM stack \
+             without a valid rollback backup",
+            backup.display()
+        ),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            // Create the backup with O_CREAT|O_EXCL and write the bytes we already read, rather than
+            // `fs::copy`. This closes the TOCTOU window after the symlink_metadata check above: if a
+            // symlink (or any file) is planted at `backup` in the race window, the create_new open
+            // fails instead of following it and clobbering an arbitrary target as root.
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&backup)
+                .with_context(|| {
+                    format!(
+                        "back up {} to {} before editing",
+                        plan.service_file.display(),
+                        backup.display()
+                    )
+                })?;
+            file.write_all(original.as_bytes())
+                .with_context(|| format!("write backup {}", backup.display()))?;
+            // Match the original file's mode so the rollback artifact can't be more permissive than
+            // the service file it backs up (the create_new default is 0o666 & umask).
+            file.set_permissions(fs::Permissions::from_mode(mode))
+                .with_context(|| format!("set mode on backup {}", backup.display()))?;
+            // Make the rollback artifact durable before the live stack is edited: a crash after the
+            // (fsync'd) stack commit must not be able to leave a wired stack with no backup.
+            file.sync_all()
+                .with_context(|| format!("fsync backup {}", backup.display()))?;
+            drop(file);
+            sync_parent_dir(&backup)
+                .with_context(|| format!("sync parent dir of {}", backup.display()))?;
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("inspect backup path {}", backup.display()));
+        }
+    }
+
+    atomic_write_preserving_mode(&plan.service_file, &edited, mode)
+        .with_context(|| format!("write edited PAM stack to {}", plan.service_file.display()))?;
+
+    Ok(InstallReport {
+        service_file: plan.service_file.clone(),
+        installed_module: plan.installed_module(),
+        backup_file: backup,
+        already_wired,
+    })
+}
+
+/// Remove the tess block from the service stack, delete the installed module, and remove the backup.
+///
+/// Idempotent and safe when tess is not installed: a missing service file, an already-clean stack,
+/// an absent module, and an absent backup are all no-ops. The stack edit is validated before being
+/// written, exactly as on install. Unwiring the stack and removing the backup never depend on
+/// knowing the module directory — if `plan.module_dir` is empty (module-dir detection failed),
+/// module removal is skipped but the lockout-relevant stack edit still happens.
+pub fn uninstall(plan: &InstallPlan) -> Result<UninstallReport> {
+    let mut removed_block = false;
+    // A missing service file is a no-op; a symlink or other non-regular file is refused. The
+    // O_NOFOLLOW open + FD-based read closes the TOCTOU window (no separate metadata pre-check).
+    if let Some((mut file, mode)) = open_regular_nofollow(&plan.service_file)? {
+        let mut original = String::new();
+        file.read_to_string(&mut original)
+            .with_context(|| format!("read PAM service file {}", plan.service_file.display()))?;
+        drop(file);
+        if config::has_block(&original) {
+            let restored = config::remove_block(&original);
+            config::validate_stack(&restored).with_context(|| {
+                format!(
+                    "refusing to write {}: stack after removing the tess block failed validation",
+                    plan.service_file.display()
+                )
+            })?;
+            atomic_write_preserving_mode(&plan.service_file, &restored, mode)
+                .with_context(|| format!("restore PAM stack in {}", plan.service_file.display()))?;
+            removed_block = true;
+        }
+    }
+
+    let removed_module = if plan.module_dir.as_os_str().is_empty() {
+        false
+    } else {
+        let installed = plan.installed_module();
+        remove_if_exists(&installed)
+            .with_context(|| format!("remove installed module {}", installed.display()))?
+    };
+
+    let backup = plan.backup_file();
+    // Only remove the backup when we actually restored from a removed block. If no block was present
+    // (the service file is missing, or the markers were hand-edited away), the backup may be the
+    // only remaining rollback artifact, so deleting it would be unsafe — keep it.
+    let removed_backup = if removed_block {
+        remove_if_exists(&backup).with_context(|| format!("remove backup {}", backup.display()))?
+    } else {
+        false
+    };
+
+    Ok(UninstallReport {
+        service_file: plan.service_file.clone(),
+        removed_block,
+        removed_module,
+        removed_backup,
+    })
+}
+
+/// Copy the built module into the PAM module directory as `pam_tess.so` with mode 0644.
+fn install_module(plan: &InstallPlan) -> Result<()> {
+    if !plan.module_src.is_file() {
+        bail!(
+            "PAM module source {} not found; build it (`cargo build -p tess-pam`) or pass --module",
+            plan.module_src.display()
+        );
+    }
+    if !plan.module_dir.is_dir() {
+        bail!(
+            "PAM module directory {} does not exist",
+            plan.module_dir.display()
+        );
+    }
+    let dst = plan.installed_module();
+    // `--module-dir` is user-controllable and this runs as root: refuse to write through a symlink
+    // planted at the destination, then install atomically via an unpredictable temp + rename so a
+    // copy is never partially visible and never follows a pre-created path.
+    if let Ok(meta) = fs::symlink_metadata(&dst) {
+        if meta.file_type().is_symlink() {
+            bail!(
+                "refusing to install the module over a symlink at {}",
+                dst.display()
+            );
+        }
+    }
+    let bytes = fs::read(&plan.module_src)
+        .with_context(|| format!("read module source {}", plan.module_src.display()))?;
+    let tmp = unpredictable_temp_path(&dst)?;
+    let install_result = (|| -> Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .with_context(|| format!("create temp module file {}", tmp.display()))?;
+        file.write_all(&bytes)?;
+        // Set the mode before the final fsync so contents + permission bits are committed together.
+        file.set_permissions(fs::Permissions::from_mode(0o644))?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, &dst).with_context(|| {
+            format!(
+                "install module {} -> {}",
+                plan.module_src.display(),
+                dst.display()
+            )
+        })?;
+        sync_parent_dir(&dst).with_context(|| format!("sync parent dir of {}", dst.display()))?;
+        Ok(())
+    })();
+    if install_result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    install_result
+}
+
+/// Backup path for a service file: the file with [`BACKUP_SUFFIX`] appended.
+fn backup_path(service_file: &Path) -> PathBuf {
+    let mut name = service_file.as_os_str().to_os_string();
+    name.push(BACKUP_SUFFIX);
+    PathBuf::from(name)
+}
+
+/// Remove `path` if present, returning whether it existed. A missing file is not an error.
+fn remove_if_exists(path: &Path) -> io::Result<bool> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Write `content` to `path` atomically (temp file in the same directory, then rename), applying
+/// `mode` (the original file's permission bits, read race-free from the open FD by the caller). The
+/// rename is atomic on the same filesystem, so a crash mid-write never leaves a truncated PAM stack —
+/// readers see either the old or the new file whole.
+///
+/// The temp file is created with an unpredictable suffix and `O_CREAT|O_EXCL` (`create_new`), so a
+/// pre-planted symlink at the temp path can't be followed: running as root against a `--service` in
+/// an attacker-writable directory can't be turned into a symlink-clobber primitive.
+fn atomic_write_preserving_mode(path: &Path, content: &str, mode: u32) -> Result<()> {
+    // Guard against a path with no parent (e.g. a bare root); the temp sibling below relies on one.
+    path.parent()
+        .ok_or_else(|| anyhow!("{} has no parent directory", path.display()))?;
+
+    let tmp = unpredictable_temp_path(path)?;
+
+    let write_result = (|| -> Result<()> {
+        // create_new refuses to follow or overwrite an existing path (incl. a symlink) at `tmp`.
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .with_context(|| format!("create temp file {}", tmp.display()))?;
+        file.write_all(content.as_bytes())?;
+        // Set the mode before the final fsync so contents + permission bits are committed together;
+        // otherwise a crash after rename could surface the file with default permissions.
+        file.set_permissions(fs::Permissions::from_mode(mode))?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, path)?;
+        sync_parent_dir(path)?;
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    write_result
+}
+
+/// Open a service path for reading with `O_NOFOLLOW` and confirm the opened descriptor is a regular
+/// file, returning the open file and its permission mode (from the same fstat). Returns `None` if
+/// the path doesn't exist (a missing file is an install error / uninstall no-op). Refuses a symlink
+/// (`O_NOFOLLOW` → `ELOOP`) or any non-regular file. Opening and then reading/stat-ing the *same*
+/// descriptor closes the TOCTOU window a separate metadata pre-check would leave: a symlink swapped
+/// in after the check can't redirect the read or the mode.
+fn open_regular_nofollow(path: &Path) -> Result<Option<(fs::File, u32)>> {
+    match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+    {
+        Ok(file) => {
+            let meta = file
+                .metadata()
+                .with_context(|| format!("stat PAM service file {}", path.display()))?;
+            if !meta.file_type().is_file() {
+                bail!("PAM service file {} is not a regular file", path.display());
+            }
+            let mode = meta.permissions().mode();
+            Ok(Some((file, mode)))
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => bail!(
+            "refusing to edit symlinked PAM service file {} (expected a regular file)",
+            path.display()
+        ),
+        Err(e) => Err(e).with_context(|| format!("open PAM service file {}", path.display())),
+    }
+}
+
+/// fsync the directory containing `path` so a freshly renamed entry is durable across a crash. On
+/// Unix a directory is synced by opening it read-only and calling `sync_all`; without this a crash
+/// right after `rename` can lose the new directory entry even though the file contents were synced.
+fn sync_parent_dir(path: &Path) -> io::Result<()> {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    fs::File::open(parent)?.sync_all()
+}
+
+/// A sibling temp path of `path` with an unpredictable hex suffix drawn from the OS CSPRNG, so an
+/// attacker can't pre-create a symlink at a guessable temp name for the atomic write to follow.
+fn unpredictable_temp_path(path: &Path) -> Result<PathBuf> {
+    let mut bytes = [0u8; 12];
+    getrandom::fill(&mut bytes).map_err(|e| anyhow!("draw temp-file suffix: {e}"))?;
+    let suffix: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let mut name = path.as_os_str().to_os_string();
+    name.push(format!(".tess-tmp.{suffix}"));
+    Ok(PathBuf::from(name))
+}
+
+/// Detect the system PAM module directory by locating a stock module (`pam_permit.so`) under the
+/// well-known library roots and taking its parent — the same approach as the CI smoke test, so it
+/// works across multiarch layouts. Errors if no module directory is found.
+pub fn detect_module_dir() -> Result<PathBuf> {
+    for root in PAM_SEARCH_ROOTS {
+        let root = Path::new(root);
+        if !root.is_dir() {
+            continue;
+        }
+        if let Some(dir) = find_module_dir(root, "pam_permit.so", PAM_SEARCH_MAX_DEPTH) {
+            return Ok(dir);
+        }
+    }
+    Err(anyhow!(
+        "could not locate the PAM module directory (no pam_permit.so under {})",
+        PAM_SEARCH_ROOTS.join(", ")
+    ))
+}
+
+/// Bounded, depth-limited search (an explicit LIFO stack) for a file named `needle` beneath `root`,
+/// returning its parent directory. Does not follow into symlinked directories, so a symlink loop
+/// can't trap the walk.
+fn find_module_dir(root: &Path, needle: &str, max_depth: usize) -> Option<PathBuf> {
+    let mut frontier = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = frontier.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_file() && entry.file_name().as_os_str() == OsStr::new(needle) {
+                return Some(dir);
+            }
+            if file_type.is_dir() && depth < max_depth {
+                frontier.push((path, depth + 1));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a `InstallPlan` wholly inside `root` (a tempdir): a fixture service file, a dummy
+    /// module source, and a module directory. Nothing here touches the host's real PAM paths.
+    fn plan_in(root: &Path, service_contents: &str) -> InstallPlan {
+        let service_file = root.join("common-session");
+        fs::write(&service_file, service_contents).unwrap();
+        let module_src = root.join("libpam_tess.so");
+        fs::write(&module_src, b"\x7fELF-not-really").unwrap();
+        let module_dir = root.join("security");
+        fs::create_dir_all(&module_dir).unwrap();
+        InstallPlan {
+            service_file,
+            module_src,
+            module_dir,
+        }
+    }
+
+    const FIXTURE: &str = "\
+session [default=1] pam_permit.so
+session required     pam_unix.so
+session optional     pam_gnome_keyring.so auto_start
+";
+
+    /// A self-cleaning temp directory (removed on drop, even on panic), matching the repo's test
+    /// convention and avoiding leaked directories.
+    fn tempdir() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn install_then_uninstall_restores_byte_for_byte() {
+        let root = tempdir();
+        let plan = plan_in(root.path(), FIXTURE);
+
+        let report = install(&plan).unwrap();
+        assert!(!report.already_wired);
+        let after_install = fs::read_to_string(&plan.service_file).unwrap();
+        assert!(after_install.contains(config::SNIPPET_LINE));
+        assert!(plan.installed_module().is_file());
+        assert!(plan.backup_file().is_file());
+        // The backup is the true original.
+        assert_eq!(fs::read_to_string(plan.backup_file()).unwrap(), FIXTURE);
+
+        let un = uninstall(&plan).unwrap();
+        assert!(un.removed_block && un.removed_module && un.removed_backup);
+        // The service file is restored to the exact original bytes.
+        assert_eq!(fs::read_to_string(&plan.service_file).unwrap(), FIXTURE);
+        assert!(!plan.installed_module().exists());
+        assert!(!plan.backup_file().exists());
+    }
+
+    #[test]
+    fn install_is_idempotent() {
+        let root = tempdir();
+        let plan = plan_in(root.path(), FIXTURE);
+
+        install(&plan).unwrap();
+        let once = fs::read_to_string(&plan.service_file).unwrap();
+        let second = install(&plan).unwrap();
+        let twice = fs::read_to_string(&plan.service_file).unwrap();
+
+        assert!(
+            second.already_wired,
+            "second run sees the block already present"
+        );
+        assert_eq!(once, twice, "re-running install must not change the file");
+        assert_eq!(twice.matches(config::BEGIN_MARKER).count(), 1);
+        assert_eq!(twice.matches(config::SNIPPET_LINE).count(), 1);
+    }
+
+    #[test]
+    fn backup_preserves_true_original_across_reinstall() {
+        let root = tempdir();
+        let plan = plan_in(root.path(), FIXTURE);
+
+        install(&plan).unwrap();
+        // A second install must not overwrite the backup with the already-edited file.
+        install(&plan).unwrap();
+        assert_eq!(fs::read_to_string(plan.backup_file()).unwrap(), FIXTURE);
+
+        uninstall(&plan).unwrap();
+        assert_eq!(fs::read_to_string(&plan.service_file).unwrap(), FIXTURE);
+    }
+
+    #[test]
+    fn uninstall_is_safe_when_not_installed() {
+        let root = tempdir();
+        let plan = plan_in(root.path(), FIXTURE);
+
+        let report = uninstall(&plan).unwrap();
+        assert!(!report.removed_block && !report.removed_module && !report.removed_backup);
+        // The file is untouched.
+        assert_eq!(fs::read_to_string(&plan.service_file).unwrap(), FIXTURE);
+    }
+
+    #[test]
+    fn uninstall_missing_service_file_is_ok() {
+        let root = tempdir();
+        let plan = plan_in(root.path(), FIXTURE);
+        fs::remove_file(&plan.service_file).unwrap();
+
+        let report = uninstall(&plan).unwrap();
+        assert!(!report.removed_block);
+    }
+
+    #[test]
+    fn install_preserves_file_mode() {
+        let root = tempdir();
+        let plan = plan_in(root.path(), FIXTURE);
+        fs::set_permissions(&plan.service_file, fs::Permissions::from_mode(0o600)).unwrap();
+
+        install(&plan).unwrap();
+        let mode = fs::metadata(&plan.service_file)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "atomic write must preserve the original mode");
+        let backup_mode = fs::metadata(plan.backup_file())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            backup_mode, 0o600,
+            "backup must match the original mode, not widen it"
+        );
+    }
+
+    #[test]
+    fn install_aborts_and_preserves_file_when_module_src_missing() {
+        let root = tempdir();
+        let plan = plan_in(root.path(), FIXTURE);
+        fs::remove_file(&plan.module_src).unwrap();
+
+        // The module is installed before the stack is committed, so a missing module source aborts
+        // install with the PAM stack left exactly as it was — no block, no backup, no module.
+        let err = install(&plan).unwrap_err();
+        assert!(err.to_string().contains("module source"));
+        assert_eq!(
+            fs::read_to_string(&plan.service_file).unwrap(),
+            FIXTURE,
+            "the PAM stack must be untouched when the module can't be installed"
+        );
+        assert!(!plan.installed_module().exists());
+        assert!(!plan.backup_file().exists());
+    }
+
+    #[test]
+    fn install_aborts_when_backup_path_is_not_a_regular_file() {
+        let root = tempdir();
+        let plan = plan_in(root.path(), FIXTURE);
+        // A directory squatting at the backup path means there is no valid rollback artifact.
+        fs::create_dir(plan.backup_file()).unwrap();
+
+        let err = install(&plan).unwrap_err();
+        assert!(err.to_string().contains("not a regular file"));
+        // The PAM stack must be left untouched when a valid backup can't be written.
+        assert_eq!(fs::read_to_string(&plan.service_file).unwrap(), FIXTURE);
+    }
+
+    #[test]
+    fn install_and_uninstall_refuse_symlinked_service_file() {
+        let root = tempdir();
+        let plan = plan_in(root.path(), FIXTURE);
+        let target = root.path().join("real-stack");
+        fs::write(&target, FIXTURE).unwrap();
+        fs::remove_file(&plan.service_file).unwrap();
+        std::os::unix::fs::symlink(&target, &plan.service_file).unwrap();
+
+        let err = install(&plan).unwrap_err();
+        assert!(err.to_string().contains("symlink"));
+        let err = uninstall(&plan).unwrap_err();
+        assert!(err.to_string().contains("symlink"));
+        // The symlink target is never edited.
+        assert_eq!(fs::read_to_string(&target).unwrap(), FIXTURE);
+    }
+
+    #[test]
+    fn uninstall_unwires_stack_even_without_module_dir() {
+        let root = tempdir();
+        let plan = plan_in(root.path(), FIXTURE);
+        install(&plan).unwrap();
+
+        // Simulate module-dir detection having failed: the stack must still be unwired and the
+        // backup removed, even though the module can't be located for removal.
+        let blind = InstallPlan {
+            module_dir: PathBuf::new(),
+            ..plan.clone()
+        };
+        let report = uninstall(&blind).unwrap();
+        assert!(report.removed_block, "stack unwired without a module dir");
+        assert!(
+            !report.removed_module,
+            "module removal skipped when dir unknown"
+        );
+        assert_eq!(fs::read_to_string(&plan.service_file).unwrap(), FIXTURE);
+        // The actually-installed module is left in place (not located), which is the safe outcome.
+        assert!(plan.installed_module().exists());
+    }
+
+    #[test]
+    fn find_module_dir_locates_needle() {
+        let root = tempdir();
+        let nested = root.path().join("x86_64-linux-gnu").join("security");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("pam_permit.so"), b"x").unwrap();
+
+        let found = find_module_dir(root.path(), "pam_permit.so", PAM_SEARCH_MAX_DEPTH).unwrap();
+        assert_eq!(found, nested);
+        assert!(find_module_dir(root.path(), "pam_absent.so", PAM_SEARCH_MAX_DEPTH).is_none());
+    }
+
+    #[test]
+    fn backup_path_appends_suffix() {
+        assert_eq!(
+            backup_path(Path::new("/etc/pam.d/common-session")),
+            PathBuf::from("/etc/pam.d/common-session.tess-backup")
+        );
+    }
+}

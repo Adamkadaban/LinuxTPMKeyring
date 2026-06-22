@@ -249,7 +249,7 @@ recovery secret; `tess unenroll` restores password-based keyring with all items 
 - [ ] `tess status`: enrollment/keyring/TPM/DA-lockout state
 - [ ] `tess unlock` (one-shot) + `tess test` (dry-run session path)
 - [ ] `pam_tess.so` session flow: non-blocking gate (PIN via conv now) → `tess-tpm::unseal` → `tess-keyring::unlock`; bounded, errors never swallowed
-- [ ] `deploy/pam/` snippet + `tess install`/uninstall (idempotent `pam.d` edit)
+- [x] `deploy/pam/` snippet + `tess install`/uninstall (idempotent `pam.d` edit)
 - [ ] Integration test: enroll → simulated session → unlocked, + rollback/recovery coverage, + **"N pre-existing secrets survive enroll/recover/unenroll" preservation assertion**
 
 | Wave | Worktree slug | Depends on | Tasks |

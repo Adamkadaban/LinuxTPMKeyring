@@ -415,3 +415,53 @@ abort decision logic. A CI step additionally installs the compiled `pam_tess.so`
 `pamtester` (backed by `pam_permit`), proving the module dlopens through libpam and that a no-op
 session returns `PAM_SUCCESS` — host-side execution is never run on the developer machine.
 
+
+## PAM wiring & installer (`tess install`)
+
+`tess install` (`crates/tess-cli/src/install/`) wires `pam_tess.so` into the system PAM stack and
+installs the module, idempotently and fail-safe. It splits cleanly into pure string logic and
+filesystem side effects so the safety-critical edit is exhaustively unit-testable without touching
+the host.
+
+### Fail-open by construction
+
+The only line tess adds is `session optional pam_tess.so`. `optional` means a tess session failure
+(no TPM, a slow or declined unseal, a missing helper) is ignored and login proceeds with the keyring
+left locked — it can never be the reason a login fails. The MVP wires only the session phase; there
+is no auth gate yet. When an auth factor lands it must be equally fail-open
+(`auth [success=done default=ignore] pam_tess.so`), and the validator enforces this: every
+`pam_tess.so` line must use a fail-open control flag (`optional`, or a bracket whose `default` is
+`ignore` and where every non-`success` return code falls through to `ignore` — never `ok`/`done`,
+which would grant a login, nor `die`/`bad`, which would block one). A `required`/`requisite`/`sufficient`
+tess line is rejected before any write.
+
+### Idempotent, reversible edit
+
+The tess line lives inside a re-runnable marked block (`# >>> tess >>>` … `# <<< tess <<<`).
+`config::add_block` strips any existing block before appending a fresh one, so re-running install
+yields an identical file with no duplication; `config::remove_block` is its exact inverse for a
+newline-terminated stack, so an install→uninstall round-trip restores the original bytes. The
+filesystem layer (`install`/`uninstall`) backs up the original service file once (before the first
+edit, never overwriting the true original on re-run), runs `validate_stack` on the candidate **before
+writing**, and commits via a temp-file-plus-rename atomic write that preserves the file's mode — a
+crash mid-write can never leave a truncated PAM stack. Uninstall removes the block (validated),
+deletes the installed module on a best-effort basis, and removes the backup; when module-dir
+detection fails it still un-wires the stack (the lockout-relevant part) and leaves the module in
+place rather than aborting. It is a no-op when nothing is installed.
+
+### Module-directory detection
+
+The PAM module directory is detected by locating a stock module (`pam_permit.so`) under `/lib`,
+`/usr/lib`, `/lib64`, `/usr/lib64` and taking its parent — the same locate-`pam_permit.so` approach
+the CI smoke test uses (CI itself only searches `/lib` and `/usr/lib`), so it works across the
+multiarch layouts Debian and others use. `--service`, `--module`, and `--module-dir` override the
+defaults.
+
+### Tests
+
+`install::config` unit tests cover the edit/validate logic (round-trip, idempotency, fail-open
+acceptance/rejection, malformed-line rejection); `install` unit tests and
+`crates/tess-cli/tests/install_roundtrip.rs` drive the full install→uninstall flow against a
+throwaway fixture inside a `TempDir`, asserting byte-for-byte restoration, idempotency, mode
+preservation, and safe no-op uninstall. No test ever reads or writes the host's real `/etc/pam.d` or
+module directory.
