@@ -23,7 +23,6 @@ resolver = "2"
 [dependencies]
 libfuzzer-sys = "0.4"
 serde_json = "1"
-base64 = "0.22"
 
 # The crates whose untrusted-input parsers these harnesses exercise, by path.
 tess-core = { path = "../crates/tess-core" }

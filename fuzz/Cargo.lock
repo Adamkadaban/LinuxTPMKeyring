@@ -1203,7 +1203,6 @@ dependencies = [
 name = "tess-fuzz"
 version = "0.0.0"
 dependencies = [
- "base64",
  "libfuzzer-sys",
  "serde_json",
  "tess-cli",
