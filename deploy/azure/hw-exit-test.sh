@@ -92,9 +92,15 @@ set -euo pipefail
 cd -- "${REMOTE_DIR}"
 
 # TPM access runs cargo under sudo, which leaves root-owned build artifacts (target/) that would
-# break a non-sudo `rm -rf` cleanup on the next run. Chown the tree back to the login user on exit
-# (even if the tests fail) so the harness stays idempotent.
-restore_owner() { sudo chown -R "$(id -u):$(id -g)" . 2>/dev/null || true; }
+# break a non-sudo `rm -rf` cleanup on the next run. If (and only if) a sudo build actually ran,
+# chown the tree back to the login user on exit (even on failure) so the harness stays idempotent.
+# `sudo -n` so the trap never blocks in a non-interactive run.
+used_sudo=0
+restore_owner() {
+  if [[ "${used_sudo}" -eq 1 ]]; then
+    sudo -n chown -R "$(id -u):$(id -g)" . 2>/dev/null || true
+  fi
+}
 trap restore_owner EXIT
 
 if [[ ! -e /dev/tpmrm0 ]]; then
@@ -151,6 +157,7 @@ tpm_run() {
     while IFS= read -r -d ':' part || [[ -n "${part}" ]]; do
       [[ "${part}" == /* ]] && safe_path="${safe_path:+${safe_path}:}${part}"
     done <<< "${PATH}:"
+    used_sudo=1
     sudo --preserve-env=HOME,CARGO_HOME,RUSTUP_HOME env "PATH=${safe_path}" "${bin}" "$@"
   fi
 }
