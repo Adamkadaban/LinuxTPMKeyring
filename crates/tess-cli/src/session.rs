@@ -21,18 +21,10 @@ use crate::enroll::Paths;
 /// own limit regardless.
 const MAX_PIN_BYTES: u64 = 1024;
 
-/// Select the TPM transport: an swtpm when `TESS_SWTPM_HOST`/`TESS_SWTPM_PORT` are set (CI / Azure
-/// smoke runs), otherwise the kernel resource manager at `/dev/tpmrm0`.
+/// Select the TPM transport for the session helper. Delegates to the binary's shared selector so
+/// the swtpm-vs-`/dev/tpmrm0` choice can't drift between subcommands.
 pub fn tcti_from_env() -> TctiConfig {
-    if std::env::var_os("TESS_SWTPM_HOST").is_some()
-        || std::env::var_os("TESS_SWTPM_PORT").is_some()
-    {
-        TctiConfig::swtpm_from_env()
-    } else {
-        TctiConfig::DeviceManager {
-            path: "/dev/tpmrm0".to_string(),
-        }
-    }
+    crate::tcti::from_env()
 }
 
 /// Load the sealed object at `metadata_path`, unseal the key under `pin` over `tcti`, and unlock the

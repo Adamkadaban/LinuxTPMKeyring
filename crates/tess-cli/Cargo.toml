@@ -12,8 +12,8 @@ repository.workspace = true
 name = "tess"
 path = "src/main.rs"
 
-# Spawned by the tess PAM module under its watchdog. Installed to /usr/lib/tess/tess-pam-helper; the
-# module's compiled fallback helper path points here.
+# Spawned by the tess PAM module under its watchdog. The module resolves the helper at runtime; its
+# default install path is wired up by the deploy packaging (Phase 4).
 [[bin]]
 name = "tess-pam-helper"
 path = "src/pam_helper.rs"
