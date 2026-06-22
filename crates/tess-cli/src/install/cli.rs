@@ -27,9 +27,19 @@ pub fn run(args: InstallArgs) -> Result<()> {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_SERVICE_FILE));
 
     if args.uninstall {
-        // Uninstall reads only the service file, the installed module, and the backup; the module
-        // source is irrelevant, so it is left empty rather than resolved.
-        let module_dir = resolve_module_dir(args.module_dir)?;
+        // Unwiring the stack and removing the backup do not require the module directory; detect it
+        // best-effort so a detection failure in a restricted environment still unwires the stack
+        // (the lockout-relevant part). An empty module dir tells `uninstall` to skip module removal.
+        let module_dir = match resolve_module_dir(args.module_dir) {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!(
+                    "warning: could not detect the PAM module directory ({e}); the session stack \
+                     will still be unwired, but an installed pam_tess.so (if any) is left in place."
+                );
+                PathBuf::new()
+            }
+        };
         let plan = InstallPlan {
             service_file,
             module_src: PathBuf::new(),
@@ -46,15 +56,19 @@ pub fn run(args: InstallArgs) -> Result<()> {
                 "no tess block present"
             }
         );
-        println!(
-            "  module {}: {}",
-            plan.installed_module().display(),
-            if report.removed_module {
-                "removed"
-            } else {
-                "absent"
-            }
-        );
+        if plan.module_dir.as_os_str().is_empty() {
+            println!("  module: not removed (module directory undetected)");
+        } else {
+            println!(
+                "  module {}: {}",
+                plan.installed_module().display(),
+                if report.removed_module {
+                    "removed"
+                } else {
+                    "absent"
+                }
+            );
+        }
         println!(
             "  backup {}: {}",
             plan.backup_file().display(),

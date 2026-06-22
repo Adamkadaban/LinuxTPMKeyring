@@ -137,6 +137,12 @@ pub fn validate_stack(content: &str) -> Result<(), ValidationError> {
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
+        // Line-level directives (`@include common-session`, `@substack ...`) are not module lines —
+        // they are common on Debian and can never be a `pam_tess.so` line, so pass them through
+        // rather than rejecting them as malformed.
+        if trimmed.starts_with('@') {
+            continue;
+        }
         let parsed = parse_line(trimmed).map_err(|reason| ValidationError::Malformed {
             line,
             reason,
@@ -209,11 +215,14 @@ fn next_token(s: &str) -> Option<(&str, &str)> {
 }
 
 /// Whether a control flag is fail-open for a tess line — i.e. a tess failure can never fail the
-/// login.
+/// login, and can never silently *grant* a login it shouldn't.
 ///
-/// `optional` is fail-open by definition. A bracketed group is fail-open iff its `default` action is
-/// `ignore` (or `ok`) and no return-value maps to a login-failing action (`die`/`bad`). `required`,
-/// `requisite`, and `sufficient` are never fail-open for tess.
+/// `optional` is fail-open by definition. A bracketed group is fail-open only when every return code
+/// other than `success` falls through (`=ignore`) — including `default`, which must be `ignore`. The
+/// `success` action may complete or count the stack (`ok`/`done`) or be ignored, but no failing or
+/// declining return code may map to `ok`/`done` (that would turn a tess decline into an
+/// authentication success, bypassing the password) or to `die`/`bad` (that would block login).
+/// `required`, `requisite`, and `sufficient` are never fail-open for tess.
 pub fn control_is_fail_open(control: &str) -> bool {
     let control = control.trim();
     if control == "optional" {
@@ -222,20 +231,29 @@ pub fn control_is_fail_open(control: &str) -> bool {
     let Some(inner) = control.strip_prefix('[').and_then(|c| c.strip_suffix(']')) else {
         return false;
     };
-    let mut default_ok = false;
+    let mut default_is_ignore = false;
     for pair in inner.split_whitespace() {
         let Some((key, value)) = pair.split_once('=') else {
             return false;
         };
+        let key = key.trim();
         let value = value.trim();
-        if value == "die" || value == "bad" {
+        if key == "default" {
+            if value != "ignore" {
+                return false;
+            }
+            default_is_ignore = true;
+        } else if key == "success" {
+            // The happy path may complete the stack, count toward success, or be ignored.
+            if !matches!(value, "ok" | "done" | "ignore") {
+                return false;
+            }
+        } else if value != "ignore" {
+            // Every other return code (errors, declines, unknown user) must fall through.
             return false;
         }
-        if key.trim() == "default" {
-            default_ok = value == "ignore" || value == "ok";
-        }
     }
-    default_ok
+    default_is_ignore
 }
 
 #[cfg(test)]
@@ -348,6 +366,11 @@ session optional     pam_gnome_keyring.so auto_start
     #[test]
     fn auth_gate_bracket_form_is_fail_open() {
         assert!(control_is_fail_open("[success=done default=ignore]"));
+        assert!(control_is_fail_open("[success=ok default=ignore]"));
+        // Extra non-success codes are fine as long as they fall through.
+        assert!(control_is_fail_open(
+            "[success=done default=ignore user_unknown=ignore auth_err=ignore]"
+        ));
         let line = "auth [success=done default=ignore] pam_tess.so\n";
         validate_stack(line).unwrap();
     }
@@ -361,8 +384,31 @@ session optional     pam_gnome_keyring.so auto_start
     }
 
     #[test]
+    fn bracket_granting_failure_codes_is_not_fail_open() {
+        // `default=ok`/`done` would turn a tess decline into an authentication success — rejected.
+        assert!(!control_is_fail_open("[success=done default=ok]"));
+        assert!(!control_is_fail_open("[success=done default=done]"));
+        // A specific failure code mapped to a granting action is likewise rejected.
+        assert!(!control_is_fail_open(
+            "[success=done default=ignore auth_err=ok]"
+        ));
+        assert!(!control_is_fail_open(
+            "[success=done default=ignore user_unknown=done]"
+        ));
+    }
+
+    #[test]
     fn bracket_without_default_is_not_fail_open() {
         assert!(!control_is_fail_open("[success=done]"));
+        // `default` must be explicitly `ignore`, even if every other code falls through.
+        assert!(!control_is_fail_open("[success=done auth_err=ignore]"));
+    }
+
+    #[test]
+    fn validate_passes_through_include_directives() {
+        // Debian service files frequently use `@include`; these must not be rejected as malformed.
+        let stack = "@include common-session\nsession optional pam_tess.so\n";
+        validate_stack(stack).unwrap();
     }
 
     #[test]

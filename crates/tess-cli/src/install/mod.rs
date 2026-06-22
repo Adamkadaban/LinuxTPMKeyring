@@ -76,9 +76,12 @@ pub struct UninstallReport {
 
 /// Wire `pam_tess.so` into the service stack and install the module, idempotently.
 ///
-/// Order: back up the original service file (once) → compute the edited stack → **validate it before
-/// writing** → write atomically → install the module. Re-running is a no-op edit (the block is
-/// refreshed in place, never duplicated) and refreshes the module.
+/// Order: compute the edited stack → **validate it before any side effect** → install the module →
+/// back up the original service file (once) → write the stack atomically as the final commit.
+/// Installing the module before editing the stack means a module-copy failure leaves the PAM stack
+/// untouched; and a module that is installed but not yet referenced is inert, so committing the
+/// stack last can never leave a half-applied install that affects login. Re-running is a no-op edit
+/// (the block is refreshed in place, never duplicated) and refreshes the module.
 pub fn install(plan: &InstallPlan) -> Result<InstallReport> {
     let original = fs::read_to_string(&plan.service_file).with_context(|| {
         format!(
@@ -88,6 +91,16 @@ pub fn install(plan: &InstallPlan) -> Result<InstallReport> {
     })?;
 
     let already_wired = config::has_block(&original);
+
+    let edited = config::add_block(&original);
+    config::validate_stack(&edited).with_context(|| {
+        format!(
+            "refusing to write {}: candidate PAM stack failed the fail-open safety check",
+            plan.service_file.display()
+        )
+    })?;
+
+    install_module(plan)?;
 
     let backup = plan.backup_file();
     if !backup.exists() {
@@ -100,18 +113,8 @@ pub fn install(plan: &InstallPlan) -> Result<InstallReport> {
         })?;
     }
 
-    let edited = config::add_block(&original);
-    config::validate_stack(&edited).with_context(|| {
-        format!(
-            "refusing to write {}: candidate PAM stack failed the fail-open safety check",
-            plan.service_file.display()
-        )
-    })?;
-
     atomic_write_preserving_mode(&plan.service_file, &edited)
         .with_context(|| format!("write edited PAM stack to {}", plan.service_file.display()))?;
-
-    install_module(plan)?;
 
     Ok(InstallReport {
         service_file: plan.service_file.clone(),
@@ -125,7 +128,9 @@ pub fn install(plan: &InstallPlan) -> Result<InstallReport> {
 ///
 /// Idempotent and safe when tess is not installed: a missing service file, an already-clean stack,
 /// an absent module, and an absent backup are all no-ops. The stack edit is validated before being
-/// written, exactly as on install.
+/// written, exactly as on install. Unwiring the stack and removing the backup never depend on
+/// knowing the module directory — if `plan.module_dir` is empty (module-dir detection failed),
+/// module removal is skipped but the lockout-relevant stack edit still happens.
 pub fn uninstall(plan: &InstallPlan) -> Result<UninstallReport> {
     let mut removed_block = false;
     match fs::read_to_string(&plan.service_file) {
@@ -151,9 +156,13 @@ pub fn uninstall(plan: &InstallPlan) -> Result<UninstallReport> {
         }
     }
 
-    let installed = plan.installed_module();
-    let removed_module = remove_if_exists(&installed)
-        .with_context(|| format!("remove installed module {}", installed.display()))?;
+    let removed_module = if plan.module_dir.as_os_str().is_empty() {
+        false
+    } else {
+        let installed = plan.installed_module();
+        remove_if_exists(&installed)
+            .with_context(|| format!("remove installed module {}", installed.display()))?
+    };
 
     let backup = plan.backup_file();
     let removed_backup =
@@ -257,8 +266,9 @@ pub fn detect_module_dir() -> Result<PathBuf> {
     ))
 }
 
-/// Bounded breadth-first search for a file named `needle` beneath `root`, returning its parent
-/// directory. Does not follow into symlinked directories, so a symlink loop can't trap the walk.
+/// Bounded, depth-limited search (an explicit LIFO stack) for a file named `needle` beneath `root`,
+/// returning its parent directory. Does not follow into symlinked directories, so a symlink loop
+/// can't trap the walk.
 fn find_module_dir(root: &Path, needle: &str, max_depth: usize) -> Option<PathBuf> {
     let mut frontier = vec![(root.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = frontier.pop() {
@@ -430,11 +440,42 @@ session optional     pam_gnome_keyring.so auto_start
         let plan = plan_in(&root, FIXTURE);
         fs::remove_file(&plan.module_src).unwrap();
 
-        // The stack edit + validation succeed, but installing the module fails; the edit has been
-        // written (it is safe and fail-open) yet no module exists, so a later session is a no-op.
+        // The module is installed before the stack is committed, so a missing module source aborts
+        // install with the PAM stack left exactly as it was — no block, no backup, no module.
         let err = install(&plan).unwrap_err();
         assert!(err.to_string().contains("module source"));
+        assert_eq!(
+            fs::read_to_string(&plan.service_file).unwrap(),
+            FIXTURE,
+            "the PAM stack must be untouched when the module can't be installed"
+        );
         assert!(!plan.installed_module().exists());
+        assert!(!plan.backup_file().exists());
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn uninstall_unwires_stack_even_without_module_dir() {
+        let root = tempdir();
+        let plan = plan_in(&root, FIXTURE);
+        install(&plan).unwrap();
+
+        // Simulate module-dir detection having failed: the stack must still be unwired and the
+        // backup removed, even though the module can't be located for removal.
+        let blind = InstallPlan {
+            module_dir: PathBuf::new(),
+            ..plan.clone()
+        };
+        let report = uninstall(&blind).unwrap();
+        assert!(report.removed_block, "stack unwired without a module dir");
+        assert!(
+            !report.removed_module,
+            "module removal skipped when dir unknown"
+        );
+        assert_eq!(fs::read_to_string(&plan.service_file).unwrap(), FIXTURE);
+        // The actually-installed module is left in place (not located), which is the safe outcome.
+        assert!(plan.installed_module().exists());
 
         fs::remove_dir_all(&root).ok();
     }

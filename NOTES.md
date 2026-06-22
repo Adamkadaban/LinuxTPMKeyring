@@ -366,7 +366,8 @@ Gotchas worth remembering:
   drift. Asserted by counting `BEGIN_MARKER`/`SNIPPET_LINE` occurrences == 1.
 - **The fail-open invariant is enforced, not just documented.** `validate_stack` parses every
   effective line and rejects any `pam_tess.so` line whose control flag is not fail-open (`optional`,
-  or a bracket with `default=ignore`/`ok` and no `die`/`bad`). `required`/`requisite`/`sufficient`
+  or a bracket whose `default=ignore` and whose every non-`success` code is `ignore` — never
+  `ok`/`done` (would grant a login) nor `die`/`bad`). `required`/`requisite`/`sufficient`
   tess lines are rejected *before* the file is written; the edit aborts and the original is untouched
   (it is never the temp file — temp-plus-rename atomic write). Non-tess `required` lines (e.g.
   `pam_unix`) still pass — the rule is tess-specific.
@@ -380,3 +381,13 @@ Gotchas worth remembering:
 - **Tests use temp fixtures only.** `/etc/pam.d` appears in `tess-cli` solely as the
   `DEFAULT_SERVICE_FILE` const and one pure path-string assertion (`backup_path`); no test reads or
   writes a real PAM path. Round-trip/idempotency live in `install::tests` + `tests/install_roundtrip.rs`.
+- **Install the module *before* committing the stack edit** (Copilot review #31): a module-copy
+  failure then leaves the PAM stack untouched, and an installed-but-unreferenced module is inert, so
+  the stack write is the single atomic commit point. Reordered to validate → install module → backup
+  → atomic write.
+- **`validate_stack` must pass `@include` directives through** — Debian `/etc/pam.d` files use
+  `@include common-session`; rejecting them as malformed would abort installs on real systems. They
+  can never be a `pam_tess.so` line, so they skip the fail-open check like comments.
+- **Uninstall must not depend on module-dir detection.** Unwiring the stack + removing the backup is
+  the lockout-relevant part; module removal is best-effort. An empty `plan.module_dir` (detection
+  failed) skips module removal but still restores the stack.

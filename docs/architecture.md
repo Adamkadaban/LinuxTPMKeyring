@@ -431,7 +431,8 @@ left locked — it can never be the reason a login fails. The MVP wires only the
 is no auth gate yet. When an auth factor lands it must be equally fail-open
 (`auth [success=done default=ignore] pam_tess.so`), and the validator enforces this: every
 `pam_tess.so` line must use a fail-open control flag (`optional`, or a bracket whose `default` is
-`ignore`/`ok` with no return value mapped to `die`/`bad`). A `required`/`requisite`/`sufficient`
+`ignore` and where every non-`success` return code falls through to `ignore` — never `ok`/`done`,
+which would grant a login, nor `die`/`bad`, which would block one). A `required`/`requisite`/`sufficient`
 tess line is rejected before any write.
 
 ### Idempotent, reversible edit
