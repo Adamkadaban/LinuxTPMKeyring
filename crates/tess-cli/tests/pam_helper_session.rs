@@ -1,8 +1,10 @@
 //! `sim` + `daemon-tests` end-to-end proof of the PAM session path: enroll against an isolated swtpm
 //! and a throwaway `gnome-keyring-daemon`, lock the keyring, then run the real `tess-pam-helper`
-//! binary exactly as the PAM module's watchdog does — PIN on stdin — and assert it unseals the key
-//! and flips the keyring to unlocked with every pre-existing item intact. Throwaway keyrings only;
-//! every spawned process (swtpm, dbus, keyring, helper) is reaped on drop or at the end of the test.
+//! binary with the PIN on its stdin — the same contract the PAM module relies on (the module uses a
+//! `memfd`-backed stdin transfer; this test feeds stdin via a pipe, since the SIGPIPE hazard the
+//! memfd avoids only applies inside the login process) — and assert it unseals the key and flips the
+//! keyring to unlocked with every pre-existing item intact. Throwaway keyrings only; every spawned
+//! process (swtpm, dbus, keyring, helper) is reaped on drop or at the end of the test.
 #![cfg(all(feature = "sim", feature = "daemon-tests"))]
 
 mod common;
@@ -146,7 +148,15 @@ fn run_helper(bus_address: &str, data_home: &std::path::Path, tcti: &TctiConfig)
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
-            let _ = child.wait();
+            // Bounded reap after the kill — never an unbounded `wait()` that could itself hang CI if
+            // the helper were stuck in uninterruptible I/O. A leftover zombie (if even this loop is
+            // outlasted) is reaped by the OS when the test binary exits.
+            for _ in 0..40 {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
             panic!("tess-pam-helper did not finish within the deadline");
         }
         std::thread::sleep(Duration::from_millis(50));
