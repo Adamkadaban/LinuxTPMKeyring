@@ -22,6 +22,9 @@ pub fn run(pin: Option<String>) -> Result<()> {
         });
         SecretBytes::new(entered.as_bytes().to_vec())
     };
+    if pin.is_empty() {
+        anyhow::bail!("PIN must not be empty");
+    }
     let old = {
         let entered = Zeroizing::new(
             rpassword::prompt_password("Current keyring password: ")
