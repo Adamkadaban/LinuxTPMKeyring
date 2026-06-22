@@ -187,7 +187,8 @@ swtpm in CI (`--features sim`).
 - [x] Key-gen: `getrandom` mixed with TPM `GetRandom`; constant-time PIN handling
 - [x] Versioned blob+metadata persistence; **no secret/secret-hash ever on disk**
 - [x] DA-lockout error mapping + lockout-state read + PIN-holder recovery (privileged lockout-hierarchy reset deferred → #16 / ADR-0008)
-- [ ] Tests: round-trip, wrong-PIN, lockout, persistence reload, **session-encryption assertion** — swtpm (CI) + vTPM (hw)
+- [x] Tests (swtpm/CI, `--features sim`): round-trip, wrong-PIN, lockout, persistence reload, **session-encryption assertion**; `hw`-feature suite + Azure exit-test harness + `doctor` TPM detail authored
+- [ ] Same suite green on the **Azure vTPM** (`cargo test -p tess-tpm --features hw`) — orchestrator's real-hardware exit run
 
 | Wave | Worktree slug | Depends on | Tasks |
 |---|---|---|---|

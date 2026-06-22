@@ -15,7 +15,7 @@ use tss_esapi::structures::{
 };
 use tss_esapi::Context;
 
-use crate::esapi::{start_salted_hmac_session, Error, Result};
+use crate::esapi::{encrypted_session_attributes, start_salted_hmac_session, Error, Result};
 
 /// Bytes of the random sealing key and the SHA-256 name hash that bounds the PIN authValue length.
 const SEALED_KEY_LEN: usize = 32;
@@ -216,8 +216,6 @@ fn policy_auth_value_digest(context: &mut Context) -> Result<Digest> {
 /// parameter-encrypted on the bus like the seal path. `continue_session` keeps it live across the
 /// `PolicyAuthValue` assertion and the subsequent `Unseal`.
 fn start_policy_session(context: &mut Context, primary: KeyHandle) -> Result<AuthSession> {
-    use tss_esapi::attributes::SessionAttributesBuilder;
-
     let session = context
         .start_auth_session(
             Some(primary),
@@ -230,11 +228,7 @@ fn start_policy_session(context: &mut Context, primary: KeyHandle) -> Result<Aut
         .map_err(|e| Error::Policy(e.to_string()))?
         .ok_or(Error::NoSession)?;
 
-    let (attributes, mask) = SessionAttributesBuilder::new()
-        .with_decrypt(true)
-        .with_encrypt(true)
-        .with_continue_session(true)
-        .build();
+    let (attributes, mask) = encrypted_session_attributes();
     context
         .tr_sess_set_attributes(session, attributes, mask)
         .map_err(|e| Error::Policy(e.to_string()))?;

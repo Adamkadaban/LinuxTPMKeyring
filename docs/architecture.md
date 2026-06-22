@@ -117,11 +117,36 @@ Two crate features gate the transports that need a TPM:
 cargo test -p tess-tpm --features sim   # starts swtpm, opens an ESAPI context, creates the ECC
                                         # primary, seals/unseals, persists + reloads, exercises DA
                                         # lockout, tears swtpm down
+cargo test -p tess-tpm --features hw    # the same core against a real /dev/tpmrm0 (Azure vTPM only)
 ```
 
 `sim` exercises swtpm; `hw` targets `/dev/tpmrm0` and is validated only on the Azure vTPM, never on
 the dev host. Both are off by default, so plain `cargo test --workspace` stays green and
 hardware-free; with `sim` enabled the integration test skips cleanly if `swtpm` is not on `PATH`.
+
+## Hardware validation (`tess-tpm`, `hw` feature)
+
+The `hw`-gated test (`crates/tess-tpm/tests/hw_device.rs`) is the body of the Phase 1 exit test on a
+real TPM. It opens an ESAPI context over the device TCTI against `/dev/tpmrm0` and drives the exact
+same `seal`/`unseal`/`persist`/lockout code the `sim` tests do — no crypto is duplicated — through
+one serial sequence: confirm a TPM 2.0 family indicator; seal a random 32-byte key under a PIN and
+unseal it back; persist + reload across a re-derived primary and unseal again; assert a wrong PIN
+maps to `WrongPin` and ticks the DA counter; then hammer wrong PINs until the TPM surfaces a distinct
+`Lockout`. It is one test (not several) on purpose: a real TPM has a single global DA-lockout
+counter, so parallel tests would interfere. When `/dev/tpmrm0` is absent it skips with a notice, so
+the feature still compiles on a hardware-free host without ever touching a TPM.
+
+### Session-encryption assertion
+
+Every seal/unseal session must be parameter-encrypted in **both** directions so neither the PIN
+authValue (command parameters) nor the unsealed key (response parameters) crosses the TPM bus in the
+clear. ESAPI exposes no getter for a started session's attributes, so the attribute set is factored
+into `encrypted_session_attributes()` — shared by the HMAC session and the policy session — and a
+unit test (`seal_unseal_sessions_enable_parameter_encryption`) asserts `decrypt`, `encrypt`, and
+`continue_session` are set and that the attribute mask actually applies the decrypt/encrypt bits. A
+regression that drops parameter encryption from the shared helper fails that test in the default,
+hardware-free `cargo test --workspace`.
+
 
 ### Local QEMU vTPM VM (optional, contributors only)
 
@@ -137,6 +162,7 @@ host** — they exist purely as a contributor convenience and only ever talk to 
 | `deploy/azure/provision.sh` | One-command bring-up: creates the resource group and deploys `main.bicep` via `az deployment group create`; prints the `ssh` command. Region/size/name/key are env-overridable. |
 | `deploy/azure/deallocate.sh` | Stops (deallocates) the VM to halt compute billing without deleting it. |
 | `deploy/azure/teardown.sh` | Lists the tagged resources, then (after explicit confirmation) deletes the whole resource group. |
+| `deploy/azure/hw-exit-test.sh` | Runs the Phase 1 hardware exit test against an **already-provisioned** VM: tars the workspace over SSH, installs the toolchain + tpm2-tss deps, runs `cargo test -p tess-tpm --features hw` against `/dev/tpmrm0`, then `tess doctor`. Provisions/tears down nothing and runs no `az` — lifecycle stays with the orchestrator. Inputs: `TESS_HW_SSH`, `TESS_SSH_KEY`. |
 
 The Azure vTPM is the only real TPM 2.0 acceptance gate; its PCR values differ from bare metal, so
 the MVP TPM policy binds the PIN authValue only (no PCR binding). Cost discipline — deallocate when
@@ -147,6 +173,12 @@ plan in [`PLAN.md`](../PLAN.md) §8.
 
 `tess doctor` (`crates/tess-cli/src/doctor.rs`) performs read-only readiness probes — `/dev/tpmrm0`
 and `/dev/tpm0` presence, a Secret Service daemon binary on `PATH` (the daemon is *not* contacted),
-and `fprintd` on `PATH` — and prints an OK/MISSING table with a one-line verdict. It never opens a
-D-Bus session, touches a secret, or unlocks anything; per project policy it runs in CI or on a fresh
-Azure VM for self-check, not the developer host. Only the TPM resource manager is required for the verdict.
+and `fprintd` on `PATH` — and prints an OK/MISSING table with a one-line verdict. When `/dev/tpmrm0`
+is present it additionally opens a **read-only** ESAPI context to report the TPM version and
+DA-lockout state (`present; TPM 2.0 (spec rev N); DA lockout C/M`) via `TPM2_GetCapability` only — no
+seal/unseal, no authorization, no secret. That capability read is best-effort: any failure (no
+runtime TCTI library, a busy TPM) downgrades to `present; TPM detail unavailable (<reason>)` and
+never panics or fails the verdict, which still depends only on the device node's presence. It never
+opens a D-Bus session, touches a secret, or unlocks anything; per project policy it runs in CI or on
+a fresh Azure VM for self-check, not the developer host. Only the TPM resource manager is required
+for the verdict.

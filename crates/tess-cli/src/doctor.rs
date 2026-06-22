@@ -9,9 +9,14 @@ use std::env;
 use std::fmt::Write as _;
 use std::path::Path;
 
+use tess_tpm::{read_lockout_state, read_tpm_version, LockoutState, TctiConfig, TpmVersion};
+
 /// Display name of the TPM resource-manager probe. Shared between the probe
 /// construction and the verdict logic so the two can't drift.
 const TPM_RM_PROBE_NAME: &str = "TPM resource manager (/dev/tpmrm0)";
+
+/// Kernel resource-manager device node the TPM probe reads through.
+const TPM_RM_PATH: &str = "/dev/tpmrm0";
 
 /// Outcome of a single readiness probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,11 +179,78 @@ fn probe_fprintd() -> Probe {
 /// Run all probes against the live system (read-only).
 pub fn run_probes() -> Vec<Probe> {
     vec![
-        probe_path(TPM_RM_PROBE_NAME, "/dev/tpmrm0"),
+        probe_tpm_rm(),
         probe_path("TPM raw device (/dev/tpm0)", "/dev/tpm0"),
         probe_keyring(),
         probe_fprintd(),
     ]
+}
+
+/// Probe the TPM resource manager. When the device node is present this additionally opens a
+/// read-only ESAPI context to report the TPM version and DA-lockout state. The capability read is
+/// best-effort: any failure (no runtime TCTI library, a busy or refusing TPM) downgrades to a
+/// "detail unavailable" note carrying the reason — the node's presence alone still satisfies the
+/// verdict, and nothing here is ever a secret or a mutation.
+fn probe_tpm_rm() -> Probe {
+    if !Path::new(TPM_RM_PATH).exists() {
+        return Probe::new(
+            TPM_RM_PROBE_NAME,
+            ProbeStatus::Missing,
+            "device node not found",
+        );
+    }
+    let detail = match read_tpm_caps() {
+        Ok((version, lockout)) => format_tpm_detail(
+            Some(&version.to_string()),
+            Some(&lockout_summary(&lockout)),
+            None,
+        ),
+        Err(reason) => format_tpm_detail(None, None, Some(&reason)),
+    };
+    Probe::new(TPM_RM_PROBE_NAME, ProbeStatus::Ok, &detail)
+}
+
+/// Best-effort read-only capability read over the device TCTI: TPM version + DA-lockout state. The
+/// error is rendered to a string so the caller can fold it into the probe detail rather than panic.
+fn read_tpm_caps() -> Result<(TpmVersion, LockoutState), String> {
+    let cfg = TctiConfig::DeviceManager {
+        path: TPM_RM_PATH.to_string(),
+    };
+    let mut context = cfg.open_context().map_err(|e| e.to_string())?;
+    let version = read_tpm_version(&mut context).map_err(|e| e.to_string())?;
+    let lockout = read_lockout_state(&mut context).map_err(|e| e.to_string())?;
+    Ok((version, lockout))
+}
+
+/// One-line DA-lockout summary: disabled, locked out, or `counter/max` remaining headroom.
+fn lockout_summary(state: &LockoutState) -> String {
+    if state.max_auth_fail == 0 {
+        "DA lockout disabled".to_string()
+    } else if state.is_locked_out() {
+        format!("DA LOCKED OUT ({}/{})", state.counter, state.max_auth_fail)
+    } else {
+        format!("DA lockout {}/{}", state.counter, state.max_auth_fail)
+    }
+}
+
+/// Compose the TPM resource-manager probe detail from a best-effort capability read. Pure so it can
+/// be unit-tested without a TPM; `unavailable` short-circuits to the reason the read failed.
+fn format_tpm_detail(
+    version: Option<&str>,
+    lockout: Option<&str>,
+    unavailable: Option<&str>,
+) -> String {
+    if let Some(reason) = unavailable {
+        return format!("present; TPM detail unavailable ({reason})");
+    }
+    let mut parts = vec!["present".to_string()];
+    if let Some(v) = version {
+        parts.push(v.to_string());
+    }
+    if let Some(l) = lockout {
+        parts.push(l.to_string());
+    }
+    parts.join("; ")
 }
 
 /// Entry point for the `doctor` subcommand.
@@ -269,6 +341,51 @@ mod tests {
     fn status_labels_are_stable() {
         assert_eq!(ProbeStatus::Ok.label(), "OK");
         assert_eq!(ProbeStatus::Missing.label(), "MISSING");
+    }
+
+    #[test]
+    fn tpm_detail_reports_version_and_lockout_when_present() {
+        let detail =
+            format_tpm_detail(Some("TPM 2.0 (spec rev 138)"), Some("DA lockout 0/3"), None);
+        assert_eq!(detail, "present; TPM 2.0 (spec rev 138); DA lockout 0/3");
+    }
+
+    #[test]
+    fn tpm_detail_unavailable_carries_reason() {
+        let detail = format_tpm_detail(None, None, Some("no TCTI library"));
+        assert_eq!(detail, "present; TPM detail unavailable (no TCTI library)");
+        // Even with version/lockout supplied, an unavailable reason must win (read failed).
+        let detail = format_tpm_detail(Some("TPM 2.0"), Some("DA lockout 0/3"), Some("busy"));
+        assert_eq!(detail, "present; TPM detail unavailable (busy)");
+    }
+
+    #[test]
+    fn tpm_detail_present_without_caps_is_just_present() {
+        assert_eq!(format_tpm_detail(None, None, None), "present");
+    }
+
+    #[test]
+    fn lockout_summary_covers_disabled_active_and_locked() {
+        let disabled = LockoutState {
+            counter: 5,
+            max_auth_fail: 0,
+            interval: 0,
+        };
+        assert_eq!(lockout_summary(&disabled), "DA lockout disabled");
+
+        let active = LockoutState {
+            counter: 1,
+            max_auth_fail: 3,
+            interval: 1000,
+        };
+        assert_eq!(lockout_summary(&active), "DA lockout 1/3");
+
+        let locked = LockoutState {
+            counter: 3,
+            max_auth_fail: 3,
+            interval: 1000,
+        };
+        assert_eq!(lockout_summary(&locked), "DA LOCKED OUT (3/3)");
     }
 
     #[test]

@@ -157,3 +157,36 @@ Gotchas worth remembering:
   `persist_lockout_sim.rs`) to avoid duplicating ~120 lines. `pgrep -a swtpm` clean after every run.
 - `cargo deny check` clean with `base64 = "0.22"` added (MIT/Apache); default `cargo test --workspace`
   stays swtpm-free and green.
+
+## 2026-06-21 — hw-feature exit test + session-encryption assertion + doctor TPM detail (issue #11)
+**Resolution:** Added an `hw`-gated single serial test against `/dev/tpmrm0`
+(`crates/tess-tpm/tests/hw_device.rs:1`) reusing the existing seal/unseal/persist/lockout code; a
+shared `encrypted_session_attributes()` (`crates/tess-tpm/src/esapi.rs:179`) routed through both the
+HMAC and policy sessions with a hardware-free regression unit test asserting decrypt+encrypt+mask;
+read-only `read_tpm_version` (`crates/tess-tpm/src/caps.rs:1`); `tess doctor` TPM detail
+(`crates/tess-cli/src/doctor.rs:175`); and `deploy/azure/hw-exit-test.sh` (orchestrator-invoked).
+PR for #11. The real Azure vTPM exit run is the orchestrator's; #11 stays open until it passes.
+
+Gotchas worth remembering:
+- **One real TPM = one global DA-lockout counter, so hw tests MUST be serial.** `cargo test` runs
+  test fns in parallel; against the single `/dev/tpmrm0` device, concurrent seal/unseal/lockout
+  fns would clobber each other's lockout state. The `sim` tests get away with parallelism because
+  each spawns its *own* swtpm. The hw test is therefore one `#[test]` driving the whole
+  round-trip→persist→wrong-PIN→hammer-to-lockout sequence end-to-end.
+- **ESAPI 7.7 has no getter for a *started* session's attributes** (`SessionAttributes` is only
+  read back off the builder output, never off a live `AuthSession`). So the session-encryption
+  assertion tests the shared `encrypted_session_attributes()` source the helpers call, not the live
+  session. `SessionAttributes::{decrypt,encrypt,continue_session}` accessors exist; the mask's
+  getters do NOT (only setters), so assert the mask via `u8::from(mask)` bit math (TPMA_SESSION = u8,
+  decrypt=bit5, encrypt=bit6).
+- `PropertyTag::FamilyIndicator` packs ASCII "2.0\0" big-endian; decode printable non-NUL bytes,
+  fall back to hex. `PropertyTag::Revision` is spec-rev×100 (138 = 1.38). Both read via the existing
+  `lockout::read_property` (made `pub(crate)` for reuse from `caps.rs`).
+- doctor's TPM detail opens a context only when `/dev/tpmrm0` exists and is fully best-effort: any
+  open/cap-read failure becomes `present; TPM detail unavailable (<reason>)` — reason carried, not
+  swallowed — and never changes the verdict (still node-presence only). Never run `tess doctor` on
+  this host; only the pure formatter fns are unit-tested locally.
+- `deploy/azure/hw-exit-test.sh`: SC2029 (client-side `REMOTE_DIR` expansion into the ssh command)
+  is intentional and silenced with explicit `# shellcheck disable=SC2029`; docker shellcheck clean
+  (exit 0). Runs no `az`, provisions/tears down nothing. Wraps cargo in `sudo --preserve-env` only
+  when the login user can't r+w `/dev/tpmrm0`.

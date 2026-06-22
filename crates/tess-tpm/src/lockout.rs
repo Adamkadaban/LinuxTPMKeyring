@@ -57,7 +57,7 @@ pub fn read_lockout_state(context: &mut Context) -> Result<LockoutState> {
 /// Read a single TPM property as a `u32`. `get_capability` returns the requested property (or the
 /// next defined one at/after it); the lockout properties are defined on every TPM2, so request
 /// exactly one and confirm the tag matches rather than trusting positional return.
-fn read_property(context: &mut Context, tag: PropertyTag) -> Result<u32> {
+pub(crate) fn read_property(context: &mut Context, tag: PropertyTag) -> Result<u32> {
     let (data, _more) = context
         .get_capability(CapabilityType::TpmProperties, u32::from(tag), 1)
         .map_err(|e| Error::Capability(e.to_string()))?;

@@ -7,11 +7,13 @@ use std::str::FromStr;
 use tss_esapi::tcti_ldr::{DeviceConfig, NetworkTPMConfig, TctiNameConf};
 use tss_esapi::Context;
 
+mod caps;
 mod esapi;
 mod lockout;
 pub mod persist;
 mod seal;
 
+pub use caps::{read_tpm_version, TpmVersion};
 pub use esapi::{
     create_primary, ecc_storage_primary_template, start_salted_hmac_session, Error, Result,
 };
