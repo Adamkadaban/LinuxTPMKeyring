@@ -265,9 +265,11 @@ Hand-rolled PAM FFI (`pam_get_item`/`pam_set_data`/`pam_get_data`/`pam_get_autht
 `pam_conv`/`pam_message`/`pam_response` + the four `pam_sm_*` entrypoints) confined to
 `crates/tess-pam/src/ffi.rs` — the only `unsafe` in the workspace. `helper::run` supervises a child
 under a `Watchdog { deadline, term_grace, poll }`: poll `try_wait`, on deadline SIGTERM → grace →
-SIGKILL → `wait` (reaped, no zombie). `gate::{classify,decide}` map the outcome to PAM codes (auth
-fails open to `PAM_AUTHINFO_UNAVAIL`; session always `PAM_SUCCESS`); `GateEnv::detect` aborts
-`PAM_IGNORE` for SSH/remote (`PAM_RHOST`/`SSH_*`) and no-TPM. `crates/tess-pam/src/helper.rs:71` ·
+SIGKILL → bounded `try_wait` poll (no blocking `wait`); a child stuck in uninterruptible I/O is handed
+to a detached reaper thread so the call returns bounded yet still leaves no zombie. `gate::{classify,
+decide}` map the outcome to PAM codes (auth fails open to `PAM_AUTHINFO_UNAVAIL`; session always
+`PAM_SUCCESS`); the gate aborts (auth `PAM_IGNORE`, session `PAM_SUCCESS`) for a remote session
+(non-empty `PAM_RHOST`) and no-TPM. `crates/tess-pam/src/helper.rs:71` ·
 `crates/tess-pam/src/gate.rs:1` · `crates/tess-pam/src/ffi.rs:1` · PR for #22.
 
 Gotchas worth remembering:

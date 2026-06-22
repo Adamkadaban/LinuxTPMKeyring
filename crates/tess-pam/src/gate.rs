@@ -88,14 +88,11 @@ impl GateEnv {
     }
 }
 
-/// A non-empty `PAM_RHOST`, or an SSH marker in the environment, means a remote session.
+/// A non-empty `PAM_RHOST` means a remote session. This relies only on the authoritative
+/// PAM-provided item, not on environment variables, which are not a trustworthy signal in the
+/// privileged PAM context.
 pub fn is_remote_session(pam_rhost: Option<&str>) -> bool {
-    if pam_rhost.is_some_and(|host| !host.is_empty()) {
-        return true;
-    }
-    ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
-        .iter()
-        .any(|key| std::env::var_os(key).is_some())
+    pam_rhost.is_some_and(|host| !host.is_empty())
 }
 
 /// Whether a TPM resource-manager or raw device node is present.
@@ -239,8 +236,9 @@ mod tests {
 
     #[test]
     fn pam_rhost_marks_a_remote_session() {
-        // A non-empty PAM_RHOST is conclusive without consulting the environment.
         assert!(is_remote_session(Some("10.0.0.5")));
+        assert!(!is_remote_session(Some("")));
+        assert!(!is_remote_session(None));
     }
 
     #[test]
