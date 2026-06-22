@@ -90,6 +90,17 @@ tar czf - \
   | ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" \
       "rm -rf -- '${REMOTE_DIR}' && mkdir -p -- '${REMOTE_DIR}' && tar xzf - -C '${REMOTE_DIR}'"
 
+# `cargo deb` writes to target/debian/, which the tarball above excludes. When a locally built .deb
+# is present, ship it separately into the same relative path the remote resolver scans so the
+# packaged-install path is actually exercised; otherwise the remote falls back to a source build.
+local_deb="$(find "${REPO_ROOT}/target/debian" -maxdepth 1 -name '*.deb' 2>/dev/null | head -n1 || true)"
+if [[ -n "${local_deb}" ]]; then
+  echo ">> Uploading prebuilt package $(basename "${local_deb}") ..."
+  # shellcheck disable=SC2029
+  ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "mkdir -p -- '${REMOTE_DIR}/target/debian'"
+  scp "${SSH_OPTS[@]}" "${local_deb}" "${SSH_TARGET}:${REMOTE_DIR}/target/debian/"
+fi
+
 echo ">> Running the MVP acceptance demo on the VM ..."
 set +e
 # REMOTE_DIR is intentionally expanded client-side to seed the remote shell's working directory.
