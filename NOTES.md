@@ -631,4 +631,4 @@ Gotchas worth remembering:
 ## 2026-06-22 — code comments back-referenced in-repo docs (ADR/AGENTS pointers)
 **Resolution:** stripped `(see docs/adr/0001)` and `(see AGENTS.md)` from doc comments, keeping the rationale; rest of skeleton was already clean. crates/tess-core/src/lib.rs:76,119 · #13
 ## 2026-06-22 — qemu/swtpm helper polish (deferred #5 review items)
-**Resolution:** `wait_for_port` uses `bash -c '…' _ "$host" "$port"` ($1/$2 + SC2016 disable); `up.sh` gates swtpm reuse on `/proc/<pid>/comm` and clears a stale `${SWTPM_SOCK}` + `${SWTPM_PIDFILE}` before relaunch; checksum-fail paths `rm -f ${BASE_IMG}.tmp` before `die`. testing/swtpm/run.sh:60 · deploy/qemu/up.sh:75 · #7
+**Resolution:** `wait_for_port` uses `bash -c '…' _ "$host" "$port"` ($1/$2 + SC2016 disable); `up.sh` gates swtpm reuse on `/proc/<pid>/comm` (failing fast when a live PID's comm is unreadable rather than clobbering its socket) and clears a stale `"${SWTPM_SOCK}"` + `"${SWTPM_PIDFILE}"` before relaunch; checksum-fail paths `rm -f "${BASE_IMG}.tmp"` before `die`. testing/swtpm/run.sh:60 · deploy/qemu/up.sh:75 · #7
