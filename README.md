@@ -89,8 +89,10 @@ explicit, fail-open `tess install`, so installing the package can never lock you
 packaged `tess` lands in `/usr/bin` with no module beside it (`tess install` looks next to the
 binary by default), point it at the installed module with `--module
 /usr/lib/x86_64-linux-gnu/security/pam_tess.so` — which `deploy/install.sh` does for you. Runtime
-dependencies (`gnome-keyring`, the tpm2-tss libraries) are pulled in automatically; `fprintd` is a
-Recommends (the optional fingerprint front gate; tess runs PIN-only without it).
+dependencies (`gnome-keyring`, the tpm2-tss libraries) are pulled in automatically. `fprintd` (the
+optional fingerprint front gate; tess runs PIN-only without it) is a Recommends — apt installs it by
+default, but it is removable and you can skip it with `deploy/install.sh --no-recommends` (or
+`apt --no-install-recommends`).
 
 ## Use
 

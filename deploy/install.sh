@@ -27,15 +27,18 @@ usage() {
 Usage: deploy/install.sh [options]
 
 Options:
-  --deb PATH   Install this prebuilt .deb instead of building from source.
-  --no-pam     Install the package but skip `tess install` (no PAM wiring).
-  --yes        Pass -y to apt for non-interactive installs.
-  -h, --help   Show this help and exit.
+  --deb PATH       Install this prebuilt .deb instead of building from source.
+  --no-pam         Install the package but skip `tess install` (no PAM wiring).
+  --no-recommends  Pass --no-install-recommends to apt, so the optional fprintd
+                   fingerprint stack (a Recommends) is not pulled in.
+  --yes            Pass -y to apt for non-interactive installs.
+  -h, --help       Show this help and exit.
 
 With no --deb, the script builds the workspace in release mode and runs `cargo deb` to produce the
-.deb, then installs it (pulling in runtime dependencies). Unless --no-pam is given it runs
-`tess install` to wire the fail-open PAM session module. Re-running is safe: the apt install and
-`tess install` are both idempotent.
+.deb, then installs it (pulling in runtime dependencies). apt installs Recommends by default, so
+fprintd comes along unless you pass --no-recommends. Unless --no-pam is given it runs `tess install`
+to wire the fail-open PAM session module. Re-running is safe: the apt install and `tess install` are
+both idempotent.
 EOF
 }
 
@@ -59,6 +62,10 @@ while [ "$#" -gt 0 ]; do
 		;;
 	--no-pam)
 		run_pam=0
+		shift
+		;;
+	--no-recommends)
+		apt_args+=("--no-install-recommends")
 		shift
 		;;
 	--yes)

@@ -557,7 +557,8 @@ Gotchas worth remembering:
   tpm2-tss libs (libtss2-esys/-mu/-tctildr) + libc/libpam from the packaged ELFs via dpkg-shlibdeps;
   gnome-keyring is reached over D-Bus (not linked) so it is named explicitly. fprintd is the optional
   fingerprint front gate — tess is PIN-only without it — so Recommends, not Depends, is the
-  Debian-correct relationship (avoids pulling the fingerprint stack onto readers-less machines).
+  Debian-correct relationship (apt installs Recommends by default, but fprintd stays removable and
+  `deploy/install.sh --no-recommends` / `apt --no-install-recommends` skips it).
 - **The package never edits `/etc/pam.d`.** Lockout safety: PAM wiring stays in the explicit,
   fail-open `tess install`. The `postinst` only prints instructions and `exit 0`s. CI runs
   `dpkg -c` (contents-only) and never `dpkg -i`, so it can't perturb the runner.
