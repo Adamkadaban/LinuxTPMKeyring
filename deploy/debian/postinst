@@ -15,10 +15,13 @@ configure)
 
 	# Apply the packaged udev rule to the already-present TPM device without a reboot. Skip in a
 	# chroot/container with no running udev (e.g. an image build) — there the rule applies on first
-	# boot. Surface, never swallow, a reload failure: the rule is in place and a reboot will apply it.
+	# boot. tpm0 lives in the `tpm` subsystem and tpmrm0 in the separate `tpmrm` subsystem, so trigger
+	# each on its own (one unambiguous --subsystem-match per call). Surface, never swallow, a failure:
+	# the rule is in place and a reboot will apply it.
 	if [ -d /run/udev ] && command -v udevadm >/dev/null 2>&1; then
 		if ! { udevadm control --reload-rules &&
-			udevadm trigger --subsystem-match=tpm --subsystem-match=tpmrm; }; then
+			udevadm trigger --subsystem-match=tpm &&
+			udevadm trigger --subsystem-match=tpmrm; }; then
 			echo "tess: warning: udev reload failed; the TPM access rule applies after reboot." >&2
 		fi
 	fi
