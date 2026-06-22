@@ -59,13 +59,7 @@ impl Swtpm {
         let (cmd_port, ctrl_port) = reserve_consecutive_ports();
         let state_dir =
             std::env::temp_dir().join(format!("tess-sim-{}-{}", std::process::id(), cmd_port));
-        // 0700 so the emulator state (TPM material) isn't readable by other local users.
-        use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&state_dir)
-            .expect("create swtpm state dir");
+        create_private_dir(&state_dir);
 
         // Foreground (no --daemon): the spawned Child is swtpm itself, giving a reliable handle to
         // reap. swtpm exits when its client disconnects, so the guard mainly matters on a panic.
@@ -109,14 +103,8 @@ impl Drop for Swtpm {
             let _ = std::fs::remove_dir_all(&self.state_dir);
             return;
         }
-        // Graceful SIGTERM first, escalate to SIGKILL if it lingers. `kill` avoids unsafe libc.
-        let pid = self.child.id().to_string();
-        let sigterm_sent = Command::new("kill")
-            .arg(&pid)
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+        // Graceful SIGTERM first, escalate to SIGKILL if it lingers.
+        let sigterm_sent = send_sigterm(&self.child);
         // Only pay the grace wait if SIGTERM was actually delivered; otherwise go straight to SIGKILL.
         if sigterm_sent {
             for _ in 0..50 {
@@ -149,4 +137,40 @@ fn wait_for_port(addr: std::net::SocketAddr, child: &mut Child) -> Result<(), St
         std::thread::sleep(Duration::from_millis(200));
     }
     Err(format!("timed out waiting for {addr}"))
+}
+
+/// Create the swtpm state dir. On Unix it is mode `0700` so the emulator's TPM material isn't
+/// readable by other local users; elsewhere fall back to a plain recursive create (swtpm is a Unix
+/// daemon, so the `sim` tests only actually run on Unix — this keeps the harness compilable).
+#[cfg(unix)]
+fn create_private_dir(dir: &std::path::Path) {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .expect("create swtpm state dir");
+}
+
+#[cfg(not(unix))]
+fn create_private_dir(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir).expect("create swtpm state dir");
+}
+
+/// Send a graceful SIGTERM to the child. On Unix this shells out to `kill` (avoiding an `unsafe`
+/// libc call); on other targets there is no portable SIGTERM, so report "not sent" and let the
+/// caller escalate to `Child::kill()`.
+#[cfg(unix)]
+fn send_sigterm(child: &Child) -> bool {
+    Command::new("kill")
+        .arg(child.id().to_string())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn send_sigterm(_child: &Child) -> bool {
+    false
 }
