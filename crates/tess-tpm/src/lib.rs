@@ -8,11 +8,15 @@ use tss_esapi::tcti_ldr::{DeviceConfig, NetworkTPMConfig, TctiNameConf};
 use tss_esapi::Context;
 
 mod esapi;
+mod lockout;
+mod persist;
 mod seal;
 
 pub use esapi::{
     create_primary, ecc_storage_primary_template, start_salted_hmac_session, Error, Result,
 };
+pub use lockout::{read_lockout_state, reset_lockout, LockoutState};
+pub use persist::{from_metadata, load, save, to_metadata};
 pub use seal::{generate_sealing_key, seal, unseal, SealedObject};
 
 /// Selects the TPM transport: a software TPM (swtpm) for dev and CI, or the kernel resource

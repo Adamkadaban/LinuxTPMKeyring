@@ -185,8 +185,8 @@ swtpm in CI (`--features sim`).
 - [x] `seal(secret, pin)`: `PolicyAuthValue` policy, authValue = PIN, encrypted session
 - [x] `unseal(pin)`: policy session → `unseal` → `SecretBytes` (mlock'd, zeroized)
 - [x] Key-gen: `getrandom` mixed with TPM `GetRandom`; constant-time PIN handling
-- [ ] Versioned blob+metadata persistence; **no secret/secret-hash ever on disk**
-- [ ] DA-lockout error mapping + owner-guarded `reset_lockout`
+- [x] Versioned blob+metadata persistence; **no secret/secret-hash ever on disk**
+- [x] DA-lockout error mapping + owner-guarded `reset_lockout`
 - [ ] Tests: round-trip, wrong-PIN, lockout, persistence reload, **session-encryption assertion** — swtpm (CI) + vTPM (hw)
 
 | Wave | Worktree slug | Depends on | Tasks |

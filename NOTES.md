@@ -128,3 +128,32 @@ Gotchas worth remembering:
   DA-lockout — the whole anti-hammering point. Don't set `sensitive_data_origin` (we supply the data).
 - Persistence of the pub/priv blobs and DA-lockout reset are #10, deliberately not here — `SealedObject`
   is the typed handoff (`from_blobs`/`public()`/`private()`), `Public` already impls `Marshall`.
+
+## 2026-06-21 — sealed-object persistence + DA-lockout handling (issue #10)
+**Resolution:** Added secret-free persistence (`to_metadata`/`from_metadata`/`save`/`load`, base64
+TPM2B blobs in the versioned `tess_core::Metadata`; `Public` via `Marshall`/`UnMarshall`, `Private`
+via `value()`/`TryFrom<&[u8]>`), a read-only `read_lockout_state` (`get_capability` on the lockout
+properties), and distinct `Error::Lockout` mapping (load + unseal paths) → `tess_core::Error::Lockout`.
+`crates/tess-tpm/src/persist.rs:1` · `crates/tess-tpm/src/lockout.rs:1` · PR for #10.
+
+Gotchas worth remembering:
+- **`tss-esapi` 7.7.0 has NO safe wrapper for `TPM2_DictionaryAttackLockReset`** — its
+  `dictionary_attack_functions.rs` is literally `// Missing function: DictionaryAttackLockReset`.
+  Raw `tss-esapi-sys::Esys_DictionaryAttackLockReset` needs `unsafe` (forbidden outside `tess-pam`).
+  7.7.0 is the latest 7.x; the safe wrapper lands in 8.x (alpha). So the privileged non-destructive
+  lockout reset is deferred (tech-debt #16, ADR-0008); `reset_lockout` ships the PIN-holder recovery
+  path only (refuse if hard-locked, else prove PIN via one unseal).
+- **swtpm/libtpms DA defaults: `maxTries=3`, `lockoutInterval=1000s`, counter starts 0.** Measured
+  empirically. Wrong PIN ticks the counter 1→2→3; at counter==maxTries the TPM hard-locks and the
+  failure surfaces at **`TPM2_Load`** (not the later unseal) with the lockout RC — so map lockout on
+  the load path too. A *successful* auth does **NOT** reset the counter on libtpms (stayed at 2 after
+  a correct unseal); self-heal is one decrement per 1000s. So "reset via successful unseal" is a
+  myth here — don't assert counter==0 after a good unseal.
+- `Private` (TPM2B_PRIVATE buffer) does not impl `Marshall`; persist its `value()` bytes and rebuild
+  with `Private::try_from(&[u8])`. Only `Public` (structured TPMT_PUBLIC) needs `Marshall`/`UnMarshall`.
+- `get_capability(CapabilityType::TpmProperties, u32::from(PropertyTag::LockoutCounter), 1)` returns
+  `CapabilityData::TpmProperties(list)`; find the tag in the list rather than trusting position.
+- Extracted the swtpm sim harness into `tests/common/mod.rs` (shared by `esapi_sim.rs` +
+  `persist_lockout_sim.rs`) to avoid duplicating ~120 lines. `pgrep -a swtpm` clean after every run.
+- `cargo deny check` clean with `base64 = "0.22"` added (MIT/Apache); default `cargo test --workspace`
+  stays swtpm-free and green.

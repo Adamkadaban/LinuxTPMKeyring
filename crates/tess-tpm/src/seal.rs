@@ -142,7 +142,7 @@ pub fn unseal(
         ctx.load(primary, sealed.private.clone(), sealed.public.clone())
     });
     let load_session_flushed = flush(context, SessionHandle::from(load_session).into());
-    let object: ObjectHandle = loaded.map_err(|e| Error::Load(e.to_string()))?.into();
+    let object: ObjectHandle = loaded.map_err(map_load_error)?.into();
 
     // The object now exists and MUST be flushed on every exit path below. If the load-session flush
     // failed (after a good load), still flush the object before surfacing that error; otherwise do
@@ -279,13 +279,34 @@ fn pin_to_auth(pin: &SecretBytes) -> Result<Auth> {
     Auth::try_from(pin.as_slice()).map_err(|e| Error::Seal(e.to_string()))
 }
 
-/// Map an unseal error: a TPM authorization-HMAC failure (wrong PIN) becomes [`Error::WrongPin`] so
-/// callers can distinguish it from genuine TPM faults; everything else stays an [`Error::Unseal`].
+/// Map an unseal error: a TPM dictionary-attack lockout becomes [`Error::Lockout`] and a TPM
+/// authorization-HMAC failure (wrong PIN) becomes [`Error::WrongPin`], so callers can distinguish
+/// "locked out" from "wrong PIN" from genuine TPM faults; everything else stays an [`Error::Unseal`].
 fn map_unseal_error(e: tss_esapi::Error) -> Error {
-    if is_auth_failure(&e) {
+    if is_lockout(&e) {
+        Error::Lockout
+    } else if is_auth_failure(&e) {
         Error::WrongPin
     } else {
         Error::Unseal(e.to_string())
+    }
+}
+
+fn is_lockout(e: &tss_esapi::Error) -> bool {
+    matches!(
+        e,
+        tss_esapi::Error::Tss2Error(rc) if rc.kind() == Some(Tss2ResponseCodeKind::Lockout)
+    )
+}
+
+/// Map a load error: once the TPM is in DA lockout, even loading the sealed object is refused with
+/// the lockout response code (not at the later unseal), so detect it here and surface
+/// [`Error::Lockout`] rather than a generic [`Error::Load`].
+fn map_load_error(e: tss_esapi::Error) -> Error {
+    if is_lockout(&e) {
+        Error::Lockout
+    } else {
+        Error::Load(e.to_string())
     }
 }
 
