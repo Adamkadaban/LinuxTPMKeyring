@@ -225,6 +225,7 @@ fn install_module(plan: &InstallPlan) -> Result<()> {
                 dst.display()
             )
         })?;
+        sync_parent_dir(&dst).with_context(|| format!("sync parent dir of {}", dst.display()))?;
         Ok(())
     })();
     if install_result.is_err() {
@@ -278,6 +279,7 @@ fn atomic_write_preserving_mode(path: &Path, content: &str) -> Result<()> {
             fs::set_permissions(&tmp, fs::Permissions::from_mode(mode))?;
         }
         fs::rename(&tmp, path)?;
+        sync_parent_dir(path)?;
         Ok(())
     })();
 
@@ -285,6 +287,17 @@ fn atomic_write_preserving_mode(path: &Path, content: &str) -> Result<()> {
         let _ = fs::remove_file(&tmp);
     }
     write_result
+}
+
+/// fsync the directory containing `path` so a freshly renamed entry is durable across a crash. On
+/// Unix a directory is synced by opening it read-only and calling `sync_all`; without this a crash
+/// right after `rename` can lose the new directory entry even though the file contents were synced.
+fn sync_parent_dir(path: &Path) -> io::Result<()> {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    fs::File::open(parent)?.sync_all()
 }
 
 /// A sibling temp path of `path` with an unpredictable hex suffix drawn from the OS CSPRNG, so an
