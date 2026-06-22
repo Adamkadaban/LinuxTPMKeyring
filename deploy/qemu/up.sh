@@ -125,7 +125,13 @@ swtpm_is_running() {
   local pid comm
   pid="$(cat "${SWTPM_PIDFILE}" 2>/dev/null || true)"
   [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null || return 1
-  # A reused PID owned by an unrelated process must not count as "already running".
+  # The PID is alive — confirm it is actually swtpm (not an unrelated process that reused the PID)
+  # before treating it as a running vTPM. If /proc/<pid>/comm can't be read (e.g. hardened /proc),
+  # identity is unverifiable: fail fast rather than fall through to the fresh-start path, which would
+  # unlink ${SWTPM_SOCK} and could clobber a still-live swtpm.
+  if [ ! -r "/proc/${pid}/comm" ]; then
+    die "swtpm pidfile points at live PID ${pid} but /proc/${pid}/comm is unreadable; cannot verify identity — stop that process or remove ${SWTPM_PIDFILE}, then retry"
+  fi
   comm="$(cat "/proc/${pid}/comm" 2>/dev/null || true)"
   [[ "${comm}" == *swtpm* ]]
 }
