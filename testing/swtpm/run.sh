@@ -57,7 +57,8 @@ wait_for_port() {
   deadline=$((SECONDS + START_TIMEOUT))
   while ((SECONDS < deadline)); do
     # Bound each connect attempt (a blackholed host could otherwise block far past START_TIMEOUT).
-    if timeout 1 bash -c 'exec 3<>"/dev/tcp/$0/$1"' "${host}" "${port}" 2>/dev/null; then
+    # shellcheck disable=SC2016  # $1/$2 are expanded by the inner bash, not here.
+    if timeout 1 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "${host}" "${port}" 2>/dev/null; then
       return 0
     fi
     sleep 0.2

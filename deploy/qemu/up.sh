@@ -72,9 +72,9 @@ if [ ! -f "${BASE_IMG}" ]; then
   sums_url="${IMAGE_URL%/*}/SHA512SUMS"
   img_name="${IMAGE_URL##*/}"
   expected="$(wget -qO- "${sums_url}" | awk -v f="${img_name}" '$2 == f {print $1}')"
-  [ -n "${expected}" ] || die "could not find ${img_name} in ${sums_url}"
+  [ -n "${expected}" ] || { rm -f "${BASE_IMG}.tmp"; die "could not find ${img_name} in ${sums_url}"; }
   actual="$(sha512sum "${BASE_IMG}.tmp" | awk '{print $1}')"
-  [ "${expected}" = "${actual}" ] || die "checksum mismatch for ${img_name} (expected ${expected}, got ${actual})"
+  [ "${expected}" = "${actual}" ] || { rm -f "${BASE_IMG}.tmp"; die "checksum mismatch for ${img_name} (expected ${expected}, got ${actual})"; }
   mv "${BASE_IMG}.tmp" "${BASE_IMG}"
 fi
 
@@ -120,10 +120,22 @@ cleanup_on_error() {
 }
 trap cleanup_on_error EXIT
 
-if [ -f "${SWTPM_PIDFILE}" ] && kill -0 "$(cat "${SWTPM_PIDFILE}")" 2>/dev/null; then
+swtpm_is_running() {
+  [ -f "${SWTPM_PIDFILE}" ] || return 1
+  local pid comm
+  pid="$(cat "${SWTPM_PIDFILE}" 2>/dev/null || true)"
+  [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null || return 1
+  # A reused PID owned by an unrelated process must not count as "already running".
+  comm="$(cat "/proc/${pid}/comm" 2>/dev/null || true)"
+  [[ "${comm}" == *swtpm* ]]
+}
+
+if swtpm_is_running; then
   log "swtpm already running"
 else
   log "starting swtpm vTPM"
+  # A leftover socket from a crashed/previous swtpm would make the unixio bind below fail.
+  rm -f "${SWTPM_SOCK}"
   swtpm socket \
     --tpm2 \
     --tpmstate "dir=${SWTPM_DIR}" \
