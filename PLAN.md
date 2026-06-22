@@ -242,6 +242,12 @@ stack via `pamtester` unseals and flips to `keyring=unlocked`; `tess recover` re
 recovery secret; `tess unenroll` restores password-based keyring with all items intact. `cargo test
 --workspace` green.
 
+> **Exit-test status:** the **CI/swtpm leg is green** — `tests/phase3_e2e.rs`
+> (`full_phase3_cycle_preserves_all_items`, `--features sim,daemon-tests`) drives the whole
+> enroll → session (real `tess-pam-helper`) → recover → reseal → unenroll cycle on one throwaway
+> keyring with 5 pre-existing secrets, asserting all 5 survive intact at every step, with no leaked
+> processes. The **Azure vTPM leg is pending Phase 4** (real-TPM acceptance), per the phase-exit rule.
+
 **Deliverables:**
 - [x] `tess enroll`: gen key → seal (PIN) → **back up recovery secret first** → **rekey keyring in place, preserving all existing items** → write metadata; transactional with rollback
 - [x] `tess recover`: re-unlock/re-enroll via recovery secret (covers TPM clear, PIN loss, PCR change)
@@ -250,7 +256,7 @@ recovery secret; `tess unenroll` restores password-based keyring with all items 
 - [x] `tess unlock` (one-shot) + `tess test` (dry-run session path)
 - [x] `pam_tess.so` session flow: non-blocking gate (PIN via conv now) → `tess-tpm::unseal` → `tess-keyring::unlock`; bounded, errors never swallowed
 - [x] `deploy/pam/` snippet + `tess install`/uninstall (idempotent `pam.d` edit)
-- [ ] Integration test: enroll → simulated session → unlocked, + rollback/recovery coverage, + **"N pre-existing secrets survive enroll/recover/unenroll" preservation assertion**
+- [x] Integration test: enroll → simulated session → unlocked, + rollback/recovery coverage, + **"N pre-existing secrets survive enroll/recover/unenroll" preservation assertion**
 
 | Wave | Worktree slug | Depends on | Tasks |
 |---|---|---|---|

@@ -457,3 +457,30 @@ Gotchas worth remembering:
   bus may not be up yet; the stable `gnome-keyring-daemon --unlock` stdin path is the expected runtime
   unlock, with this in-process unlock covering an already-running daemon. Tests provide the private
   bus explicitly. Real-login bus wiring is Phase 4 (Azure E2E), already on the roadmap.
+## 2026-06-22 — Phase 3 exit gate: one cross-cutting enroll→session→recover→unenroll E2E (issue #34)
+**Resolution:** `crates/tess-cli/tests/phase3_e2e.rs` (`full_phase3_cycle_preserves_all_items`,
+`--features sim,daemon-tests`) chains every Phase 3 surface on a single throwaway keyring seeded with
+5 pre-existing secrets — enroll → real `tess-pam-helper` session → recover (after a simulated TPM
+clear) → reseal → unenroll — asserting all 5 items survive intact at every transition. Test-only; no
+Phase 3 code bug surfaced while wiring it. `crates/tess-cli/tests/phase3_e2e.rs:1` · PR for #34.
+
+Gotchas worth remembering:
+- **swtpm is single-client, so no two TPM contexts may be open at once.** Each `TpmSealer::open` is
+  scoped in its own block (`{ … }`) so its context is dropped before the next consumer — the helper
+  child, the next sealer, or the reseal — opens its own. The recover step needs no TPM (it unwraps the
+  recovery blob), so it sits between sealer scopes cleanly. Forgetting a scope deadlocks the second
+  opener against the still-connected first.
+- **The session step must run the *real* helper, not the in-process `unseal_and_unlock`.** Driving
+  `CARGO_BIN_EXE_tess-pam-helper` with the PIN on stdin (the PAM contract) is the faithful
+  fresh-login simulation; the helper resolves metadata from `$XDG_DATA_HOME/tess`, so enroll writes
+  the blobs into a tempdir `XDG_DATA_HOME` the child env points at. `run_helper` is parametrized on
+  the PIN so the same path proves the *re-sealed* PIN after recovery, not just the original.
+- **The preservation invariant counts the whole group, not just each named item.** Every seeded item
+  carries a shared `("application","tess-phase3-e2e")` attribute; `assert_items_intact` searches that
+  group and asserts `unlocked.len() == N` alongside the per-item decrypt — so a *lost or duplicated*
+  item is caught, not only a *changed* one. The assertion takes a `step` label for legible failures.
+- **Leak check distinguishes harness procs from the host's.** After the run, the only
+  `gnome-keyring-daemon` is the host's real login daemon (`--control-directory=/run/user/1000/keyring`)
+  and the only `dbus-daemon --session` is the host's systemd bus (`--address=systemd:`); the harness
+  spawns its own private-bus `dbus-daemon --print-address` + keyring under a throwaway HOME, both
+  reaped on `Drop`. No swtpm/tess-pam-helper left behind.
