@@ -206,9 +206,11 @@ releases key material — it only reports whether the local fprintd matched a fi
 `FprintClient` follows the same call sequence `pam_fprintd` uses: `Manager.GetDefaultDevice` →
 `Device.Claim` → subscribe to the `VerifyStatus` signal → `Device.VerifyStart("any")` → wait for a
 terminal `VerifyStatus(result, done)` → `VerifyStop` → `Release` (the device is always released, best
-effort, before returning). The `verify(deadline_ms)` method (also exposed through the
-`tess_core::AuthGate` trait) maps results precisely and is **always bounded** — it races each signal
-against the remaining deadline via an async timer, so it can never block the caller indefinitely:
+effort, before returning on the graceful paths). The `verify(deadline_ms)` method (also exposed
+through the `tess_core::AuthGate` trait) maps results precisely and is **always bounded** — the
+**entire** operation (every D-Bus call as well as the signal wait) is raced against a single hard
+wall-clock deadline, so it can never block the caller past `deadline_ms` even on a wedged bus or
+unresponsive service:
 
 - `verify-match` → `Ok(())`
 - `verify-no-match` → `tess_core::Error::Auth` ("fingerprint did not match")

@@ -126,10 +126,20 @@ impl FprintClient {
     /// Run one bounded fingerprint verification.
     ///
     /// Returns `Ok(())` on `verify-match`, [`Error::Auth`] on `verify-no-match` or any other terminal
-    /// fprintd failure, and [`Error::Timeout`] if `deadline_ms` elapses before a terminal result. The
-    /// device is always released (best effort) before returning.
+    /// fprintd failure, and [`Error::Timeout`] if `deadline_ms` elapses first. The **entire**
+    /// operation — every D-Bus call (`GetDefaultDevice`, `Claim`, `VerifyStart`, …) as well as the
+    /// `VerifyStatus` wait — is raced against a single hard wall-clock deadline, so it can never block
+    /// past `deadline_ms` even on a wedged bus or unresponsive service. The device is released (best
+    /// effort) before returning on the graceful paths.
     pub fn verify(&self, deadline_ms: u64) -> Result<()> {
-        async_io::block_on(self.verify_async(deadline_ms))
+        async_io::block_on(async move {
+            let op = std::pin::pin!(self.verify_async(deadline_ms));
+            let timer = Timer::after(Duration::from_millis(deadline_ms));
+            match select(op, timer).await {
+                Either::Left((result, _)) => result,
+                Either::Right((_, _)) => Err(Error::Timeout(deadline_ms)),
+            }
+        })
     }
 
     async fn verify_async(&self, deadline_ms: u64) -> Result<()> {
