@@ -124,18 +124,28 @@ pub fn install(plan: &InstallPlan) -> Result<InstallReport> {
             backup.display()
         ),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            fs::copy(&plan.service_file, &backup).with_context(|| {
-                format!(
-                    "back up {} to {} before editing",
-                    plan.service_file.display(),
-                    backup.display()
-                )
-            })?;
+            // Create the backup with O_CREAT|O_EXCL and write the bytes we already read, rather than
+            // `fs::copy`. This closes the TOCTOU window after the symlink_metadata check above: if a
+            // symlink (or any file) is planted at `backup` in the race window, the create_new open
+            // fails instead of following it and clobbering an arbitrary target as root.
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&backup)
+                .with_context(|| {
+                    format!(
+                        "back up {} to {} before editing",
+                        plan.service_file.display(),
+                        backup.display()
+                    )
+                })?;
+            file.write_all(original.as_bytes())
+                .with_context(|| format!("write backup {}", backup.display()))?;
             // Make the rollback artifact durable before the live stack is edited: a crash after the
             // (fsync'd) stack commit must not be able to leave a wired stack with no backup.
-            fs::File::open(&backup)
-                .and_then(|f| f.sync_all())
+            file.sync_all()
                 .with_context(|| format!("fsync backup {}", backup.display()))?;
+            drop(file);
             sync_parent_dir(&backup)
                 .with_context(|| format!("sync parent dir of {}", backup.display()))?;
         }
