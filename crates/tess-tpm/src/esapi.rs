@@ -254,15 +254,16 @@ mod tests {
             "the session must persist across the multiple commands of a seal/unseal"
         );
 
-        // The mask must actually cover the decrypt and encrypt bits, otherwise
-        // `tr_sess_set_attributes` would silently leave them unchanged on the live session.
+        // The mask must actually cover the bits we set, otherwise `tr_sess_set_attributes` would
+        // silently leave them unchanged on the live session.
+        const CONTINUE_BIT: u8 = 1 << 0;
         const DECRYPT_BIT: u8 = 1 << 5;
         const ENCRYPT_BIT: u8 = 1 << 6;
         let raw_mask = u8::from(mask);
         assert_eq!(
-            raw_mask & (DECRYPT_BIT | ENCRYPT_BIT),
-            DECRYPT_BIT | ENCRYPT_BIT,
-            "the attribute mask must apply both the decrypt and encrypt bits"
+            raw_mask & (CONTINUE_BIT | DECRYPT_BIT | ENCRYPT_BIT),
+            CONTINUE_BIT | DECRYPT_BIT | ENCRYPT_BIT,
+            "the attribute mask must apply the continue_session, decrypt, and encrypt bits"
         );
     }
 }

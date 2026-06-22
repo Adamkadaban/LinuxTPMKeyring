@@ -34,16 +34,22 @@ if [[ ! -f "${SSH_KEY}" ]]; then
 fi
 # REMOTE_DIR is interpolated into remote shell command strings — including `rm -rf -- '${REMOTE_DIR}'`
 # — so constrain it tightly: a safe charset (no quotes/whitespace/metacharacters), a *relative* path
-# (no leading `/`), and no `..` traversal segments, so a mis-set TESS_HW_DIR can't delete unintended
-# directories on the VM or break the remote quoting.
+# (no leading `/`), and no `.`/`..` path segments, so a mis-set TESS_HW_DIR can't delete the caller's
+# current directory or an unintended directory on the VM, nor break the remote quoting.
 if [[ ! "${REMOTE_DIR}" =~ ^[A-Za-z0-9._/-]+$ ]]; then
   echo "error: TESS_HW_DIR must match ^[A-Za-z0-9._/-]+\$ (got: '${REMOTE_DIR}')." >&2
   exit 2
 fi
-if [[ "${REMOTE_DIR}" == /* || "${REMOTE_DIR}" == *..* ]]; then
-  echo "error: TESS_HW_DIR must be a relative path with no '..' segments (got: '${REMOTE_DIR}')." >&2
+if [[ "${REMOTE_DIR}" == /* ]]; then
+  echo "error: TESS_HW_DIR must be a relative path, not absolute (got: '${REMOTE_DIR}')." >&2
   exit 2
 fi
+case "/${REMOTE_DIR}/" in
+  */./* | */../*)
+    echo "error: TESS_HW_DIR must not contain '.' or '..' path segments (got: '${REMOTE_DIR}')." >&2
+    exit 2
+    ;;
+esac
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
