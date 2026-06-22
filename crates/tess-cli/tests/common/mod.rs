@@ -265,8 +265,11 @@ fn wait_for_secrets(address: &str, keyring: &mut Child) -> Result<(), String> {
 // ---------------------------------------------------------------------------------------------
 
 /// Run the `tess-pam-helper` binary the way the PAM module does: `pin` on stdin, a bounded wait, and
-/// a guaranteed reap, so a stuck helper can never hang the test. Returns the exit success flag and
-/// the captured (secret-free) stderr, never leaving the child behind. The helper resolves its
+/// a best-effort reap under a hard deadline. Returns the exit success flag and the captured
+/// (secret-free) stderr. On a clean exit the child is fully reaped; if it overruns the deadline the
+/// function sends SIGKILL, polls briefly for the corpse, then panics (failing the test) — so a stuck
+/// helper can never hang the suite indefinitely. A child that even outlasts that bounded post-kill
+/// poll is left as a zombie that the OS reaps when the test process exits. The helper resolves its
 /// enrollment metadata from `$XDG_DATA_HOME/tess` and selects the swtpm transport from
 /// `TESS_SWTPM_HOST`/`TESS_SWTPM_PORT`, both derived from `tcti`.
 ///
