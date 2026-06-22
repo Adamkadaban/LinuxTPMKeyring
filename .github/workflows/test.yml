@@ -63,8 +63,13 @@ jobs:
         run: cargo test -p tess-keyring --features daemon-tests
 
       - name: PAM module load smoke test (pamtester)
+        env:
+          # Keep resolution deterministic regardless of the runner environment (the debug build
+          # would otherwise honour this); the helper= module argument below is authoritative anyway.
+          TESS_PAM_HELPER: ""
         run: |
           set -euxo pipefail
+          unset TESS_PAM_HELPER
           sudo apt-get install -y --no-install-recommends pamtester
           cargo build -p tess-pam
           so=target/debug/libpam_tess.so
@@ -74,10 +79,12 @@ jobs:
           test -n "$pam_dir"
           sudo install -m 0644 "$so" "$pam_dir/pam_tess.so"
           # A no-op stack: our module (optional) backed by pam_permit so the transaction succeeds.
+          # The explicit absolute helper= argument pins helper resolution to a known-absent path, so
+          # the smoke test is deterministic no matter what the environment holds.
           sudo tee /etc/pam.d/tess-smoke >/dev/null <<'EOF'
-          auth     optional  pam_tess.so
+          auth     optional  pam_tess.so helper=/nonexistent/tess-pam-smoke-helper
           auth     required  pam_permit.so
-          session  optional  pam_tess.so
+          session  optional  pam_tess.so helper=/nonexistent/tess-pam-smoke-helper
           session  required  pam_permit.so
           EOF
           user=$(id -un)
@@ -86,6 +93,7 @@ jobs:
           pamtester tess-smoke "$user" close_session
           # authenticate must be callable and fail open (pam_permit yields overall success).
           pamtester tess-smoke "$user" authenticate
+
 
       - name: cargo-audit + cargo-deny
         uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2

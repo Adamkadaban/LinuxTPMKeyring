@@ -91,7 +91,9 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-/// Safe wrapper: read a NUL-terminated string PAM item, returning `None` if absent or not UTF-8.
+/// Safe wrapper: read a NUL-terminated string PAM item, returning `None` only if absent. A non-UTF-8
+/// value is lossily decoded rather than dropped, so a present-but-odd item (e.g. an exotic
+/// `PAM_RHOST`) is never mistaken for absent — callers that only test emptiness then fail safe.
 fn get_string_item(pamh: *const pam_handle_t, item_type: c_int) -> Option<String> {
     if pamh.is_null() {
         return None;
@@ -102,7 +104,7 @@ fn get_string_item(pamh: *const pam_handle_t, item_type: c_int) -> Option<String
         return None;
     }
     let raw = unsafe { CStr::from_ptr(ptr as *const c_char) };
-    raw.to_str().ok().map(str::to_owned)
+    Some(raw.to_string_lossy().into_owned())
 }
 
 /// Safe wrapper for the remote host (`PAM_RHOST`), used to detect remote sessions.

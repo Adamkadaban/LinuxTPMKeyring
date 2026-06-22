@@ -287,8 +287,10 @@ and integration-testable.
 ### Confined FFI
 
 The PAM C ABI is hand-rolled in `crates/tess-pam/src/ffi.rs` — the **only** `unsafe` in the
-workspace. Every other crate is `#![forbid(unsafe_code)]`; `tess-pam` sets `#![deny(unsafe_code)]`
-at the crate root and `#[allow(unsafe_code)]` on the `ffi` module alone. The module declares the
+workspace. Every other crate forbids unsafe through the workspace lint
+(`[workspace.lints.rust] unsafe_code = "forbid"`, inherited via `[lints] workspace = true`);
+`tess-pam` opts out of that inheritance and instead sets `#![deny(unsafe_code)]`
+at the crate root with `#[allow(unsafe_code)]` on the `ffi` module alone. The module declares the
 small frozen surface it needs (`pam_get_item`, `pam_set_data`/`pam_get_data`, `pam_get_authtok`, and
 the `pam_conv`/`pam_message`/`pam_response` structs), exports the four entrypoints
 (`pam_sm_authenticate`/`pam_sm_setcred`/`pam_sm_open_session`/`pam_sm_close_session`), and wraps the
