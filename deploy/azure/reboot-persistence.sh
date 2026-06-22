@@ -17,7 +17,8 @@
 #   TESS_HW_SSH    SSH target of the running VM, e.g. "tess@20.1.2.3"
 # Optional:
 #   TESS_SSH_KEY   path to the SSH private key            (default: ~/.ssh/id_ed25519)
-#   TESS_HW_DIR    remote working / persistent-state dir  (default: ~/tess-e2e; must match mvp-e2e.sh)
+#   TESS_HW_DIR    remote working / persistent-state dir  (default: tess-e2e — a relative path under
+#                  the SSH login home; must match mvp-e2e.sh; `~` and absolute paths are rejected)
 
 set -euo pipefail
 

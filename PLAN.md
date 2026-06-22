@@ -282,7 +282,7 @@ survives reboot; stall-injection proves login never freezes; teardown removes al
 - [x] Wire `tess-fprint` verify as the PAM gate (PIN kept as fallback), still non-blocking
 - [x] `deploy/install.sh`: detect Debian 13, install runtime deps, build/fetch binaries, `tess install`
 - [x] `deploy/debian/`: `cargo-deb` producing an installable `.deb`
-- [x] Azure E2E harness: provision → install → enroll → scripted virtual-fprint session → assert unlocked → teardown
+- [x] Azure E2E harness: install → enroll → scripted virtual-fprint session → assert unlocked (driver `mvp-e2e.sh` + VM-side body `mvp-e2e-remote.sh`; provision/teardown owned by the orchestrator)
 - [x] Reboot-persistence test
 - [x] `docs/threat-model.md` finalized (root out of scope, at-rest guarantee, biometric host-trusted, recovery/uninstall)
 - [x] README: real install/use/uninstall + supported-platform matrix
