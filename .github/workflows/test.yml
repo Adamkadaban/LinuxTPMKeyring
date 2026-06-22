@@ -117,6 +117,7 @@ jobs:
           grep -Eq ' \./usr/lib/tess/tess-pam-helper$' /tmp/tess-deb-contents.txt
           grep -Eq ' \./usr/lib/x86_64-linux-gnu/security/pam_tess\.so$' /tmp/tess-deb-contents.txt
           grep -Eq ' \./usr/lib/udev/rules\.d/70-tess-tpm\.rules$' /tmp/tess-deb-contents.txt
+          grep -Eq ' \./usr/share/tess/auditd/tess\.rules$' /tmp/tess-deb-contents.txt
 
       - name: TPM-access install wiring (static assertions)
         run: |
@@ -139,3 +140,58 @@ jobs:
 
       - name: Supply-chain bans/licenses/sources
         run: cargo deny check
+
+  vet:
+    name: cargo vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache: true
+
+      - name: Install cargo-vet
+        uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
+        with:
+          tool: cargo-vet
+
+      # --locked uses the recorded supply-chain/imports.lock, so the imported audit sets are not
+      # re-fetched: the gate is deterministic and offline-stable. cargo vet only inspects crate
+      # sources + the lockfile; it never compiles the workspace, so no system libraries are needed.
+      - name: cargo vet
+        run: cargo vet --locked
+
+  minimal-versions:
+    name: minimal-versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          # build-essential/pkg-config/libclang-dev/libtss2-dev: the check compiles the tss-esapi FFI
+          # crate, which links the tpm2-tss C libraries via bindgen.
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libclang-dev libtss2-dev
+
+      - name: Set up Rust nightly toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          toolchain: nightly
+          cache: true
+
+      # Pin every dependency to the lowest version its declared requirement allows, then prove the
+      # workspace still builds against those floors — catching a declared lower bound that is too low
+      # to actually compile. -Z minimal-versions (not -Z direct-minimal-versions) is required here:
+      # direct-only minimization fails to resolve against this graph, while full minimization builds
+      # cleanly for the default feature set.
+      - name: Pin to minimal declared versions
+        run: cargo +nightly update -Z minimal-versions
+
+      - name: Check against minimal versions
+        run: cargo +nightly check --workspace --all-targets
