@@ -123,6 +123,9 @@ setup_dirs() {
   export XDG_CONFIG_HOME="${STATE_DIR}/config"
   export XDG_RUNTIME_DIR="${STATE_DIR}/run"
   mkdir -p "${XDG_DATA_HOME}" "${XDG_CONFIG_HOME}"
+  # 0700: this state holds the keyring + sealed blobs and enroll.out (which can carry the recovery
+  # secret) — keep it non-traversable/non-readable by other local users on the VM.
+  chmod 700 "${STATE_DIR}" "${XDG_DATA_HOME}" "${XDG_CONFIG_HOME}"
   # XDG_DATA_HOME (keyring + sealed blobs) is deliberately persistent so the reboot phase can re-unlock
   # it. XDG_RUNTIME_DIR is per-boot ephemeral by spec — recreate it fresh each run so stale dbus /
   # gnome-keyring sockets left from before a reboot can't block the daemons from starting.
