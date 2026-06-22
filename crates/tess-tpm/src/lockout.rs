@@ -80,12 +80,13 @@ fn read_property(context: &mut Context, tag: PropertyTag) -> Result<u32> {
 /// the PIN confirms they can still authorize, and the recovered secret is dropped immediately — the
 /// call exists only to exercise the authorization, not to hand back the key.
 ///
-/// Once the TPM is in *hard* lockout (`counter >= max_auth_fail`) it refuses the authorization with
-/// [`Error::Lockout`]; escaping that needs the lockout hierarchy's `TPM2_DictionaryAttackLockReset`
-/// or waiting out `lockout_interval`. The lockout-hierarchy reset is not yet wired (the pinned
-/// `tss-esapi` exposes no safe wrapper for it and `unsafe` FFI is disallowed in this crate), so a
-/// hard lockout is surfaced for the caller to handle via recovery rather than cleared here.
-pub fn reset_lockout(
+/// This is **not** the privileged DA-counter reset: once the TPM is in *hard* lockout
+/// (`counter >= max_auth_fail`) it refuses the authorization with [`Error::Lockout`], which this
+/// function surfaces rather than clears. Escaping a hard lockout needs the lockout hierarchy's
+/// `TPM2_DictionaryAttackLockReset` (not yet wired — the pinned `tss-esapi` exposes no safe wrapper
+/// and `unsafe` FFI is disallowed in this crate) or waiting out `lockout_interval`. The name
+/// `reset_lockout` is deliberately reserved for that future privileged reset.
+pub fn pin_holder_recover(
     context: &mut Context,
     primary: KeyHandle,
     sealed: &SealedObject,

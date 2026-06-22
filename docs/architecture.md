@@ -105,10 +105,11 @@ lockout counter and eventually trip a hard lockout (anti-hammering — the at-re
   `tess_core::Error::Lockout`, so callers tell "locked out" apart from "wrong PIN" (`Error::Auth`)
   and from a TPM fault. On a hard lockout even `TPM2_Load` of the object is refused; that path is
   mapped too.
-- `reset_lockout(context, primary, sealed, pin)` is the PIN-holder recovery path: it refuses when
-  already hard-locked and otherwise proves the PIN with one successful unseal. The privileged,
-  non-destructive `TPM2_DictionaryAttackLockReset` is deferred — the pinned `tss-esapi` exposes no
-  safe wrapper and `unsafe` FFI is disallowed in this crate (see ADR-0008, tracked in #16).
+- `pin_holder_recover(context, primary, sealed, pin)` is the PIN-holder recovery path: it refuses
+  when already hard-locked and otherwise proves the PIN with one successful unseal. It does **not**
+  reset the DA counter; the name `reset_lockout` is reserved for the privileged, non-destructive
+  `TPM2_DictionaryAttackLockReset` — deferred because the pinned `tss-esapi` exposes no safe wrapper
+  and `unsafe` FFI is disallowed in this crate (see ADR-0008, tracked in #16).
 
 Two crate features gate the transports that need a TPM:
 

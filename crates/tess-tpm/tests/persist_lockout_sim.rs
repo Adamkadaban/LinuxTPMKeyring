@@ -10,7 +10,8 @@ use common::Swtpm;
 use tess_core::SecretBytes;
 use tess_tpm::persist::{from_metadata, load, save, to_metadata};
 use tess_tpm::{
-    create_primary, generate_sealing_key, read_lockout_state, reset_lockout, seal, unseal, Error,
+    create_primary, generate_sealing_key, pin_holder_recover, read_lockout_state, seal, unseal,
+    Error,
 };
 
 /// A unique temp directory for one test's metadata file, removed when the returned guard drops.
@@ -121,7 +122,7 @@ fn wrong_pin_increments_counter_and_pin_holder_recovers() {
 
     // Below hard lockout the legitimate PIN holder still authorizes (and the object still yields the
     // original key on a normal unseal).
-    reset_lockout(&mut context, primary.key_handle, &sealed, &pin)
+    pin_holder_recover(&mut context, primary.key_handle, &sealed, &pin)
         .expect("PIN holder authorizes below hard lockout");
     let recovered =
         unseal(&mut context, primary.key_handle, &sealed, &pin).expect("correct PIN still unseals");
@@ -191,11 +192,11 @@ fn hard_lockout_surfaces_distinct_error() {
     );
 
     // A hard lockout is not PIN-recoverable: even the correct PIN is refused with Error::Lockout
-    // (the privileged TPM2_DictionaryAttackLockReset path is tracked as tech-debt).
-    let reset = reset_lockout(&mut context, primary.key_handle, &sealed, &pin);
+    // (the privileged TPM2_DictionaryAttackLockReset path is tracked as tech-debt #16).
+    let recover = pin_holder_recover(&mut context, primary.key_handle, &sealed, &pin);
     assert!(
-        matches!(reset, Err(Error::Lockout)),
-        "hard lockout must not be cleared by the PIN, got {reset:?}"
+        matches!(recover, Err(Error::Lockout)),
+        "hard lockout must not be cleared by the PIN, got {recover:?}"
     );
 
     context
