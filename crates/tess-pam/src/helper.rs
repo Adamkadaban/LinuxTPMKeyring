@@ -56,8 +56,10 @@ pub enum Termination {
     TimedOut { escalated_to_sigkill: bool },
 }
 
-/// The outcome of one supervised run. The child has been waited on, so `pid` is no longer a live
-/// process by the time this is returned.
+/// The outcome of one supervised run. In the normal case the child has been waited on, so `pid` is
+/// no longer a live process by the time this is returned. In the rare case where a `SIGKILL`ed child
+/// is stuck in uninterruptible I/O, the reap is handed to a detached thread so the caller is never
+/// blocked; `pid` may then linger briefly until the kernel can deliver the kill.
 #[derive(Debug, Clone)]
 pub struct Reaped {
     pub pid: u32,
@@ -65,7 +67,7 @@ pub struct Reaped {
 }
 
 /// Spawn `command`, supervise it under `watchdog`, and reap it. Returns an error only if the child
-/// could not be spawned or a syscall failed — never blocks past `deadline + term_grace`.
+/// could not be spawned or a syscall failed — never blocks past `deadline + 2 * term_grace`.
 pub fn run(command: &mut Command, watchdog: &Watchdog) -> io::Result<Reaped> {
     let mut child = command.spawn()?;
     let pid = child.id();
@@ -84,33 +86,71 @@ pub fn run(command: &mut Command, watchdog: &Watchdog) -> io::Result<Reaped> {
         std::thread::sleep(watchdog.poll);
     }
 
-    let escalated = terminate_and_reap(&mut child, pid, watchdog)?;
-    Ok(Reaped {
-        pid,
-        termination: Termination::TimedOut {
-            escalated_to_sigkill: escalated,
-        },
-    })
+    match escalate_termination(&mut child, pid, watchdog)? {
+        Kill::Reaped {
+            escalated_to_sigkill,
+        } => Ok(Reaped {
+            pid,
+            termination: Termination::TimedOut {
+                escalated_to_sigkill,
+            },
+        }),
+        Kill::Stuck => {
+            // Even SIGKILL does not terminate a process stuck in uninterruptible I/O until the
+            // syscall returns. Never block the caller waiting for that; reap in the background so the
+            // child still cannot become a leaked zombie.
+            reap_in_background(child);
+            Ok(Reaped {
+                pid,
+                termination: Termination::TimedOut {
+                    escalated_to_sigkill: true,
+                },
+            })
+        }
+    }
 }
 
-fn terminate_and_reap(child: &mut Child, pid: u32, watchdog: &Watchdog) -> io::Result<bool> {
-    send_signal(pid, Signal::SIGTERM)?;
+enum Kill {
+    Reaped { escalated_to_sigkill: bool },
+    Stuck,
+}
 
-    let grace_started = Instant::now();
-    loop {
-        if child.try_wait()?.is_some() {
-            return Ok(false);
-        }
-        if grace_started.elapsed() >= watchdog.term_grace {
-            break;
-        }
-        std::thread::sleep(watchdog.poll);
+fn escalate_termination(child: &mut Child, pid: u32, watchdog: &Watchdog) -> io::Result<Kill> {
+    send_signal(pid, Signal::SIGTERM)?;
+    if wait_within(child, watchdog.term_grace, watchdog.poll)? {
+        return Ok(Kill::Reaped {
+            escalated_to_sigkill: false,
+        });
     }
 
     send_signal(pid, Signal::SIGKILL)?;
-    // SIGKILL cannot be caught or ignored, so this reaps promptly and leaves no zombie.
-    child.wait()?;
-    Ok(true)
+    if wait_within(child, watchdog.term_grace, watchdog.poll)? {
+        return Ok(Kill::Reaped {
+            escalated_to_sigkill: true,
+        });
+    }
+
+    Ok(Kill::Stuck)
+}
+
+/// Poll `try_wait` until the child exits or `budget` elapses. Never blocks longer than `budget`.
+fn wait_within(child: &mut Child, budget: Duration, poll: Duration) -> io::Result<bool> {
+    let started = Instant::now();
+    loop {
+        if child.try_wait()?.is_some() {
+            return Ok(true);
+        }
+        if started.elapsed() >= budget {
+            return Ok(false);
+        }
+        std::thread::sleep(poll);
+    }
+}
+
+fn reap_in_background(mut child: Child) {
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
 }
 
 fn send_signal(pid: u32, signal: Signal) -> io::Result<()> {
