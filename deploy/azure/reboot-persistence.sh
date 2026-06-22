@@ -64,7 +64,9 @@ SSH_OPTS=(
   -o ServerAliveInterval=30
 )
 
-# Bounded reconnect budget: ~5 minutes for the guest to reboot and accept SSH again.
+# Bounded reconnect budget: 60 attempts, each a connect (up to ConnectTimeout=10s) plus a 5s sleep,
+# so the guest has between ~5 minutes (fast refusals) and ~15 minutes (full timeouts each try) to
+# reboot and accept SSH again before this gives up.
 RECONNECT_ATTEMPTS=60
 RECONNECT_INTERVAL=5
 
