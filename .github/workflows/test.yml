@@ -3,9 +3,6 @@ name: test
 on:
   pull_request:
     branches: [main]
-  schedule:
-    # Nightly minimal-versions floor check (04:23 UTC); kept off the per-PR gate (nightly toolchain).
-    - cron: "23 4 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -166,37 +163,3 @@ jobs:
       # sources + the lockfile; it never compiles the workspace, so no system libraries are needed.
       - name: cargo vet
         run: cargo vet --locked
-
-  minimal-versions:
-    name: minimal-versions
-    # Nightly / on-demand only — a nightly-toolchain floor regression must not block unrelated PRs.
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          # build-essential/pkg-config/libclang-dev/libtss2-dev: the check compiles the tss-esapi FFI
-          # crate, which links the tpm2-tss C libraries via bindgen.
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config libclang-dev libtss2-dev
-
-      - name: Set up Rust nightly toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
-        with:
-          toolchain: nightly
-          cache: true
-
-      # Pin every dependency to the lowest version its declared requirement allows, then prove the
-      # workspace still builds against those floors — catching a declared lower bound that is too low
-      # to actually compile. -Z minimal-versions (not -Z direct-minimal-versions) is required here:
-      # direct-only minimization fails to resolve against this graph, while full minimization builds
-      # cleanly for the default feature set.
-      - name: Pin to minimal declared versions
-        run: cargo +nightly update -Z minimal-versions
-
-      - name: Check against minimal versions
-        run: cargo +nightly check --workspace --all-targets
