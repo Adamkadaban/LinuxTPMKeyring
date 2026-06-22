@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "policy": {
+    "kind": "pin_auth_value"
+  },
+  "sealed_public": "AAAA",
+  "sealed_private": "AAAA"
+}

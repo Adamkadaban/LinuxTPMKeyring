@@ -34,8 +34,13 @@ deploy/**/local.*
 # Local QEMU contributor VM state (images, seeds, sockets, pidfiles)
 /deploy/qemu/.run/
 
-# Fuzzing
-**/fuzz/corpus/
+# Fuzzing — ignore the fuzzer-generated corpus growth (libFuzzer names its additions by content
+# hash, no extension) and crash artifacts, but keep the curated, extension-named seed inputs.
+**/fuzz/corpus/**
+!**/fuzz/corpus/*/
+!**/fuzz/corpus/*/*.json
+!**/fuzz/corpus/*/*.bin
+!**/fuzz/corpus/*/*.txt
 **/fuzz/artifacts/
 
 # OS / editor junk
