@@ -31,7 +31,7 @@ enum Command {
         reseal: bool,
         /// New PIN for `--reseal`. Prompted without echo when omitted; prefer that — a PIN passed
         /// here is visible in the process list and may land in shell history.
-        #[arg(long)]
+        #[arg(long, requires = "reseal")]
         pin: Option<String>,
     },
     /// Restore the password-based keyring (items preserved) and remove sealed blobs.

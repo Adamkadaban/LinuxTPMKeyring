@@ -133,11 +133,9 @@ pub fn unenroll<S: KeySealer>(
     );
 
     // Prove the PIN and recover the current keyring credential (the TPM-sealed key) before touching
-    // anything, and confirm it actually opens the keyring.
+    // anything, and confirm it actually opens (and unlocks) the keyring.
     let key = unseal_with_pin(sealer, paths, pin)?;
-    keyring
-        .unlock(&key)
-        .context("verify the keyring opens with the TPM-sealed key before unenrolling")?;
+    unlock_and_verify(keyring, &key, "TPM-sealed key before unenrolling")?;
 
     // Destructive: rekey in place to the user password. `rekey` is a single atomic Secret Service
     // call, so a failure here leaves the keyring on the TPM-sealed key with the blobs intact.

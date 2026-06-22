@@ -15,16 +15,15 @@ use super::{
     dry_run, gather_status, recover, render_dry_run, render_status, reseal, unenroll, unlock,
 };
 
-/// Take a PIN from `--pin` or prompt for it without echo.
+/// Take a PIN from `--pin` or prompt for it without echo. The plaintext is held only in a
+/// `Zeroizing` buffer until it reaches the zeroizing [`SecretBytes`]; an empty PIN is rejected early.
 fn pin_or_prompt(pin: Option<String>, prompt: &str) -> Result<SecretBytes> {
-    Ok(match pin {
-        Some(p) => SecretBytes::new(p.into_bytes()),
-        None => SecretBytes::new(
-            rpassword::prompt_password(prompt)
-                .context("read PIN")?
-                .into_bytes(),
-        ),
-    })
+    let entered = Zeroizing::new(match pin {
+        Some(p) => p,
+        None => rpassword::prompt_password(prompt).context("read PIN")?,
+    });
+    ensure!(!entered.is_empty(), "PIN must not be empty");
+    Ok(SecretBytes::new(entered.as_bytes().to_vec()))
 }
 
 /// Best-effort keyring lock state for the read-only `status`/`test` reports: connect to the Secret
