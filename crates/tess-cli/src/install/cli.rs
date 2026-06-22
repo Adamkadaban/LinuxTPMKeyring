@@ -69,15 +69,15 @@ pub fn run(args: InstallArgs) -> Result<()> {
                 }
             );
         }
-        println!(
-            "  backup {}: {}",
-            plan.backup_file().display(),
-            if report.removed_backup {
-                "removed"
-            } else {
-                "absent"
-            }
-        );
+        let backup = plan.backup_file();
+        let backup_status = if report.removed_backup {
+            "removed"
+        } else if backup.exists() {
+            "kept (no tess block was removed, so the rollback backup is preserved)"
+        } else {
+            "absent"
+        };
+        println!("  backup {}: {}", backup.display(), backup_status);
         return Ok(());
     }
 

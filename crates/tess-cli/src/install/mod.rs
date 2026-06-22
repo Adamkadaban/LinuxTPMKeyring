@@ -15,6 +15,7 @@
 pub mod cli;
 pub mod config;
 
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::io::Read as _;
@@ -423,7 +424,7 @@ fn find_module_dir(root: &Path, needle: &str, max_depth: usize) -> Option<PathBu
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            if file_type.is_file() && entry.file_name() == needle {
+            if file_type.is_file() && entry.file_name().as_os_str() == OsStr::new(needle) {
                 return Some(dir);
             }
             if file_type.is_dir() && depth < max_depth {
