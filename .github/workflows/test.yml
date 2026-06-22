@@ -106,10 +106,10 @@ jobs:
       - name: Package .deb and verify contents
         run: |
           set -euxo pipefail
-          # cargo-deb packages the binaries already in target/release; build the whole workspace
-          # first so the tess-pam cdylib (libpam_tess.so) exists alongside the tess-cli binaries,
+          # cargo-deb packages the binaries already in target/release; build just the two crates the
+          # .deb assets come from — tess-cli (tess + tess-pam-helper) and tess-pam (libpam_tess.so) —
           # then package without rebuilding. Contents-only check — the package is never installed.
-          cargo build --release --workspace
+          cargo build --release -p tess-cli -p tess-pam
           deb=$(cargo deb -p tess-cli --no-build)
           test -f "$deb"
           dpkg -c "$deb" | tee /tmp/tess-deb-contents.txt

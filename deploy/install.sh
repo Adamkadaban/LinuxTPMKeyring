@@ -103,8 +103,12 @@ fi
 run_root() {
 	if [ "$(id -u)" -eq 0 ]; then
 		"$@"
-	else
+	elif command -v sudo >/dev/null 2>&1; then
 		sudo "$@"
+	else
+		echo "error: root privileges required to run: $*" >&2
+		echo "       re-run this script as root, or install sudo." >&2
+		exit 1
 	fi
 }
 
@@ -165,7 +169,9 @@ build_deb() {
 		export PATH
 	fi
 	echo "==> building tess (release) and packaging the .deb"
-	cargo build --release --workspace
+	# Only the two crates the .deb assets come from: tess-cli (tess + tess-pam-helper bins) and
+	# tess-pam (the libpam_tess.so cdylib). tess-cli pulls in the other workspace libs as deps.
+	cargo build --release -p tess-cli -p tess-pam
 	# `cargo deb` prints the path of the produced .deb on stdout; build progress goes to stderr.
 	deb=$(cargo deb -p tess-cli --no-build)
 }
