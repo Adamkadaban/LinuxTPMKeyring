@@ -91,6 +91,12 @@ set -euo pipefail
 
 cd -- "${REMOTE_DIR}"
 
+# TPM access runs cargo under sudo, which leaves root-owned build artifacts (target/) that would
+# break a non-sudo `rm -rf` cleanup on the next run. Chown the tree back to the login user on exit
+# (even if the tests fail) so the harness stays idempotent.
+restore_owner() { sudo chown -R "$(id -u):$(id -g)" . 2>/dev/null || true; }
+trap restore_owner EXIT
+
 if [[ ! -e /dev/tpmrm0 ]]; then
   echo "error: /dev/tpmrm0 is not present on the VM — this is not a vTPM-enabled guest." >&2
   exit 1
