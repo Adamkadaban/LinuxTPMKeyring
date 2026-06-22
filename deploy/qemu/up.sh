@@ -134,8 +134,9 @@ if swtpm_is_running; then
   log "swtpm already running"
 else
   log "starting swtpm vTPM"
-  # A leftover socket from a crashed/previous swtpm would make the unixio bind below fail.
-  rm -f "${SWTPM_SOCK}"
+  # A leftover socket or pidfile from a crashed/previous swtpm would make the launch below fail
+  # (unixio bind on the stale socket; swtpm refuses to overwrite an existing --pid file).
+  rm -f "${SWTPM_SOCK}" "${SWTPM_PIDFILE}"
   swtpm socket \
     --tpm2 \
     --tpmstate "dir=${SWTPM_DIR}" \
