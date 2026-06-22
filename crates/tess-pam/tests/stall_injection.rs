@@ -115,7 +115,10 @@ fn hang_forever_with_pin_input_times_out_bounded_and_is_reaped() {
 }
 
 #[test]
-fn end_to_end_gate_runs_helper_when_not_aborting() {
+fn run_gate_with_pin_authorizes_when_helper_succeeds() {
+    // This exercises run_gate directly with a PIN supplied. Note the real PAM auth entrypoint
+    // (run_auth_gate) intentionally passes None so auth always falls through to the password
+    // factor — this test is about run_gate's success path, not auth-phase policy.
     use pam_tess::{run_gate, GateEnv, HelperSpec};
 
     let env = GateEnv {
