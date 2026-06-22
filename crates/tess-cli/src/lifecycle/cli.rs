@@ -94,6 +94,10 @@ fn prompt_new_password() -> Result<SecretBytes> {
         rpassword::prompt_password("New keyring password: ")
             .context("read new keyring password")?,
     );
+    ensure!(
+        !first.is_empty(),
+        "the new keyring password must not be empty"
+    );
     let second = Zeroizing::new(
         rpassword::prompt_password("Confirm new keyring password: ")
             .context("confirm new keyring password")?,
