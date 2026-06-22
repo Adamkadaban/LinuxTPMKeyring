@@ -300,8 +300,11 @@ without a live PAM stack.
 
 Heavy work runs in a short-lived child process supervised by `helper::run` under a hard
 `Watchdog { deadline, term_grace, poll }`. The supervisor polls `try_wait`; on deadline it sends
-`SIGTERM`, waits `term_grace`, escalates to the uncatchable `SIGKILL`, and `wait`s — so a hung helper
-is always killed and reaped (no zombies, no leaks) within `deadline + term_grace`. A run yields a
+`SIGTERM`, waits `term_grace`, escalates to `SIGKILL`, and polls `try_wait` for another `term_grace`
+— so a hung helper is always killed and reaped (no zombies, no leaks) within
+`deadline + 2 * term_grace`. In the pathological case where even `SIGKILL` cannot terminate the
+child promptly (uninterruptible I/O), the reap is handed to a detached thread so the PAM thread is
+never blocked, and the child still cannot leak as a zombie. A run yields a
 `Reaped { pid, termination }` that `gate::classify` maps to `Authorized` / `Declined` /
 `Unavailable` (a spawn or syscall error is `Unavailable` — fail open, never authorization).
 
@@ -313,11 +316,15 @@ is always killed and reaped (no zombies, no leaks) within `deadline + term_grace
 - **Session** always returns `PAM_SUCCESS` — a slow or failed unseal degrades to "keyring stays
   locked, login proceeds", never a frozen or failed login.
 
-Before running anything, `GateEnv::detect` aborts with `PAM_IGNORE` when no gesture is available: an
-SSH/remote session (non-empty `PAM_RHOST` or an `SSH_*` marker) or no TPM device
-(`/dev/tpmrm0`/`/dev/tpm0` absent). The real unseal → keyring-unlock helper is wired in a later
-phase; until the helper at `TESS_PAM_HELPER` (default `/usr/lib/tess/tess-pam-helper`) is installed,
-a missing helper spawn fails open, which is the correct non-blocking behaviour.
+Before running anything the gate aborts when no gesture is available: an SSH/remote session
+(non-empty `PAM_RHOST` or an `SSH_*` marker) or no TPM device (`/dev/tpmrm0`/`/dev/tpm0` absent). Auth
+aborts with `PAM_IGNORE` (fall through to password); a session open aborts with `PAM_SUCCESS` so it
+never disturbs login under any control flag. The helper executable is resolved from a root-controlled
+PAM module argument (`helper=PATH` in the PAM config), falling back to the compiled install path
+`/usr/lib/tess/tess-pam-helper`; release builds ignore the environment so a caller cannot substitute
+the helper in the privileged PAM context (debug/test builds additionally honour `TESS_PAM_HELPER` for
+the test harness). The real unseal → keyring-unlock helper is wired in a later phase; until it is
+installed, a missing-helper spawn fails open, which is the correct non-blocking behaviour.
 
 ### "Login never freezes" test
 

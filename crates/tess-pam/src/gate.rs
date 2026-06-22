@@ -104,6 +104,7 @@ pub fn tpm_present() -> bool {
 }
 
 const DEFAULT_HELPER_PATH: &str = "/usr/lib/tess/tess-pam-helper";
+#[cfg(debug_assertions)]
 const HELPER_PATH_ENV: &str = "TESS_PAM_HELPER";
 
 /// The helper program the gate runs under the watchdog. The real unseal/unlock helper is wired in a
@@ -123,12 +124,20 @@ impl HelperSpec {
         }
     }
 
-    /// Resolve the helper from `TESS_PAM_HELPER`, falling back to the install path.
-    pub fn from_env_or_default() -> Self {
-        let program = std::env::var_os(HELPER_PATH_ENV)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_HELPER_PATH));
-        Self::new(program, Vec::new())
+    /// Resolve the helper from the PAM module arguments (`helper=PATH`), the root-controlled channel
+    /// configured in the PAM stack, falling back to the compiled install path. Debug/test builds
+    /// additionally honour `TESS_PAM_HELPER` for the test harness; release builds ignore the
+    /// environment entirely, so a caller's environment cannot substitute the helper executable in
+    /// the privileged PAM context.
+    pub fn resolve(pam_args: &[&str]) -> Self {
+        if let Some(path) = helper_arg(pam_args) {
+            return Self::new(path, Vec::new());
+        }
+        #[cfg(debug_assertions)]
+        if let Some(path) = std::env::var_os(HELPER_PATH_ENV) {
+            return Self::new(PathBuf::from(path), Vec::new());
+        }
+        Self::new(DEFAULT_HELPER_PATH, Vec::new())
     }
 
     pub fn command(&self) -> Command {
@@ -136,6 +145,13 @@ impl HelperSpec {
         command.args(&self.args);
         command
     }
+}
+
+/// Extract a `helper=PATH` PAM module argument, if present.
+fn helper_arg(pam_args: &[&str]) -> Option<PathBuf> {
+    pam_args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("helper=").map(PathBuf::from))
 }
 
 #[cfg(test)]
@@ -224,23 +240,34 @@ mod tests {
     }
 
     #[test]
-    fn helper_spec_resolves_explicit_env_then_default() {
-        let explicit = HelperSpec::new("/tmp/custom-helper", vec![OsString::from("--check")]);
-        assert_eq!(explicit.command().get_program(), "/tmp/custom-helper");
+    fn helper_spec_new_uses_explicit_program() {
+        let spec = HelperSpec::new("/tmp/custom-helper", vec![OsString::from("--check")]);
+        assert_eq!(spec.command().get_program(), "/tmp/custom-helper");
+    }
 
-        // This is the only test that touches HELPER_PATH_ENV, so the sequential
-        // set/remove here cannot race another test's read of it.
+    #[test]
+    fn helper_spec_resolution_precedence() {
+        // This is the only test that touches HELPER_PATH_ENV, so the sequential set/remove here
+        // cannot race another test's read of it.
+        std::env::set_var(HELPER_PATH_ENV, "/env/helper");
+
+        // A root-controlled PAM argument wins over the environment and the default.
+        assert_eq!(
+            HelperSpec::resolve(&["helper=/etc/tess/helper", "debug"]).program,
+            PathBuf::from("/etc/tess/helper")
+        );
+
+        // No PAM argument: the debug/test-only env override applies.
+        assert_eq!(
+            HelperSpec::resolve(&[]).program,
+            PathBuf::from("/env/helper")
+        );
+
+        // No PAM argument, no env: the compiled install path.
         std::env::remove_var(HELPER_PATH_ENV);
         assert_eq!(
-            HelperSpec::from_env_or_default().program,
+            HelperSpec::resolve(&[]).program,
             PathBuf::from(DEFAULT_HELPER_PATH)
         );
-
-        std::env::set_var(HELPER_PATH_ENV, "/opt/tess/helper");
-        assert_eq!(
-            HelperSpec::from_env_or_default().program,
-            PathBuf::from("/opt/tess/helper")
-        );
-        std::env::remove_var(HELPER_PATH_ENV);
     }
 }

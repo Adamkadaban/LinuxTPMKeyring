@@ -27,8 +27,10 @@ pub mod ret {
 }
 
 /// Run the gate for `phase`: abort cleanly if no gesture is available (remote session / no TPM),
-/// otherwise run the helper under the watchdog and map its outcome to a PAM return code. Bounded by
-/// `watchdog.deadline + watchdog.term_grace`; never blocks login.
+/// otherwise run the helper under the watchdog and map its outcome to a PAM return code. When
+/// aborting, auth returns `PAM_IGNORE` (decline, fall through to password) while a session open
+/// returns `PAM_SUCCESS` so it never disturbs login under any control flag. Bounded by
+/// `watchdog.deadline + 2 * watchdog.term_grace`; never blocks login.
 pub fn run_gate(
     phase: GatePhase,
     env: &GateEnv,
@@ -36,7 +38,10 @@ pub fn run_gate(
     watchdog: &Watchdog,
 ) -> i32 {
     if env.aborts() {
-        return ret::PAM_IGNORE;
+        return match phase {
+            GatePhase::Auth => ret::PAM_IGNORE,
+            GatePhase::Session => ret::PAM_SUCCESS,
+        };
     }
     let mut command = helper_spec.command();
     let result = helper::run(&mut command, watchdog);

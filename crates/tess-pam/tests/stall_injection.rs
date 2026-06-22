@@ -121,3 +121,22 @@ fn gate_aborts_without_running_helper_when_no_tpm() {
     );
     assert_eq!(rc, ret::PAM_IGNORE);
 }
+
+#[test]
+fn session_abort_succeeds_rather_than_ignoring() {
+    use pam_tess::{run_gate, GateEnv, HelperSpec};
+
+    // A remote session has no gesture available, but a session open must never disturb login.
+    let env = GateEnv {
+        is_remote: true,
+        tpm_present: true,
+    };
+    let spec = HelperSpec::new("/nonexistent/helper", Vec::new());
+    let rc = run_gate(
+        GatePhase::Session,
+        &env,
+        &spec,
+        &Watchdog::new(Duration::from_secs(1)),
+    );
+    assert_eq!(rc, ret::PAM_SUCCESS);
+}

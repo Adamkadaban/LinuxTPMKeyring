@@ -284,12 +284,22 @@ Gotchas worth remembering:
   disposition (never exercises the SIGKILL escalation), and a `sh`/`sleep` pair would orphan the
   inner `sleep` on SIGKILL (a leaked child the reap-proof would catch). `sh -c "trap '' TERM; while
   :; do :; done"` ignores SIGTERM, has no child, and is killed+reaped cleanly within
-  `deadline + term_grace`.
+  `deadline + 2 * term_grace` (a `term_grace` budget after SIGTERM and another after SIGKILL).
+- **A `SIGKILL`ed child stuck in uninterruptible I/O won't die until its syscall returns**, so a
+  blocking `wait()` after SIGKILL could exceed the hard bound. The watchdog instead polls `try_wait`
+  for a bounded budget after SIGKILL and, in that pathological case, hands the child to a detached
+  reaper thread — the PAM thread stays bounded *and* the child is still reaped (no zombie).
 - **No PID-reuse race in the watchdog:** we signal the child only *before* the final `wait`, so while
   it may be an unreaped zombie its PID is still ours and cannot be recycled. `send_signal` swallows
   only `ESRCH` (already gone); other errno propagate.
-- The real unseal→keyring-unlock helper is Phase 3. Until `TESS_PAM_HELPER` (default
-  `/usr/lib/tess/tess-pam-helper`) exists, a missing-helper spawn fails open — correct non-blocking
-  behaviour, and unit-tested as the spawn-failure → `Unavailable` path.
+- **`process_alive` keys off `ESRCH` only.** `kill(pid, 0)` returning `EPERM` means the process
+  exists but isn't signalable, so only `ESRCH` proves it gone — the reap proof would otherwise flake
+  under restricted permissions.
+- **A privileged PAM module must not take its helper exec path from the environment.** The helper is
+  resolved from a root-controlled `helper=PATH` PAM module argument, falling back to the compiled
+  install path `/usr/lib/tess/tess-pam-helper`; the `TESS_PAM_HELPER` env override is compiled in
+  only under `debug_assertions` (test harness), so release builds can't be redirected via env.
+  Until the real helper (Phase 3) is installed, a missing-helper spawn fails open — correct
+  non-blocking behaviour, unit-tested as the spawn-failure → `Unavailable` path.
 - `pamtester`/`pam_wrapper` live-load smoke is left to CI (host runs no PAM per project policy); the
   bounded + reap proof is the pure-Rust `tests/stall_injection.rs`.

@@ -110,12 +110,33 @@ pub fn get_rhost(pamh: *const pam_handle_t) -> Option<String> {
     get_string_item(pamh, PAM_RHOST)
 }
 
-fn run_default_gate(pamh: *const pam_handle_t, phase: GatePhase) -> i32 {
+/// Collect the PAM module arguments (the tokens after the module path in the PAM config line) into
+/// owned UTF-8 strings. This is the root-controlled configuration channel for the module.
+fn module_args(argc: c_int, argv: *const *const c_char) -> Vec<String> {
+    if argv.is_null() || argc <= 0 {
+        return Vec::new();
+    }
+    let raw = unsafe { std::slice::from_raw_parts(argv, argc as usize) };
+    raw.iter()
+        .filter(|entry| !entry.is_null())
+        .filter_map(|&entry| unsafe { CStr::from_ptr(entry) }.to_str().ok())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn run_default_gate(
+    pamh: *const pam_handle_t,
+    phase: GatePhase,
+    argc: c_int,
+    argv: *const *const c_char,
+) -> i32 {
     let env = GateEnv::detect(get_rhost(pamh).as_deref());
+    let args = module_args(argc, argv);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     crate::run_gate(
         phase,
         &env,
-        &HelperSpec::from_env_or_default(),
+        &HelperSpec::resolve(&arg_refs),
         &Watchdog::default(),
     )
 }
@@ -124,10 +145,10 @@ fn run_default_gate(pamh: *const pam_handle_t, phase: GatePhase) -> i32 {
 pub extern "C" fn pam_sm_authenticate(
     pamh: *mut pam_handle_t,
     _flags: c_int,
-    _argc: c_int,
-    _argv: *const *const c_char,
+    argc: c_int,
+    argv: *const *const c_char,
 ) -> c_int {
-    run_default_gate(pamh, GatePhase::Auth)
+    run_default_gate(pamh, GatePhase::Auth, argc, argv)
 }
 
 #[unsafe(no_mangle)]
@@ -145,10 +166,10 @@ pub extern "C" fn pam_sm_setcred(
 pub extern "C" fn pam_sm_open_session(
     pamh: *mut pam_handle_t,
     _flags: c_int,
-    _argc: c_int,
-    _argv: *const *const c_char,
+    argc: c_int,
+    argv: *const *const c_char,
 ) -> c_int {
-    run_default_gate(pamh, GatePhase::Session)
+    run_default_gate(pamh, GatePhase::Session, argc, argv)
 }
 
 #[unsafe(no_mangle)]
