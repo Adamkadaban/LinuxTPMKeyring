@@ -284,8 +284,8 @@ survives reboot; stall-injection proves login never freezes; teardown removes al
 - [ ] `deploy/debian/`: `cargo-deb` producing an installable `.deb`
 - [ ] Azure E2E harness: provision → install → enroll → scripted virtual-fprint session → assert unlocked → teardown (one script)
 - [ ] Reboot-persistence test
-- [ ] `docs/threat-model.md` finalized (root out of scope, at-rest guarantee, biometric host-trusted, recovery/uninstall)
-- [ ] README: real install/use/uninstall + supported-platform matrix
+- [x] `docs/threat-model.md` finalized (root out of scope, at-rest guarantee, biometric host-trusted, recovery/uninstall)
+- [x] README: real install/use/uninstall + supported-platform matrix
 - [ ] `tess doctor` full readiness + post-install verification
 
 | Wave | Worktree slug | Depends on | Tasks |

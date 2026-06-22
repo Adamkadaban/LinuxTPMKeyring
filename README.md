@@ -1,13 +1,14 @@
 <h1 align="center">tess</h1>
 
 <p align="center">
-  Windows-Hello-style unlocking for the Linux keyring — your secrets, sealed in the TPM, released by a PIN (and soon your fingerprint or face), not your password.
+  Windows-Hello-style unlocking for the Linux keyring — your secrets, sealed in the TPM, released by a PIN (with an optional fingerprint front gate; face is post-MVP), not your password.
 </p>
 
 <p align="center">
   <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
   <img alt="platform: Debian 13" src="https://img.shields.io/badge/platform-Debian%2013-a80030">
-  <img alt="status: pre-MVP" src="https://img.shields.io/badge/status-pre--MVP-orange">
+  <img alt="TPM 2.0" src="https://img.shields.io/badge/TPM-2.0-5b2d8f">
+  <img alt="status: MVP" src="https://img.shields.io/badge/status-MVP%20·%20phase%204-2e7d32">
   <img alt="made with vibes" src="https://img.shields.io/badge/made_with-vibes-ff69b4">
 </p>
 
@@ -23,7 +24,8 @@ A PAM module unseals the key at login and unlocks your keyring — no password.
 
 - **TPM-sealed, never password-derived** — the keyring key is random and sealed in your TPM, bound to a PIN, with hardware anti-hammering (TPM dictionary-attack lockout).
 - **At-rest protection that actually holds** — a stolen or powered-off laptop's secrets can't be unsealed without your PIN on *your* TPM. No offline brute force.
-- **Never freezes your login** — the PAM module runs auth in a watchdog'd helper with a hard timeout and fails open to your password. A stuck TPM or camera can't lock you out (Howdy's #1 flaw, fixed).
+- **Optional fingerprint front gate** — an `fprintd` verify can run ahead of the PIN (opt-in; default PIN-only). It's host-trusted convenience layered *on* the PIN, never a replacement — the PIN authValue is the real gate, so a fingerprint match alone can't unseal.
+- **Never freezes your login** — the PAM module runs auth in a watchdog'd helper with a hard timeout and fails open to your password. A stuck TPM or reader can't lock you out (Howdy's #1 flaw, fixed).
 - **Keeps your existing secrets** — enrollment rekeys your keyring *in place*, preserving every item. Transactional, with a recovery secret and one-command rollback.
 - **100% safe Rust, userspace-only** — no kernel module, no custom kernel, no eBPF. Talks to `fprintd` and `gnome-keyring` over their existing D-Bus APIs; modifies neither.
 - **Honest about scope** — see below.
@@ -40,15 +42,49 @@ hardware. It deliberately does **not** defend against a **root/kernel attacker o
 such an attacker already owns the system, and no Linux system defends that without VBS-class
 isolation, which doesn't exist on commodity hardware. This is the same boundary ChromeOS ships.
 
+## Supported platforms
+
+| Component | Supported | Notes |
+|---|---|---|
+| OS | **Debian 13** (trixie) | The reference target. Other systemd + PAM distros are likely workable but untested. |
+| TPM | **TPM 2.0** — discrete/firmware, or an **Azure Gen2 Trusted-Launch vTPM** | Operations go through the kernel TPM **resource manager** `/dev/tpmrm0` (required by enroll/unlock and `tess doctor`'s verdict). Debian 13 exposes it by default for a TPM 2.0. The MVP policy binds the PIN authValue only (no PCR binding), so Azure's differing vTPM PCRs are fine. |
+| Keyring | **GNOME** login keyring (freedesktop **Secret Service**, `org.freedesktop.secrets`) | Reference daemon. KWallet/KeePassXC expose the same API, so lock-state works, but headless rekey/unlock on non-GNOME daemons is future work. |
+| Login stack | **PAM** session phase (`pam_tess.so`, fail-open `optional`) | Wired by `tess install`; never blocks or fails a login. |
+| Fingerprint | **fprintd** (`net.reactivated.Fprint`), consumed unmodified | Optional front gate (opt-in); convenience only. |
+
+> Automated tests never touch real hardware: CI exercises a software TPM (swtpm) + the libfprint
+> virtual driver, and real-TPM acceptance runs on an Azure Gen2 Trusted-Launch vTPM.
+
 ## Install
 
-> Pre-MVP — not yet installable. The flow below is the target for the first release.
+> **`.deb` packaging and a one-command `install.sh` are in progress** (issue #38). Until they land,
+> build from source — the path below works today on Debian 13 with a TPM 2.0.
 
 ```sh
-# on Debian 13 with a TPM 2.0
-curl -fsSL https://example/install.sh | sh   # placeholder until Phase 4
-tess enroll        # set a PIN, seal a random key, rekey your keyring (transactional)
+# Debian 13 with a TPM 2.0 exposed through the kernel resource manager (/dev/tpmrm0).
+# Build everything — tess, tess-pam-helper, and the cdylib target/release/libpam_tess.so
+# (which `tess install` copies into the PAM module dir as pam_tess.so):
+git clone https://github.com/Adamkadaban/LinuxTPMKeyring && cd LinuxTPMKeyring
+cargo build --workspace --release
+
+# Install the session helper to the path the PAM module resolves at runtime:
+sudo install -Dm755 target/release/tess-pam-helper /usr/lib/tess/tess-pam-helper
+
+# Wire the PAM session module (copies pam_tess.so, edits the session stack, fail-open). Run as root:
+sudo ./target/release/tess install
+
+# Seal a random key under a PIN and rekey your keyring in place (transactional; prints a recovery secret):
+./target/release/tess enroll
 ```
+
+When building from source, prefix the `tess` commands with `./target/release/` as shown. The PAM
+module looks for the helper at the compiled default `/usr/lib/tess/tess-pam-helper` (the
+`install -Dm755` step above), or at an **absolute** `helper=/path` argument on the PAM line —
+relative paths are ignored. The packaged `.deb` (issue #38) is the smooth path: it installs the
+`tess` binary, the `tess-pam-helper`, and `pam_tess.so` to these canonical paths automatically.
+`tess install` copies `pam_tess.so` into the system PAM module directory and wires the session stack
+(idempotent, fail-open); it does **not** install the `tess` binary or the helper — that's what the
+`.deb` (or the manual steps above) handles.
 
 ## Use
 
@@ -93,13 +129,32 @@ than aborting); it is safe to run when nothing is installed. Flags: `--service`,
 `--module-dir` override the auto-detected paths. The snippet and exact placement are documented in
 [`deploy/pam/`](./deploy/pam/README.md).
 
-> tess never wires PAM on the developer host — the real wiring happens on the Azure VM (Phase 4) or
-> a user's machine. The install logic is exercised in tests against throwaway fixtures only.
+#### Optional fingerprint front gate
+
+The fingerprint front gate is **opt-in** and **off by default** (PIN-only). To enable it, add the
+`fingerprint=yes` module argument to the tess PAM line:
+
+```pam
+session optional pam_tess.so fingerprint=yes
+```
+
+The module then runs one bounded `fprintd` verify ahead of the PIN unseal and falls through to the
+PIN **regardless of the result** — a match never skips the PIN, and a no-match or stalled reader
+never blocks login. Precedence: **fingerprint (convenience) → PIN (the real gate) → password
+fallthrough**. There is no `tess`-CLI fingerprint flag in the MVP; the gate is configured at the PAM
+line. Multi-factor enrollment UX (`--fingerprint`/`--face`) is post-MVP (Phase 5, the Mug face
+daemon).
+
+> The PAM install logic is exercised in tests against throwaway fixtures only — it never edits a real
+> `/etc/pam.d` or module directory in CI.
 
 ## Status
 
-Active bootstrap. Roadmap and phase checklist live in [`PLAN.md`](./PLAN.md); contributor and agent
-rules in [`AGENTS.md`](./AGENTS.md); the security boundary in [`docs/threat-model.md`](./docs/threat-model.md).
+MVP (Phase 4). The TPM core, keyring rekey/unlock, fprintd verify, the non-blocking PAM module, the
+transactional enroll/recover/unenroll lifecycle, and the installer all ship and are green in CI on a
+software TPM. Remaining Phase 4 work: the `.deb` package (#38) and the real Azure-vTPM end-to-end
+acceptance. Roadmap and phase checklist live in [`PLAN.md`](./PLAN.md); contributor and agent rules
+in [`AGENTS.md`](./AGENTS.md); the security boundary in [`docs/threat-model.md`](./docs/threat-model.md).
 
 ## Azure dev VM (real vTPM)
 
@@ -115,9 +170,9 @@ never used to seal, unseal, enroll, or touch a TPM/keyring — that work happens
 # project=LinuxTPMKeyring. Defaults are overridable via env vars (see the script header).
 TESS_SSH_PUBKEY=~/.ssh/id_ed25519.pub deploy/azure/provision.sh
 
-# Self-check readiness on the VM (prints the same table as below). NOTE: tess is pre-MVP and
-# is NOT preinstalled on the VM — build it (`cargo build --release`) and copy the `tess` binary
-# to the VM first; otherwise this fails with `tess: command not found`.
+# Self-check readiness on the VM (prints the same table as below). NOTE: tess is NOT preinstalled
+# on the VM — build it (`cargo build --release`) and copy the `tess` binary to the VM first;
+# otherwise this fails with `tess: command not found`.
 ssh tess@<public-ip> tess doctor
 
 deploy/azure/deallocate.sh        # stop billing while idle (VM kept, disk persists)
