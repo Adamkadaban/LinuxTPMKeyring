@@ -120,11 +120,20 @@ fi
 
 # Wrap a command with sudo only when the login user can't read+write the TPM device directly,
 # preserving the toolchain PATH and build cache (HOME) so root reuses the user's target/ + registry.
+# sudo resolves the command via secure_path (not the inherited PATH), so a rustup-installed cargo in
+# ~/.cargo/bin is invisible to `sudo cargo`. Resolve the binary to an absolute path first and run it
+# under `env` with the caller's PATH so sub-tools (rustc, the linker) are also found.
 tpm_run() {
   if [[ -r /dev/tpmrm0 && -w /dev/tpmrm0 ]]; then
     "$@"
   else
-    sudo --preserve-env=HOME,PATH,CARGO_HOME,RUSTUP_HOME "$@"
+    local bin
+    bin="$(command -v "$1")" || {
+      echo "error: '$1' not found on PATH." >&2
+      return 1
+    }
+    shift
+    sudo --preserve-env=HOME,CARGO_HOME,RUSTUP_HOME env "PATH=${PATH}" "${bin}" "$@"
   fi
 }
 
