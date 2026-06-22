@@ -8,9 +8,15 @@
 use libc::{c_char, c_int, c_void};
 use std::ffi::CStr;
 
-use crate::gate::{GateEnv, GatePhase, HelperSpec};
+use zeroize::Zeroizing;
+
+use crate::gate::{GateEnv, GatePhase, GateResult, HelperSpec};
 use crate::helper::Watchdog;
 use crate::ret;
+
+/// Defensive cap on the PIN copied out of the PAM conversation. A real PIN is far smaller; the cap
+/// only bounds the bytes handed to the helper.
+const MAX_PIN_BYTES: usize = 1024;
 
 /// Opaque PAM handle. We only ever pass the pointer back to libpam; we never dereference it.
 pub enum pam_handle_t {}
@@ -112,6 +118,114 @@ pub fn get_rhost(pamh: *const pam_handle_t) -> Option<String> {
     get_string_item(pamh, PAM_RHOST)
 }
 
+/// Obtain the PIN from the PAM conversation (`pam_get_authtok`, which returns the cached
+/// `PAM_AUTHTOK` if a prior phase gathered it, else prompts via the conversation). The bytes are
+/// copied into an owned zeroizing buffer and never logged; the `authtok` pointer `pam_get_authtok`
+/// writes is owned by libpam and is only read, never freed here. `None` when no usable token is
+/// available (no conversation, an empty entry, or an implausibly long one).
+fn get_pin(pamh: *mut pam_handle_t) -> Option<Zeroizing<Vec<u8>>> {
+    if pamh.is_null() {
+        return None;
+    }
+    let mut authtok: *const c_char = std::ptr::null();
+    let prompt = c"tess PIN: ";
+    let rc = unsafe { pam_get_authtok(pamh, PAM_AUTHTOK, &mut authtok, prompt.as_ptr()) };
+    if rc != ret::PAM_SUCCESS || authtok.is_null() {
+        return None;
+    }
+    let bytes = unsafe { CStr::from_ptr(authtok) }.to_bytes();
+    // Treat an empty or implausibly long PIN as "no usable PIN" (so the session falls through with
+    // the keyring left locked) rather than truncating it, which would silently hand the helper a
+    // different, guaranteed-wrong PIN and mask the real cause.
+    if bytes.is_empty() || bytes.len() > MAX_PIN_BYTES {
+        return None;
+    }
+    Some(Zeroizing::new(bytes.to_vec()))
+}
+
+/// Emit a best-effort, secret-free line to the auth-private syslog facility. A logging failure must
+/// never affect login, so the result is ignored. The fixed `"%s"` format prevents any
+/// format-string interpretation of `message`.
+fn syslog_info(message: &CStr) {
+    unsafe {
+        libc::syslog(
+            libc::LOG_AUTHPRIV | libc::LOG_INFO,
+            c"%s".as_ptr(),
+            message.as_ptr(),
+        );
+    }
+}
+
+/// Log the session-phase outcome without leaking the PIN, the key, or any other secret.
+fn log_session_outcome(outcome: Option<GateResult>) {
+    let message: &CStr = match outcome {
+        None => {
+            c"tess: session — no unlock gesture available (remote session or no TPM); keyring left locked"
+        }
+        Some(GateResult::Authorized) => c"tess: session — login keyring unlocked",
+        Some(GateResult::Declined) => {
+            c"tess: session — wrong PIN or unseal/unlock failed; keyring left locked"
+        }
+        Some(GateResult::Unavailable) => {
+            c"tess: session — unlock unavailable (helper timeout/failure or no PIN); keyring left locked"
+        }
+    };
+    syslog_info(message);
+}
+
+/// Resolve the helper spec from the module arguments PAM passed into an entrypoint.
+///
+/// # Safety
+///
+/// `argc`/`argv` must be the count/array PAM passed straight into the entrypoint (see
+/// [`module_args`]).
+unsafe fn helper_spec(argc: c_int, argv: *const *const c_char) -> HelperSpec {
+    let args = unsafe { module_args(argc, argv) };
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    HelperSpec::resolve(&arg_refs)
+}
+
+/// Auth phase: tess never authenticates the user or unlocks the keyring here (that is the session
+/// phase's job) — it only declines so a `[success=done default=ignore]` stack falls through to the
+/// password factor, or aborts cleanly on a remote / no-TPM host. A panic must never unwind across
+/// the `extern "C"` boundary, so it is caught and mapped to the fall-through code.
+fn run_auth_gate(pamh: *const pam_handle_t, argc: c_int, argv: *const *const c_char) -> i32 {
+    let gate = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let env = GateEnv::detect(get_rhost(pamh).as_deref());
+        // SAFETY: argc/argv are the arguments PAM passed straight into the entrypoint.
+        let spec = unsafe { helper_spec(argc, argv) };
+        crate::run_gate(GatePhase::Auth, &env, &spec, &Watchdog::default(), None)
+    }));
+    gate.unwrap_or(ret::PAM_AUTHINFO_UNAVAIL)
+}
+
+/// Session phase: obtain the PIN and run the watchdog'd helper to unseal the key and unlock the
+/// login keyring under the hard deadline. The session must always open, so any outcome maps to
+/// `PAM_SUCCESS` — on timeout or failure the keyring just stays locked. A panic is caught and also
+/// mapped to `PAM_SUCCESS` so login is never broken.
+fn run_session_gate(pamh: *mut pam_handle_t, argc: c_int, argv: *const *const c_char) -> i32 {
+    let gate = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let env = GateEnv::detect(get_rhost(pamh).as_deref());
+        // SAFETY: argc/argv are the arguments PAM passed straight into the entrypoint.
+        let spec = unsafe { helper_spec(argc, argv) };
+        // Only prompt for a PIN once a gesture is known to be possible, so SSH/remote and no-TPM
+        // hosts are never prompted.
+        let pin = if env.aborts() { None } else { get_pin(pamh) };
+        let outcome = crate::evaluate(
+            &env,
+            &spec,
+            &Watchdog::default(),
+            pin.as_ref().map(|p| p.as_slice()),
+        );
+        log_session_outcome(outcome);
+        match outcome {
+            None => ret::PAM_SUCCESS,
+            Some(result) => crate::decide(GatePhase::Session, result),
+        }
+    }));
+    gate.unwrap_or(ret::PAM_SUCCESS)
+}
+
 /// Collect the PAM module arguments (the tokens after the module path in the PAM config line) into
 /// owned UTF-8 strings. This is the root-controlled configuration channel for the module.
 ///
@@ -132,38 +246,6 @@ unsafe fn module_args(argc: c_int, argv: *const *const c_char) -> Vec<String> {
         .collect()
 }
 
-fn run_default_gate(
-    pamh: *const pam_handle_t,
-    phase: GatePhase,
-    argc: c_int,
-    argv: *const *const c_char,
-) -> i32 {
-    // A panic must never unwind across the `extern "C"` boundary into the PAM host process (it would
-    // abort the login process). Catch it and fail open: auth falls through to password, a session
-    // open succeeds so login proceeds.
-    let gate = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let env = GateEnv::detect(get_rhost(pamh).as_deref());
-        // SAFETY: argc/argv are the arguments PAM passed straight into the entrypoint, which it
-        // guarantees are a valid count/array of NUL-terminated C strings.
-        let args = unsafe { module_args(argc, argv) };
-        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        crate::run_gate(
-            phase,
-            &env,
-            &HelperSpec::resolve(&arg_refs),
-            &Watchdog::default(),
-        )
-    }));
-    gate.unwrap_or_else(|_| fail_open_code(phase))
-}
-
-fn fail_open_code(phase: GatePhase) -> i32 {
-    match phase {
-        GatePhase::Auth => ret::PAM_AUTHINFO_UNAVAIL,
-        GatePhase::Session => ret::PAM_SUCCESS,
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn pam_sm_authenticate(
     pamh: *mut pam_handle_t,
@@ -171,7 +253,7 @@ pub extern "C" fn pam_sm_authenticate(
     argc: c_int,
     argv: *const *const c_char,
 ) -> c_int {
-    run_default_gate(pamh, GatePhase::Auth, argc, argv)
+    run_auth_gate(pamh, argc, argv)
 }
 
 #[unsafe(no_mangle)]
@@ -192,7 +274,7 @@ pub extern "C" fn pam_sm_open_session(
     argc: c_int,
     argv: *const *const c_char,
 ) -> c_int {
-    run_default_gate(pamh, GatePhase::Session, argc, argv)
+    run_session_gate(pamh, argc, argv)
 }
 
 #[unsafe(no_mangle)]

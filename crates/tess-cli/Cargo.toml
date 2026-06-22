@@ -12,6 +12,12 @@ repository.workspace = true
 name = "tess"
 path = "src/main.rs"
 
+# Spawned by the tess PAM module under its watchdog. The module resolves the helper at runtime; its
+# default install path is wired up by the deploy packaging (Phase 4).
+[[bin]]
+name = "tess-pam-helper"
+path = "src/pam_helper.rs"
+
 [features]
 # Drives the transactional enroll integration suite against an isolated swtpm (TPM seal/unseal) and a
 # throwaway gnome-keyring on a private bus (Secret Service rekey). Off by default so

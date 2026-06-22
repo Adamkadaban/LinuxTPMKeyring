@@ -17,6 +17,9 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 libc.workspace = true
 nix.workspace = true
+# PIN bytes are held in a `Zeroizing` buffer between the PAM conversation and the helper's stdin so
+# they are wiped from this module's memory on drop; the sealed key never enters this crate.
+zeroize.workspace = true
 
 # This crate intentionally does NOT inherit the workspace `unsafe_code = "forbid"` lint. Instead
 # lib.rs sets `#![deny(unsafe_code)]` and only the `ffi` module is `#[allow(unsafe_code)]`, confining

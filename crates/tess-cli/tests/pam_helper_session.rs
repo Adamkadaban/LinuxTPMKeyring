@@ -1,0 +1,233 @@
+//! `sim` + `daemon-tests` end-to-end proof of the PAM session path: enroll against an isolated swtpm
+//! and a throwaway `gnome-keyring-daemon`, lock the keyring, then run the real `tess-pam-helper`
+//! binary with the PIN on its stdin — the same contract the PAM module relies on (the module uses a
+//! `memfd`-backed stdin transfer; this test feeds stdin via a pipe, since the SIGPIPE hazard the
+//! memfd avoids only applies inside the login process) — and assert it unseals the key and flips the
+//! keyring to unlocked with every pre-existing item intact. Throwaway keyrings only; every spawned
+//! process (swtpm, dbus, keyring, helper) is reaped on drop or at the end of the test.
+#![cfg(all(feature = "sim", feature = "daemon-tests"))]
+
+mod common;
+
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::io::{Read, Write};
+use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use common::{GnomeKeyring, Swtpm};
+use secret_service::blocking::SecretService;
+use secret_service::EncryptionType;
+use tess_core::{KeyringBackend, SecretBytes};
+use tess_keyring::SecretServiceBackend;
+use tess_tpm::TctiConfig;
+
+use tess_cli::enroll::sealer::TpmSealer;
+use tess_cli::enroll::{enroll, Paths};
+
+const OLD_PASSWORD: &[u8] = b"old-keyring-password";
+const PIN: &[u8] = b"1234";
+const ITEMS: [(&str, &[u8]); 3] = [
+    ("alpha", b"secret-one"),
+    ("beta", b"secret-two"),
+    ("gamma", b"secret-three"),
+];
+
+// `secret-service`'s client reads the bus address from `DBUS_SESSION_BUS_ADDRESS`, a process-global.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct EnvGuard {
+    key: &'static str,
+    prev: Option<OsString>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let prev = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, prev }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.prev {
+            Some(v) => std::env::set_var(self.key, v),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+fn login_collection_path(service: &SecretService<'_>) -> String {
+    service
+        .get_all_collections()
+        .expect("list collections")
+        .into_iter()
+        .find(|c| c.collection_path.as_str().ends_with("/login"))
+        .expect("login collection present")
+        .collection_path
+        .to_string()
+}
+
+fn seed_items(service: &SecretService<'_>, collection_path: &str) {
+    let collection = service
+        .get_all_collections()
+        .expect("list collections")
+        .into_iter()
+        .find(|c| c.collection_path.as_str() == collection_path)
+        .expect("login collection");
+    for (label, secret) in ITEMS {
+        let attributes = HashMap::from([("tess-test", label)]);
+        collection
+            .create_item(label, attributes, secret, true, "text/plain")
+            .expect("store item");
+    }
+}
+
+fn assert_items_intact(service: &SecretService<'_>) {
+    for (label, expected) in ITEMS {
+        let attributes = HashMap::from([("tess-test", label)]);
+        let found = service.search_items(attributes).expect("search items");
+        let item = found
+            .unlocked
+            .first()
+            .unwrap_or_else(|| panic!("item {label} present and unlocked"));
+        assert_eq!(
+            item.get_secret().expect("decrypt item"),
+            expected,
+            "item {label} must survive the session unlock"
+        );
+    }
+}
+
+fn lock_login(service: &SecretService<'_>, collection_path: &str) {
+    let collection = service
+        .get_all_collections()
+        .expect("list collections")
+        .into_iter()
+        .find(|c| c.collection_path.as_str() == collection_path)
+        .expect("login collection");
+    collection.lock().expect("lock collection");
+}
+
+fn swtpm_host_port(tcti: &TctiConfig) -> (String, String) {
+    match tcti {
+        TctiConfig::Swtpm { host, port } => (host.clone(), port.to_string()),
+        TctiConfig::DeviceManager { .. } => panic!("sim test must use swtpm"),
+    }
+}
+
+/// Run the helper binary the way the PAM module does: PIN on stdin, bounded wait, reap. Returns the
+/// exit status and captured stderr (secret-free error context), never leaving the child behind.
+fn run_helper(bus_address: &str, data_home: &std::path::Path, tcti: &TctiConfig) -> (bool, String) {
+    let (host, port) = swtpm_host_port(tcti);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tess-pam-helper"))
+        .env("DBUS_SESSION_BUS_ADDRESS", bus_address)
+        .env("XDG_DATA_HOME", data_home)
+        .env("TESS_SWTPM_HOST", host)
+        .env("TESS_SWTPM_PORT", port)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn tess-pam-helper");
+
+    child
+        .stdin
+        .take()
+        .expect("helper stdin")
+        .write_all(PIN)
+        .expect("write PIN to helper stdin");
+
+    // Bounded wait + reap, so a stuck helper can never hang the test.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("try_wait helper") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            // Bounded reap after the kill — never an unbounded `wait()` that could itself hang CI if
+            // the helper were stuck in uninterruptible I/O. A leftover zombie (if even this loop is
+            // outlasted) is reaped by the OS when the test binary exits.
+            for _ in 0..40 {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            panic!("tess-pam-helper did not finish within the deadline");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    (status.success(), stderr)
+}
+
+#[test]
+fn simulated_session_helper_unseals_and_unlocks_the_keyring() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let Some((swtpm, tcti)) = Swtpm::start() else {
+        return;
+    };
+    let Some(keyring) = GnomeKeyring::start(OLD_PASSWORD) else {
+        return;
+    };
+    let _env = EnvGuard::set("DBUS_SESSION_BUS_ADDRESS", keyring.address());
+
+    let service = SecretService::connect(EncryptionType::Dh).expect("connect Secret Service");
+    let collection_path = login_collection_path(&service);
+    seed_items(&service, &collection_path);
+
+    // The helper resolves its enrollment metadata from $XDG_DATA_HOME/tess; enroll into the same
+    // place so the child finds it.
+    let data_home = tempfile::tempdir().expect("temp data home");
+    let tess_dir = data_home.path().join("tess");
+    let paths = Paths {
+        metadata: tess_dir.join("metadata.json"),
+        recovery: tess_dir.join("recovery.json"),
+    };
+
+    let backend =
+        SecretServiceBackend::connect_to(keyring.address(), &collection_path).expect("backend");
+    let old = SecretBytes::new(OLD_PASSWORD.to_vec());
+    let pin = SecretBytes::new(PIN.to_vec());
+    let verify_item = || Ok(());
+
+    {
+        // Scope the sealer so its TPM context is closed before the helper opens its own against the
+        // single-client swtpm.
+        let mut sealer = TpmSealer::open(&tcti).expect("open swtpm sealer");
+        enroll(&mut sealer, &backend, &paths, &old, &pin, &verify_item).expect("enroll");
+    }
+    assert!(
+        !backend.is_locked().unwrap(),
+        "keyring unlocked after enroll"
+    );
+    assert_items_intact(&service);
+
+    // Lock the keyring so the helper's unlock is observable.
+    lock_login(&service, &collection_path);
+    assert!(
+        backend.is_locked().unwrap(),
+        "keyring locked before session"
+    );
+
+    let (ok, stderr) = run_helper(keyring.address(), data_home.path(), &tcti);
+    assert!(ok, "helper must succeed; stderr: {stderr}");
+
+    assert!(
+        !backend.is_locked().unwrap(),
+        "the session helper must unlock the keyring"
+    );
+    assert_items_intact(&service);
+
+    // Keep swtpm alive until the helper has finished using it.
+    drop(swtpm);
+}

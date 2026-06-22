@@ -16,7 +16,7 @@
 ## Flow (MVP)
 
 ```
-login → PAM (auth: PIN via conv, bounded helper) → tess-tpm::unseal(pin) → random key
+login → PAM session (PIN via conv, bounded helper) → tess-tpm::unseal(pin) → random key
       → tess-keyring::unlock(key) over Secret Service → GNOME login keyring unlocked
 ```
 
@@ -415,9 +415,37 @@ at the crate root with `#[allow(unsafe_code)]` on the `ffi` module alone. The mo
 small frozen surface it needs (`pam_get_item`, `pam_set_data`/`pam_get_data`, `pam_get_authtok`, and
 the `pam_conv`/`pam_message`/`pam_response` structs), exports the four entrypoints
 (`pam_sm_authenticate`/`pam_sm_setcred`/`pam_sm_open_session`/`pam_sm_close_session`), and wraps the
-raw calls in safe functions (e.g. reading `PAM_RHOST`) so the rest of the crate stays safe Rust. The
+raw calls in safe functions (reading `PAM_RHOST`, obtaining the PIN via `pam_get_authtok` into a
+zeroizing buffer, and a secret-free `syslog` line) so the rest of the crate stays safe Rust. The
 `.so` links `libpam` (via `build.rs`), which also lets the test binaries resolve the `pam_*` symbols
 without a live PAM stack.
+
+### Session flow: PIN → unseal → unlock
+
+The session phase (`pam_sm_open_session`) performs the real work, non-blocking:
+
+1. **Abort early** if no gesture is possible — a remote session (non-empty `PAM_RHOST`) or no TPM
+   device — returning `PAM_SUCCESS` without prompting (SSH logins are never prompted for a PIN).
+2. **Obtain the PIN** through the PAM conversation (`pam_get_authtok`, which returns a cached
+   `PAM_AUTHTOK` from a prior phase or prompts). The bytes live in a `zeroize::Zeroizing` buffer,
+   are never logged, and are handed to the helper on its standard input — not via argv or the
+   environment (which `ps`/`/proc` expose), and not via a disk file (which would persist the secret).
+   The transfer uses an anonymous in-memory file (`memfd`), so there is no pipe whose broken read end
+   could raise `SIGPIPE` and kill the login process.
+3. **Run the helper** `tess-pam-helper` under the watchdog. The helper reads the PIN from stdin,
+   loads the sealed object from `$XDG_DATA_HOME/tess/metadata.json`, opens the TPM
+   (`tess_tpm::unseal`), and unlocks the login keyring (`tess_keyring::unlock`). It exits `0` on a
+   successful unlock, non-zero on any failure; the PIN and the unsealed key never reach argv, the
+   environment, disk, or the output. The helper is a second binary of the `tess-cli` crate so it
+   shares the enroll/unlock composition (`tess_cli::session::unseal_and_unlock`) rather than
+   duplicating it.
+4. **Always return `PAM_SUCCESS`** and log the outcome (unlocked / wrong-PIN / timeout / no-gesture)
+   to `LOG_AUTHPRIV` without any secret. On timeout or failure the keyring simply stays locked and
+   login proceeds.
+
+The auth phase (`pam_sm_authenticate`) does **not** authenticate the user or unlock the keyring (that
+is the session phase's job): it declines (`PAM_AUTHINFO_UNAVAIL`, or `PAM_IGNORE` when aborting) so a
+`[success=done default=ignore]` stack falls through to the password factor.
 
 ### Watchdog'd helper + fail-open
 
@@ -450,18 +478,23 @@ never disturbs login under any control flag. The helper executable is resolved f
 PAM module argument (`helper=PATH` in the PAM config), falling back to the compiled install path
 `/usr/lib/tess/tess-pam-helper`; release builds ignore the environment so a caller cannot substitute
 the helper in the privileged PAM context (debug/test builds additionally honour `TESS_PAM_HELPER` for
-the test harness). The real unseal → keyring-unlock helper is wired in a later phase; until it is
-installed, a missing-helper spawn fails open, which is the correct non-blocking behaviour.
+the test harness). A missing or non-enrolled helper exits non-zero (or fails to spawn), which the
+gate treats as fail-open — the correct non-blocking behaviour.
 
 ### "Login never freezes" test
 
 `crates/tess-pam/tests/stall_injection.rs` injects three helper states — slow-but-eventually-OK,
 hang-forever (SIGTERM-ignoring, forcing SIGKILL escalation), and clean-failure — and asserts each
 finishes within a hard bound, maps to the correct PAM code, and leaves the child neither alive nor a
-zombie (`process_alive(pid)` is false after the run). Pure unit tests cover the timeout / fail-open /
-abort decision logic. A CI step additionally installs the compiled `pam_tess.so` and drives it with
-`pamtester` (backed by `pam_permit`), proving the module dlopens through libpam and that a no-op
-session returns `PAM_SUCCESS` — host-side execution is never run on the developer machine.
+zombie (`process_alive(pid)` is false after the run), including the stdin-fed (`run_with_input`) path
+the session phase uses. Pure unit tests cover the timeout / fail-open / abort decision logic. The
+end-to-end session path is proved in `crates/tess-cli/tests/pam_helper_session.rs` (`sim` +
+`daemon-tests`): it enrolls against an isolated swtpm and a throwaway `gnome-keyring-daemon`, locks
+the keyring, runs the real `tess-pam-helper` binary exactly as the module does (PIN on stdin, bounded
+wait, reap), and asserts the keyring flips to unlocked with every pre-existing item intact. A CI step
+additionally installs the compiled `pam_tess.so` and drives it with `pamtester` (backed by
+`pam_permit`), proving the module dlopens through libpam and that a no-op session returns
+`PAM_SUCCESS` — host-side execution is never run on the developer machine.
 
 
 ## PAM wiring & installer (`tess install`)
