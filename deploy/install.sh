@@ -129,6 +129,12 @@ build_deb() {
 		echo "error: cargo not found; install the Rust toolchain first." >&2
 		exit 1
 	}
+	# Build prerequisites for linking + bindgen (tss-esapi FFI, the PAM module). Idempotent: apt is a
+	# no-op for already-installed packages. Mirrors the build deps in .github/workflows/test.yml.
+	echo "==> installing build prerequisites"
+	run_root apt-get update
+	run_root apt-get install "${apt_args[@]}" \
+		build-essential pkg-config libclang-dev libtss2-dev libpam0g-dev
 	if ! command -v cargo-deb >/dev/null 2>&1; then
 		echo "==> installing cargo-deb"
 		cargo install cargo-deb --locked
