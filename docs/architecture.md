@@ -175,10 +175,12 @@ instead.
   daemon.
 
 Every dependency on the unstable private interface lives in `SecretServiceBackend`, behind the trait,
-so churn there never reaches callers. Released key material is carried in `SecretBytes` and the D-Bus
-`Secret` buffer is zeroized as soon as each call returns. The value crosses the *per-user* session-bus
-socket through a `plain` session without D-Bus-layer encryption; that socket is owned by the user and
-a root/runtime adversary is out of scope, so the at-rest guarantee is unaffected.
+so churn there never reaches callers. Released key material is carried in `SecretBytes` and the
+backend's own D-Bus `Secret` buffer is zeroized as soon as each call returns; intermediate copies
+inside `zbus`'s message encoding are outside our control and not guaranteed to be wiped. The value
+crosses the *per-user* session-bus socket through a `plain` session without D-Bus-layer encryption;
+that socket is owned by the user and a root/runtime adversary is out of scope, so the at-rest
+guarantee is unaffected.
 
 The `daemon-tests` feature gates an end-to-end suite that stands up a private `dbus-daemon` plus
 `gnome-keyring-daemon` (secrets component) against a throwaway `XDG_DATA_HOME`, then reaps both even on

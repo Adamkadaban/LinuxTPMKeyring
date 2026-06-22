@@ -156,24 +156,22 @@ fn create_private_dir(dir: &Path) {
 }
 
 /// Graceful SIGTERM (via `kill`, avoiding an `unsafe` libc call), escalate to SIGKILL if it
-/// lingers, then reap so nothing is left zombied.
+/// lingers, reaping the child exactly once.
 fn reap(child: &mut Child) {
-    if let Ok(Some(_)) = child.try_wait() {
+    if matches!(child.try_wait(), Ok(Some(_))) {
         return;
     }
-    let sigterm_sent = send_sigterm(child);
-    if sigterm_sent {
+    if send_sigterm(child) {
         for _ in 0..50 {
-            if let Ok(Some(_)) = child.try_wait() {
-                let _ = child.wait();
-                return;
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                Err(_) => return,
             }
-            std::thread::sleep(Duration::from_millis(100));
         }
     }
-    if let Ok(None) = child.try_wait() {
-        let _ = child.kill();
-    }
+    // Still running (or no portable SIGTERM): force-kill and reap once.
+    let _ = child.kill();
     let _ = child.wait();
 }
 

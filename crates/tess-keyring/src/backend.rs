@@ -16,8 +16,9 @@
 //!
 //! Secret material reaches the daemon through a `plain` session: the value crosses the *per-user*
 //! session-bus socket without D-Bus-layer encryption. That socket is owned by the user and a
-//! root/runtime adversary is out of scope, so the at-rest guarantee is unaffected; the released key
-//! is wiped from this process's buffers ([`zeroize`]) the moment each call returns.
+//! root/runtime adversary is out of scope, so the at-rest guarantee is unaffected. The `Secret`
+//! buffer this backend builds is zeroized ([`zeroize`]) as soon as each call returns; intermediate
+//! copies inside `zbus`'s message encoding are outside our control and not guaranteed to be wiped.
 
 use tess_core::{Error, KeyringBackend, Result, SecretBytes};
 use zbus::zvariant::{OwnedObjectPath, Type, Value};
