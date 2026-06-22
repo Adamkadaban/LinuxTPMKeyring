@@ -62,6 +62,31 @@ jobs:
       - name: Test (Secret Service daemon)
         run: cargo test -p tess-keyring --features daemon-tests
 
+      - name: PAM module load smoke test (pamtester)
+        run: |
+          set -euxo pipefail
+          sudo apt-get install -y --no-install-recommends pamtester
+          cargo build -p tess-pam
+          so=target/debug/libpam_tess.so
+          test -f "$so"
+          # Locate the PAM module directory via a stock module that is always installed.
+          pam_dir=$(dirname "$(find /lib /usr/lib -name pam_permit.so -print -quit 2>/dev/null)")
+          test -n "$pam_dir"
+          sudo install -m 0644 "$so" "$pam_dir/pam_tess.so"
+          # A no-op stack: our module (optional) backed by pam_permit so the transaction succeeds.
+          sudo tee /etc/pam.d/tess-smoke >/dev/null <<'EOF'
+          auth     optional  pam_tess.so
+          auth     required  pam_permit.so
+          session  optional  pam_tess.so
+          session  required  pam_permit.so
+          EOF
+          user=$(id -un)
+          # The compiled .so must dlopen through libpam and a no-op session must return success.
+          pamtester tess-smoke "$user" open_session
+          pamtester tess-smoke "$user" close_session
+          # authenticate must be callable and fail open (pam_permit yields overall success).
+          pamtester tess-smoke "$user" authenticate
+
       - name: cargo-audit + cargo-deny
         uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
         with:

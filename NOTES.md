@@ -307,5 +307,9 @@ Gotchas worth remembering:
   only under `debug_assertions` (test harness), so release builds can't be redirected via env.
   Until the real helper (Phase 3) is installed, a missing-helper spawn fails open — correct
   non-blocking behaviour, unit-tested as the spawn-failure → `Unavailable` path.
-- `pamtester`/`pam_wrapper` live-load smoke is left to CI (host runs no PAM per project policy); the
-  bounded + reap proof is the pure-Rust `tests/stall_injection.rs`.
+- `pamtester` live-load smoke runs in CI only (host runs no PAM per project policy): the `test`
+  workflow installs the built `pam_tess.so`, writes a `pam_permit`-backed `/etc/pam.d/tess-smoke`
+  service, and drives `open_session`/`close_session`/`authenticate` to prove the module dlopens
+  through libpam and a no-op session returns `PAM_SUCCESS`. The dlopen can't be a Rust test because
+  `libloading` needs `unsafe` outside the `ffi` module (forbidden); pamtester keeps the unsafe in C.
+  The bounded + reap proof is the pure-Rust `tests/stall_injection.rs`.

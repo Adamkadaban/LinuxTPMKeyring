@@ -336,6 +336,7 @@ installed, a missing-helper spawn fails open, which is the correct non-blocking 
 hang-forever (SIGTERM-ignoring, forcing SIGKILL escalation), and clean-failure — and asserts each
 finishes within a hard bound, maps to the correct PAM code, and leaves the child neither alive nor a
 zombie (`process_alive(pid)` is false after the run). Pure unit tests cover the timeout / fail-open /
-abort decision logic. A `pamtester`/`pam_wrapper` smoke load of a no-op session is left to CI per the
-"nothing runs on the dev host" policy.
+abort decision logic. A CI step additionally installs the compiled `pam_tess.so` and drives it with
+`pamtester` (backed by `pam_permit`), proving the module dlopens through libpam and that a no-op
+session returns `PAM_SUCCESS` — host-side execution is never run on the developer machine.
 
