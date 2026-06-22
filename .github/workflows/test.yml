@@ -158,9 +158,9 @@ jobs:
         with:
           tool: cargo-vet
 
-      # --locked uses the recorded supply-chain/imports.lock, so the imported audit sets are not
-      # re-fetched: the audit metadata is deterministic run-to-run. cargo vet still fetches crate
-      # sources + the registry index to inspect them, but it never compiles the workspace, so no
-      # system libraries (libtss2-dev, clang) are needed.
+      # The vet store is self-contained (exemptions only, no external [imports]), so there is no
+      # upstream audit set to fetch and the gate is reproducible. --locked forbids cargo vet from
+      # mutating the store, turning any drift between the committed exemptions and the lockfile into a
+      # CI failure. cargo vet never compiles the workspace, so no system libraries are needed.
       - name: cargo vet
         run: cargo vet --locked
