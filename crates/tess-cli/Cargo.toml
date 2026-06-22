@@ -79,8 +79,11 @@ maintainer-scripts = "../../deploy/debian/"
 # `tess-pam-helper` goes to the path the PAM module resolves at runtime; `libpam_tess.so` is renamed
 # to its PAM load name `pam_tess.so` under the Debian amd64 multiarch security directory. `tess
 # install` still copies the module/wires PAM at deploy time; these assets make a clean install path.
+# The udev rule lands under /usr/lib/udev/rules.d (vendor rules, not a conffile) so it never prompts
+# on upgrade; the postinst reloads udev so it applies without a reboot.
 assets = [
     ["target/release/tess", "usr/bin/", "755"],
     ["target/release/tess-pam-helper", "usr/lib/tess/tess-pam-helper", "755"],
     ["target/release/libpam_tess.so", "usr/lib/x86_64-linux-gnu/security/pam_tess.so", "644"],
+    ["../../deploy/udev/70-tess-tpm.rules", "usr/lib/udev/rules.d/70-tess-tpm.rules", "644"],
 ]

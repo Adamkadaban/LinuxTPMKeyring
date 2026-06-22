@@ -116,6 +116,7 @@ jobs:
           grep -Eq ' \./usr/bin/tess$' /tmp/tess-deb-contents.txt
           grep -Eq ' \./usr/lib/tess/tess-pam-helper$' /tmp/tess-deb-contents.txt
           grep -Eq ' \./usr/lib/x86_64-linux-gnu/security/pam_tess\.so$' /tmp/tess-deb-contents.txt
+          grep -Eq ' \./usr/lib/udev/rules\.d/70-tess-tpm\.rules$' /tmp/tess-deb-contents.txt
 
       - name: cargo-audit + cargo-deny
         uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2

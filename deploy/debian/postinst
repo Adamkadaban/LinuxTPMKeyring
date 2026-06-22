@@ -7,14 +7,36 @@ set -e
 
 case "$1" in
 configure)
+	# The `tss` group owns /dev/tpmrm0 (see the packaged udev rule); a login user needs to be a
+	# member to run `tess enroll`/`unlock`/`status`. tpm2-tss packages usually create this group,
+	# but create it defensively so the udev rule's GROUP="tss" always resolves.
+	getent group tss >/dev/null 2>&1 || groupadd --system tss
+
+	# Apply the packaged udev rule to the already-present TPM device without a reboot. Skip in a
+	# chroot/container with no running udev (e.g. an image build) — there the rule applies on first
+	# boot. Surface, never swallow, a reload failure: the rule is in place and a reboot will apply it.
+	if [ -d /run/udev ] && command -v udevadm >/dev/null 2>&1; then
+		if ! { udevadm control --reload-rules &&
+			udevadm trigger --subsystem-match=tpm --subsystem-match=tpmrm; }; then
+			echo "tess: warning: udev reload failed; the TPM access rule applies after reboot." >&2
+		fi
+	fi
+
+	# A package cannot reliably know which human will run tess (install front-ends drop $SUDO_USER,
+	# and a machine may have several login users), so we do not guess and add a user here. Instead we
+	# print the one command the admin must run. `deploy/install.sh` adds the invoking user for you.
 	cat <<'EOF'
 tess installed. PAM wiring is NOT applied automatically, so installing the package can never
 lock you out of login. To finish setup:
 
+  As root — grant your login user TPM device access (the tess commands need it), then
+  have that user log out and back in so the new group membership takes effect:
+    sudo usermod -aG tss <your-login-user>
+
   As root — wire pam_tess.so into the session stack (idempotent, fail-open):
     sudo tess install --module /usr/lib/x86_64-linux-gnu/security/pam_tess.so
 
-  As your login user — set a PIN, seal a random key, rekey your keyring (transactional):
+  As your login user (in a fresh session) — set a PIN, seal a random key, rekey your keyring:
     tess enroll
 
 Undo the PAM wiring at any time with:  sudo tess install --uninstall
