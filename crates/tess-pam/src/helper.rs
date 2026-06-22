@@ -2,7 +2,8 @@
 //!
 //! The PAM thread must never block on TPM / D-Bus / camera I/O, so all heavy or fallible work runs
 //! in a child process supervised here under a hard wall-clock deadline. On deadline the child is
-//! sent `SIGTERM`, given a short grace period, then `SIGKILL`ed and reaped — no zombies, no leaks.
+//! sent `SIGTERM`, given a short grace period, then `SIGKILL`ed and reaped — all without ever
+//! blocking the caller past `deadline + 2 * term_grace`.
 
 use std::io;
 use std::process::{Child, Command, ExitStatus};
@@ -59,7 +60,9 @@ pub enum Termination {
 /// The outcome of one supervised run. In the normal case the child has been waited on, so `pid` is
 /// no longer a live process by the time this is returned. In the rare case where a `SIGKILL`ed child
 /// is stuck in uninterruptible I/O, the reap is handed to a detached thread so the caller is never
-/// blocked; `pid` may then linger briefly until the kernel can deliver the kill.
+/// blocked; `pid` may then linger until the kernel can deliver the kill. If even that thread cannot
+/// be created (resource exhaustion), the orphan is left for the OS to reap when the host process
+/// exits — a best-effort corner that never blocks the caller.
 #[derive(Debug, Clone)]
 pub struct Reaped {
     pub pid: u32,

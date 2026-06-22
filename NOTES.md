@@ -266,7 +266,7 @@ Hand-rolled PAM FFI (`pam_get_item`/`pam_set_data`/`pam_get_data`/`pam_get_autht
 `crates/tess-pam/src/ffi.rs` — the only `unsafe` in the workspace. `helper::run` supervises a child
 under a `Watchdog { deadline, term_grace, poll }`: poll `try_wait`, on deadline SIGTERM → grace →
 SIGKILL → bounded `try_wait` poll (no blocking `wait`); a child stuck in uninterruptible I/O is handed
-to a detached reaper thread so the call returns bounded yet still leaves no zombie. `gate::{classify,
+to a detached reaper thread so the call returns bounded and the child is still reaped. `gate::{classify,
 decide}` map the outcome to PAM codes (auth fails open to `PAM_AUTHINFO_UNAVAIL`; session always
 `PAM_SUCCESS`); the gate aborts (auth `PAM_IGNORE`, session `PAM_SUCCESS`) for a remote session
 (non-empty `PAM_RHOST`) and no-TPM. `crates/tess-pam/src/helper.rs:71` ·
@@ -290,7 +290,11 @@ Gotchas worth remembering:
 - **A `SIGKILL`ed child stuck in uninterruptible I/O won't die until its syscall returns**, so a
   blocking `wait()` after SIGKILL could exceed the hard bound. The watchdog instead polls `try_wait`
   for a bounded budget after SIGKILL and, in that pathological case, hands the child to a detached
-  reaper thread — the PAM thread stays bounded *and* the child is still reaped (no zombie).
+  reaper thread (`Builder::spawn`, non-panicking) — the PAM thread stays bounded *and* the child is
+  reaped. Only if even that thread can't be created (resource exhaustion) is the orphan left for the
+  OS to reap at host-process exit; we deliberately do *not* add a global orphan registry to close
+  that corner because PLAN forbids shared mutable global state, and the caller is never blocked
+  regardless.
 - **No PID-reuse race in the watchdog:** we signal the child only *before* the final `wait`, so while
   it may be an unreaped zombie its PID is still ours and cannot be recycled. `send_signal` swallows
   only `ESRCH` (already gone); other errno propagate.
