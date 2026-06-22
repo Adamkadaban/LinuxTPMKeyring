@@ -2,6 +2,7 @@
 //! creation under the owner hierarchy, and the salted HMAC + parameter-encryption session that
 //! protects the PIN authValue and unsealed key against TPM bus interposers.
 
+use tss_esapi::attributes::session::{SessionAttributes, SessionAttributesMask};
 use tss_esapi::attributes::{ObjectAttributesBuilder, SessionAttributesBuilder};
 use tss_esapi::constants::SessionType;
 use tss_esapi::handles::KeyHandle;
@@ -163,17 +164,28 @@ pub fn start_salted_hmac_session(context: &mut Context, primary: KeyHandle) -> R
         .map_err(|e| Error::Session(e.to_string()))?
         .ok_or(Error::NoSession)?;
 
-    let (attributes, mask) = SessionAttributesBuilder::new()
-        .with_decrypt(true)
-        .with_encrypt(true)
-        .with_continue_session(true)
-        .build();
+    let (attributes, mask) = encrypted_session_attributes();
 
     context
         .tr_sess_set_attributes(session, attributes, mask)
         .map_err(|e| Error::Session(e.to_string()))?;
 
     Ok(session)
+}
+
+/// The session attributes every seal/unseal session carries: **decrypt + encrypt** parameter
+/// encryption (so the PIN authValue travelling to the TPM and the unsealed key travelling back are
+/// both encrypted on the bus) plus `continue_session` (so the session survives the several commands
+/// one seal/unseal issues). Shared by the HMAC session here and the policy session in `seal`, and
+/// asserted by tests so a regression that drops parameter encryption fails the build. ESAPI offers
+/// no getter for a live session's attributes, so the attribute set is factored out here and tested
+/// at its source rather than read back off the started session.
+pub(crate) fn encrypted_session_attributes() -> (SessionAttributes, SessionAttributesMask) {
+    SessionAttributesBuilder::new()
+        .with_decrypt(true)
+        .with_encrypt(true)
+        .with_continue_session(true)
+        .build()
 }
 
 #[cfg(test)]
@@ -219,6 +231,38 @@ mod tests {
             unique,
             EccPoint::default(),
             "deterministic template seeds an empty unique point"
+        );
+    }
+
+    #[test]
+    fn seal_unseal_sessions_enable_parameter_encryption() {
+        // Security invariant: every seal/unseal session must be parameter-encrypted in both
+        // directions, so neither the PIN authValue nor the unsealed key crosses the TPM bus in the
+        // clear. Dropping `with_decrypt`/`with_encrypt` from the shared attributes must fail here.
+        let (attributes, mask) = encrypted_session_attributes();
+
+        assert!(
+            attributes.decrypt(),
+            "command-parameter decrypt must be set so the PIN authValue is encrypted to the TPM"
+        );
+        assert!(
+            attributes.encrypt(),
+            "response-parameter encrypt must be set so the unsealed key is encrypted from the TPM"
+        );
+        assert!(
+            attributes.continue_session(),
+            "the session must persist across the multiple commands of a seal/unseal"
+        );
+
+        // The mask must actually cover the decrypt and encrypt bits, otherwise
+        // `tr_sess_set_attributes` would silently leave them unchanged on the live session.
+        const DECRYPT_BIT: u8 = 1 << 5;
+        const ENCRYPT_BIT: u8 = 1 << 6;
+        let raw_mask = u8::from(mask);
+        assert_eq!(
+            raw_mask & (DECRYPT_BIT | ENCRYPT_BIT),
+            DECRYPT_BIT | ENCRYPT_BIT,
+            "the attribute mask must apply both the decrypt and encrypt bits"
         );
     }
 }
