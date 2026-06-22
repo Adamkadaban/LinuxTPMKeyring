@@ -417,3 +417,43 @@ Gotchas worth remembering:
   instead of duplicating them.
 - A `status` sim test that locks the keyring then asserts items decrypt will fail — locked items
   aren't unlocked. Assert items intact *before* locking to prove the locked-state report.
+## 2026-06-22 — PAM session unseal → unlock wired into the watchdog'd helper (issue #29)
+**Resolution:** `pam_sm_open_session` now obtains the PIN via `pam_get_authtok` (Zeroizing buffer,
+never logged), hands it to the real `tess-pam-helper` child on stdin under the existing watchdog, and
+the helper runs `tess_cli::session::unseal_and_unlock` (`persist::load` → `tess_tpm::unseal` →
+`tess_keyring::unlock`). Session always returns `PAM_SUCCESS`; a secret-free `syslog` line records the
+outcome. Auth no longer does PIN work — it declines so the stack falls through to the password
+factor. `crates/tess-pam/src/ffi.rs:185` · `crates/tess-pam/src/helper.rs:90` ·
+`crates/tess-cli/src/session.rs:1` · `crates/tess-cli/src/pam_helper.rs:1` · PR for #29.
+
+Gotchas worth remembering:
+- **Pass the PIN to the helper over a `memfd`, not a pipe.** A PAM module is a cdylib loaded into the
+  login process, so Rust's runtime SIGPIPE→SIG_IGN install (which only runs for Rust *binaries* via
+  `lang_start`) never happened — a write to a pipe whose read end the child already closed would
+  deliver the host process's default SIGPIPE and **kill login**. `helper::run_with_input` instead
+  writes the PIN into an anonymous in-memory file (`nix::sys::memfd::memfd_create`, safe wrapper,
+  `fs` feature already on), rewinds it, and passes it as the child's stdin via `Stdio::from(File)`.
+  No pipe (no SIGPIPE), no disk (no persisted secret), bounded single write. Avoids the whole
+  `pthread_sigmask`/`sigwait`-drain dance (and nix 0.29 has no `sigtimedwait`, so a bounded drain
+  wasn't even available without `unsafe` libc — forbidden outside `ffi`).
+- **The helper is a second `[[bin]]` of `tess-cli`, not a new crate or a bin in `tess-pam`.** Putting
+  it in `tess-cli` reuses the enroll/unlock composition (`TpmSealer`, `SecretServiceBackend`, the
+  `tcti_from_env` selector now shared in `session.rs`) with zero duplication, and keeps `tess-pam`
+  the minimal, only-`unsafe`-permitted crate (no TPM/D-Bus deps pulled into the security-sensitive
+  cdylib). `CARGO_BIN_EXE_tess-pam-helper` is set for `tess-cli`'s own integration tests, so the E2E
+  test (`tests/pam_helper_session.rs`) drives the real binary exactly as the module does — which is
+  why the session-unlock E2E lives in `tess-cli`, while the bounded/reaped guarantees (now also
+  exercising the stdin-fed path) stay in `tess-pam`'s `stall_injection.rs`.
+- **Prompt for the PIN only after the abort check.** `env.aborts()` (remote `PAM_RHOST` or no TPM)
+  short-circuits *before* `pam_get_authtok`, so SSH/remote logins and TPM-less hosts are never
+  prompted. This also keeps the CI pamtester smoke green on TPM-less GitHub runners: no TPM → abort →
+  session `PAM_SUCCESS` with no prompt and no helper spawn.
+- **`syslog` is variadic FFI.** `libc::syslog(LOG_AUTHPRIV|LOG_INFO, c"%s".as_ptr(), msg.as_ptr())`
+  with a fixed `%s` format avoids any format-string interpretation of the message; logging failure is
+  ignored so it can never affect login. All log strings are static `&CStr` literals — no secret can
+  reach them.
+- **Deployment note (not a code shortcut):** the in-process `tess_keyring::unlock` needs a live
+  session bus (`DBUS_SESSION_BUS_ADDRESS`) reachable from the helper. At real login the user's session
+  bus may not be up yet; the stable `gnome-keyring-daemon --unlock` stdin path is the expected runtime
+  unlock, with this in-process unlock covering an already-running daemon. Tests provide the private
+  bus explicitly. Real-login bus wiring is Phase 4 (Azure E2E), already on the roadmap.

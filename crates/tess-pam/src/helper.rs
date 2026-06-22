@@ -5,15 +5,22 @@
 //! sent `SIGTERM`, given a short grace period, then `SIGKILL`ed and reaped — without ever blocking
 //! the caller past `deadline + 2 * term_grace`. If a `SIGKILL`ed child is stuck in uninterruptible
 //! I/O the reap is deferred to a background thread (best-effort — see [`RunOutcome`]), so the caller
-//! still returns within that bound.
+//! still returns within that bound. [`run_with_input`] additionally hands the child a secret on its
+//! standard input without a pipe (no `SIGPIPE` risk) and without touching disk.
 
-use std::io;
-use std::process::{Child, Command, ExitStatus};
+use std::fs::File;
+use std::io::{self, Seek, Write};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use nix::errno::Errno;
+use nix::sys::memfd::{memfd_create, MemFdCreateFlag};
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
+
+/// Upper bound on the secret handed to a child via [`run_with_input`]. The PIN is far smaller; the
+/// cap only ensures the in-memory transfer can never grow unbounded.
+const MAX_INPUT_LEN: usize = 4096;
 
 /// Timing parameters for the watchdog. `deadline` is the hard wall-clock budget for the child;
 /// `term_grace` is how long it may take to honour `SIGTERM` before escalation to `SIGKILL`.
@@ -74,7 +81,41 @@ pub struct RunOutcome {
 /// Spawn `command`, supervise it under `watchdog`, and reap it. Returns an error only if the child
 /// could not be spawned or a syscall failed — never blocks past `deadline + 2 * term_grace`.
 pub fn run(command: &mut Command, watchdog: &Watchdog) -> io::Result<RunOutcome> {
-    let mut child = command.spawn()?;
+    let child = command.spawn()?;
+    supervise(child, watchdog)
+}
+
+/// Like [`run`], but first hands `input` to the child as its standard input. The bytes are passed
+/// through an anonymous in-memory file (`memfd`), never a pipe and never a disk file: a pipe whose
+/// read end the child has already closed would raise `SIGPIPE` on write, which in a PAM module
+/// loaded into the login process could terminate that process; a disk file would persist the secret.
+/// The memfd lives only in RAM and is released when the last descriptor closes. The write is a
+/// single bounded `write_all` of at most [`MAX_INPUT_LEN`] bytes, so it cannot block the caller.
+pub fn run_with_input(
+    command: &mut Command,
+    watchdog: &Watchdog,
+    input: &[u8],
+) -> io::Result<RunOutcome> {
+    if input.len() > MAX_INPUT_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "helper input exceeds the maximum length",
+        ));
+    }
+    let mut backing: File = memfd_create(c"tess-pam-input", MemFdCreateFlag::MFD_CLOEXEC)
+        .map(File::from)
+        .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
+    backing.write_all(input)?;
+    backing.rewind()?;
+    command.stdin(Stdio::from(backing));
+    let child = command.spawn()?;
+    supervise(child, watchdog)
+}
+
+/// Supervise an already-spawned `child` under `watchdog`: wait for it within the deadline, else
+/// escalate `SIGTERM` → `SIGKILL` and reap it, deferring the reap to a background thread only when a
+/// `SIGKILL`ed child is stuck in uninterruptible I/O. Never blocks past `deadline + 2 * term_grace`.
+fn supervise(mut child: Child, watchdog: &Watchdog) -> io::Result<RunOutcome> {
     let pid = child.id();
     let started = Instant::now();
 
@@ -209,6 +250,30 @@ mod tests {
     fn spawn_failure_is_an_error_not_a_hang() {
         let mut cmd = Command::new("/nonexistent/tess/helper/definitely-not-here");
         let result = run(&mut cmd, &Watchdog::new(Duration::from_millis(200)));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn run_with_input_delivers_stdin_to_the_child() {
+        // The child reads stdin and exits 0 only when it received exactly the bytes we sent, proving
+        // the memfd stdin transfer works end to end.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", r#"read line; [ "$line" = "1234" ]"#]);
+        let reaped = run_with_input(&mut cmd, &Watchdog::new(Duration::from_secs(2)), b"1234")
+            .expect("spawn");
+        assert!(matches!(reaped.termination, Termination::Exited(s) if s.success()));
+        assert!(!process_alive(reaped.pid), "child must be reaped");
+    }
+
+    #[test]
+    fn run_with_input_rejects_oversized_input() {
+        let mut cmd = Command::new("true");
+        let oversized = vec![0u8; MAX_INPUT_LEN + 1];
+        let result = run_with_input(
+            &mut cmd,
+            &Watchdog::new(Duration::from_millis(200)),
+            &oversized,
+        );
         assert!(result.is_err());
     }
 }
