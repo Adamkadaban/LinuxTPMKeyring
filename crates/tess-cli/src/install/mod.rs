@@ -147,6 +147,10 @@ pub fn install(plan: &InstallPlan) -> Result<InstallReport> {
                 })?;
             file.write_all(original.as_bytes())
                 .with_context(|| format!("write backup {}", backup.display()))?;
+            // Match the original file's mode so the rollback artifact can't be more permissive than
+            // the service file it backs up (the create_new default is 0o666 & umask).
+            file.set_permissions(fs::Permissions::from_mode(mode))
+                .with_context(|| format!("set mode on backup {}", backup.display()))?;
             // Make the rollback artifact durable before the live stack is edited: a crash after the
             // (fsync'd) stack commit must not be able to leave a wired stack with no backup.
             file.sync_all()
@@ -556,6 +560,15 @@ session optional     pam_gnome_keyring.so auto_start
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600, "atomic write must preserve the original mode");
+        let backup_mode = fs::metadata(plan.backup_file())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            backup_mode, 0o600,
+            "backup must match the original mode, not widen it"
+        );
     }
 
     #[test]
