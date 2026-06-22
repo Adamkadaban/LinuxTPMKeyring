@@ -178,12 +178,18 @@ build_deb() {
 
 install_deb() {
 	local path=$1
-	# Resolve a caller-relative path against the directory the script was invoked from, since the
-	# build path cd's into the repo root. An absolute path also satisfies apt's requirement that a
-	# local-file argument contain a slash.
+	# A relative path is either the cargo-deb output (relative to repo_root) or a caller-provided
+	# --deb (relative to their original CWD). Prefer repo_root when the file exists there, else fall
+	# back to orig_pwd. An absolute path is used as-is (and satisfies apt's slash requirement).
 	case "$path" in
 	/*) ;;
-	*) path="$orig_pwd/$path" ;;
+	*)
+		if [ -f "$repo_root/$path" ]; then
+			path="$repo_root/$path"
+		else
+			path="$orig_pwd/$path"
+		fi
+		;;
 	esac
 	[ -f "$path" ] || {
 		echo "error: .deb not found: $path" >&2
