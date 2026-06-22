@@ -143,8 +143,10 @@ fails or hangs.
 
 ## Secret hygiene
 
-- The keyring key and PIN live in `mlock`'d, `zeroize`-on-drop buffers; key lifetime is minimized to
-  the unseal→handoff window.
+- The keyring key and PIN live in `zeroize`-on-drop buffers (`SecretBytes`), and key lifetime is
+  minimized to the unseal→handoff window. Locking those buffers into RAM (`mlock`) and disabling core
+  dumps (`PR_SET_DUMPABLE`/`RLIMIT_CORE`) are planned hardening, not yet shipped — until then, an
+  operator who wants the stronger guarantee can disable core dumps at the system level.
 - The PIN is never logged and never reaches argv, the environment, or disk. The PAM module hands it
   to the helper over an anonymous in-memory file (`memfd`), not a pipe — eliminating a `SIGPIPE` that
   could kill the login process (see [ADR-0010](adr/0010-pam-helper-pin-transport-memfd.md)).
@@ -163,7 +165,7 @@ avoid.
 | Timing side channel (TPM-FAIL, Hertzbleed) | Constant-time PIN handling; rely on the TPM **DA-lockout**, not comparison-timing secrecy |
 | Biometric spoof (Windows Hello IR replay, CVE-2021-34466) | Biometric is **host-trusted, never the sole gate**; the PIN authValue is the real gate; IR-reflectance liveness deferred to the Phase 5 face daemon (Mug) |
 | TOCTOU / confused deputy in PAM | Unseal is bound to the authenticated PAM session and gated by TPM policy; no replayable out-of-band "verify-match" |
-| Memory disclosure (cold boot, swap, ptrace, core dump) | `mlock` + `zeroize` ASAP; core dumps disabled; minimal key lifetime |
+| Memory disclosure (cold boot, swap, ptrace, core dump) | `zeroize`-on-drop + minimal key lifetime today; `mlock` and core-dump disabling (`PR_SET_DUMPABLE`/`RLIMIT_CORE`) are planned hardening, available now as an operator-level recommendation |
 | Dependency FFI UAF (RUSTSEC-2023-0044) | Pin `tss-esapi ≥ 7.1.0`; `cargo audit` + `cargo deny` gate every PR |
 
 ## Non-goals (so they are never mistaken for gaps)

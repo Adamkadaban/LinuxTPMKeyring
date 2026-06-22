@@ -52,8 +52,8 @@ isolation, which doesn't exist on commodity hardware. This is the same boundary 
 | Login stack | **PAM** session phase (`pam_tess.so`, fail-open `optional`) | Wired by `tess install`; never blocks or fails a login. |
 | Fingerprint | **fprintd** (`net.reactivated.Fprint`), consumed unmodified | Optional front gate (opt-in); convenience only. |
 
-> The developer host is never used to seal/enroll. Real TPM acceptance runs on the Azure vTPM; CI
-> exercises a software TPM (swtpm) + the libfprint virtual driver.
+> Automated tests never touch real hardware: CI exercises a software TPM (swtpm) + the libfprint
+> virtual driver, and real-TPM acceptance runs on an Azure Gen2 Trusted-Launch vTPM.
 
 ## Install
 
@@ -65,6 +65,9 @@ isolation, which doesn't exist on commodity hardware. This is the same boundary 
 git clone https://github.com/Adamkadaban/LinuxTPMKeyring && cd LinuxTPMKeyring
 cargo build --workspace --release
 
+# Install the session helper to the path the PAM module resolves at runtime:
+sudo install -Dm755 target/release/tess-pam-helper /usr/lib/tess/tess-pam-helper
+
 # Wire the PAM session module (copies pam_tess.so, edits the session stack, fail-open). Run as root:
 sudo ./target/release/tess install
 
@@ -72,11 +75,12 @@ sudo ./target/release/tess install
 ./target/release/tess enroll
 ```
 
-The packaged `.deb` (issue #38) is the smooth path: it installs the `tess` binary, the
-`tess-pam-helper`, and `pam_tess.so` to the canonical paths the PAM module resolves at runtime
-(`/usr/lib/tess/tess-pam-helper`), so a from-source build needs the helper at that path (or a
-`helper=PATH` argument on the PAM line) for the session-phase unlock to find it. `tess install`
-itself only wires the module and is idempotent and fail-open.
+When building from source, prefix the `tess` commands with `./target/release/` as shown. The PAM
+module looks for the helper at the compiled default `/usr/lib/tess/tess-pam-helper` (the
+`install -Dm755` step above), or at an **absolute** `helper=/path` argument on the PAM line —
+relative paths are ignored. The packaged `.deb` (issue #38) is the smooth path: it installs the
+`tess` binary, the `tess-pam-helper`, and `pam_tess.so` to these canonical paths automatically.
+`tess install` itself only wires the module and is idempotent and fail-open.
 
 ## Use
 
@@ -137,8 +141,8 @@ fallthrough**. There is no `tess`-CLI fingerprint flag in the MVP; the gate is c
 line. Multi-factor enrollment UX (`--fingerprint`/`--face`) is post-MVP (Phase 5, the Mug face
 daemon).
 
-> tess never wires PAM on the developer host — the real wiring happens on the Azure VM (Phase 4) or
-> a user's machine. The install logic is exercised in tests against throwaway fixtures only.
+> The PAM install logic is exercised in tests against throwaway fixtures only — it never edits a real
+> `/etc/pam.d` or module directory in CI.
 
 ## Status
 
