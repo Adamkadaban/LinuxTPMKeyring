@@ -178,6 +178,10 @@ resolve_external() {
   printf '%s' "${resolved}"
 }
 
+# A packaged install puts the user-facing `tess` on PATH but the helper outside it, at the PAM
+# module's fixed default location — so the helper must be resolved there, not via PATH.
+readonly PACKAGED_HELPER_PATH='/usr/lib/tess/tess-pam-helper'
+
 # Resolve the tess + helper binaries: prefer an installed .deb (production install path), else the
 # debug build from the uploaded source. The debug build additionally honours the scripted fprint mock
 # bus (a release .deb ignores it and the front gate degrades to the PIN — the keyring still unlocks).
@@ -188,12 +192,22 @@ resolve_binaries() {
     log "Installing packaged tess from ${deb} ..."
     sudo dpkg -i "${deb}" || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -f
   fi
-  if installed_tess="$(resolve_external tess)" \
-    && installed_helper="$(resolve_external tess-pam-helper)"; then
-    TESS_BIN="${installed_tess}"
-    HELPER_BIN="${installed_helper}"
-    log "Using installed binaries: ${TESS_BIN}, ${HELPER_BIN}"
-    return
+  if installed_tess="$(resolve_external tess)"; then
+    # The helper is installed off PATH at PACKAGED_HELPER_PATH; only fall through to a source build
+    # if neither PATH nor that fixed location yields it.
+    if ! installed_helper="$(resolve_external tess-pam-helper)"; then
+      if [[ -x "${PACKAGED_HELPER_PATH}" ]]; then
+        installed_helper="${PACKAGED_HELPER_PATH}"
+      else
+        installed_helper=''
+      fi
+    fi
+    if [[ -n "${installed_helper}" ]]; then
+      TESS_BIN="${installed_tess}"
+      HELPER_BIN="${installed_helper}"
+      log "Using installed binaries: ${TESS_BIN}, ${HELPER_BIN}"
+      return
+    fi
   fi
   require_bin cargo
   log "Building tess from source (debug) ..."
