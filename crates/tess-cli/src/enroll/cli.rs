@@ -4,24 +4,10 @@
 use anyhow::{Context, Result};
 use tess_core::SecretBytes;
 use tess_keyring::SecretServiceBackend;
-use tess_tpm::TctiConfig;
 
 use super::sealer::TpmSealer;
 use super::{enroll, Paths};
-
-/// Select the TPM transport: an swtpm when `TESS_SWTPM_HOST`/`TESS_SWTPM_PORT` are set (CI / Azure
-/// smoke runs), otherwise the kernel resource manager at `/dev/tpmrm0`.
-fn tcti_from_env() -> TctiConfig {
-    if std::env::var_os("TESS_SWTPM_HOST").is_some()
-        || std::env::var_os("TESS_SWTPM_PORT").is_some()
-    {
-        TctiConfig::swtpm_from_env()
-    } else {
-        TctiConfig::DeviceManager {
-            path: "/dev/tpmrm0".to_string(),
-        }
-    }
-}
+use crate::tcti;
 
 /// Run `tess enroll`. `pin` comes from `--pin`; when absent it is prompted without echo. The current
 /// keyring password is always prompted without echo.
@@ -41,7 +27,7 @@ pub fn run(pin: Option<String>) -> Result<()> {
     );
 
     let paths = Paths::for_user().context("resolve tess data directory")?;
-    let mut sealer = TpmSealer::open(&tcti_from_env()).context("open the TPM")?;
+    let mut sealer = TpmSealer::open(&tcti::from_env()).context("open the TPM")?;
     let keyring = SecretServiceBackend::connect().context("connect to the Secret Service")?;
 
     // The transaction already verifies the keyring unlocks with the new key; item-level decryption

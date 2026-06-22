@@ -1,11 +1,10 @@
-//! The `tess` CLI. Enrollment is implemented; the remaining lifecycle subcommands land in a later
-//! phase.
+//! The `tess` CLI: enrollment plus the post-enrollment lifecycle subcommands.
 
 use clap::{Parser, Subcommand};
 
 use std::path::PathBuf;
 
-use tess_cli::{doctor, enroll, install};
+use tess_cli::{doctor, enroll, install, lifecycle};
 
 /// tess — Windows-Hello-style unlocking for the Linux keyring.
 #[derive(Parser)]
@@ -24,15 +23,34 @@ enum Command {
         #[arg(long)]
         pin: Option<String>,
     },
-    /// Re-unlock / re-enroll using the recovery secret.
-    Recover,
+    /// Re-unlock using the recovery secret; with `--reseal`, also re-seal under a new PIN.
+    Recover {
+        /// After restoring access, re-seal the keyring key under a new PIN against the current TPM
+        /// (use after a TPM clear to restore the normal PIN-unlock path).
+        #[arg(long)]
+        reseal: bool,
+        /// New PIN for `--reseal`. Prompted without echo when omitted; prefer that — a PIN passed
+        /// here is visible in the process list and may land in shell history.
+        #[arg(long)]
+        pin: Option<String>,
+    },
     /// Restore the password-based keyring (items preserved) and remove sealed blobs.
-    Unenroll,
+    Unenroll {
+        /// PIN that gates the TPM-sealed key. Prompted without echo when omitted; prefer that —
+        /// a PIN passed here is visible in the process list and may land in shell history.
+        #[arg(long)]
+        pin: Option<String>,
+    },
     /// Show enrollment, keyring, and TPM state.
     Status,
     /// One-shot manual unlock.
-    Unlock,
-    /// Dry-run the session unlock path.
+    Unlock {
+        /// PIN that gates the TPM-sealed key. Prompted without echo when omitted; prefer that —
+        /// a PIN passed here is visible in the process list and may land in shell history.
+        #[arg(long)]
+        pin: Option<String>,
+    },
+    /// Dry-run the session unlock path (no changes) and report what would happen.
     Test,
     /// Check TPM / keyring / fprintd readiness.
     Doctor,
@@ -57,6 +75,11 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Enroll { pin } => enroll::cli::run(pin)?,
+        Command::Recover { reseal, pin } => lifecycle::cli::run_recover(reseal, pin)?,
+        Command::Unenroll { pin } => lifecycle::cli::run_unenroll(pin)?,
+        Command::Status => lifecycle::cli::run_status()?,
+        Command::Unlock { pin } => lifecycle::cli::run_unlock(pin)?,
+        Command::Test => lifecycle::cli::run_test()?,
         Command::Doctor => doctor::run(),
         Command::Install {
             uninstall,
@@ -69,10 +92,6 @@ fn main() -> anyhow::Result<()> {
             module,
             module_dir,
         })?,
-        Command::Status => println!("tess status: not yet implemented"),
-        Command::Recover | Command::Unenroll | Command::Unlock | Command::Test => {
-            println!("not yet implemented");
-        }
     }
     Ok(())
 }

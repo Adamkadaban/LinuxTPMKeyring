@@ -298,7 +298,7 @@ fn commit<S: KeySealer>(
 }
 
 /// Remove a file, treating an already-absent file as success so rollback is idempotent.
-fn remove_file(path: &Path) -> std::io::Result<()> {
+pub(crate) fn remove_file(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

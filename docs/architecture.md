@@ -321,6 +321,54 @@ rolls back with all three pre-existing items intact and no sealed/recovery blobs
 the recovery backup is always created before the destructive rekey. Throwaway keyrings only; every
 swtpm/dbus/keyring process is reaped on drop.
 
+## CLI lifecycle (`tess-cli`)
+
+The remaining subcommands (`crates/tess-cli/src/lifecycle/`) compose the same seal/unseal, recovery
+(ADR-0009), and in-place-rekey blocks as enrollment — **no cryptography is reimplemented**. Each core
+flow is a pure-ish function taking its collaborators (a `KeySealer`, a `KeyringBackend`, the `Paths`),
+so it is driven by the `sim` + `daemon-tests` suite without prompts; a thin `lifecycle::cli` layer
+gathers PINs / passwords / the recovery secret without echo and builds the real `TpmSealer` +
+`SecretServiceBackend`.
+
+- `tess unlock` — one-shot manual unlock: reload the sealed metadata, `tess-tpm::unseal` it with the
+  PIN, and `KeyringBackend::unlock` with the recovered key, confirming the collection actually opened.
+  Changes only the keyring's lock state; writes/removes no blob.
+- `tess recover` — re-establish access when the TPM path is gone (cleared TPM, lost PIN, changed
+  PCRs). It unwraps the keyring key from the TPM-independent recovery blob with the user-entered
+  recovery secret and unlocks the keyring — working with **no TPM at all**. With `--reseal` it then
+  seals the recovered key under a new PIN against the current TPM and atomically rewrites
+  `metadata.json`, restoring the normal PIN-unlock path (the keyring credential is unchanged, so only
+  the sealed metadata is rewritten; the recovery blob still wraps the same key).
+- `tess unenroll` — transactionally rekey the login keyring from the TPM-sealed key back to a
+  user-supplied password and remove the sealed + recovery blobs, restoring stock behaviour with every
+  item intact. It reuses enrollment's **credential-first rollback** discipline: prove the PIN and
+  recover the current key, rekey in place to the new password, **verify the keyring opens with the
+  password before removing any blob**, and on a failed verification rekey back to the TPM-sealed key
+  (keeping the blobs, which still gate that key) rather than stranding the user. Blob removal is the
+  final, non-destructive step.
+- `tess status` — a read-only snapshot: enrollment state (sealed metadata present), recovery-blob
+  presence, keyring lock state (`is_locked`), and TPM version + DA-lockout via the shared read-only
+  cap probe (`doctor::read_caps`). Every component is best-effort — an unreadable one carries its
+  reason in the report rather than failing the command.
+- `tess test` — a side-effect-free "would the session unlock path work right now?" verdict. It checks
+  enrollment + metadata loadability, TPM reachability and DA-lockout, and keyring reachability, then
+  prints the blocking reasons (or `WOULD SUCCEED`). It performs **no** unseal and **no** unlock, so it
+  consumes no DA attempt and changes nothing.
+
+The report rendering and the dry-run verdict logic are pure unit tests in the default, hardware-free
+`cargo test --workspace`. The end-to-end flows are gated behind `sim` + `daemon-tests`
+(`crates/tess-cli/tests/lifecycle.rs`):
+
+```sh
+cargo test -p tess-cli --features sim,daemon-tests
+```
+
+It proves `unlock` round-trips with the PIN; `recover` restores access after a simulated TPM clear
+(the sealed metadata is dropped, recovery via the secret still unlocks) and `--reseal` re-establishes
+the PIN path; `unenroll` returns the keyring to a password with all three pre-existing items intact
+and the blobs removed; and `status` reports the real enrollment / keyring-lock / TPM state. Throwaway
+keyrings only; every swtpm/dbus/keyring process is reaped on drop.
+
 ## Deploy targets
 
 | Path | Purpose |

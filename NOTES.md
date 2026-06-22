@@ -391,3 +391,29 @@ Gotchas worth remembering:
 - **Uninstall must not depend on module-dir detection.** Unwiring the stack + removing the backup is
   the lockout-relevant part; module removal is best-effort. An empty `plan.module_dir` (detection
   failed) skips module removal but still restores the stack.
+## 2026-06-22 — lifecycle subcommands recover/unenroll/status/unlock/test (issue #28)
+**Resolution:** `tess-cli` gains a `lifecycle` module composing #26's seal/unseal + recovery
+(ADR-0009) + in-place rekey into the remaining flows — no crypto reimplemented. `unlock` =
+unseal(pin)→`KeyringBackend::unlock`; `recover` = unwrap recovery blob (no TPM)→unlock, `--reseal`
+seals the recovered key under a new PIN and atomically rewrites `metadata.json`; `unenroll` =
+credential-first transactional rekey K→password then remove blobs; `status`/`test` are read-only
+reports. `crates/tess-cli/src/lifecycle/mod.rs:1` · `crates/tess-cli/src/lifecycle/cli.rs:1` · PR for #28.
+
+Gotchas worth remembering:
+- **`unenroll` rollback is safer than `enroll`'s because the target credential is user-supplied.** The
+  destructive rekey (K→password) is verified before any blob is removed; a failed verify rekeys back
+  to K (blobs kept, still gate K). Blob removal is the last, non-destructive step — a removal failure
+  leaves the keyring safely on the password with only orphaned files.
+- **`recover` deliberately does not need the TPM.** It unwraps K from `recovery.json` and unlocks; the
+  keyring credential is still K after a TPM clear (clearing the TPM doesn't change the keyring), so
+  `unlock(K)` re-establishes access. The sim test simulates the clear by *deleting metadata.json* and
+  recovering via the secret. `--reseal` is the only TPM-touching part of recover.
+- **Read-only `status`/`test` surface errors as report strings, not failures.** A best-effort command
+  that aborted on a missing keyring daemon or busy TPM would be useless; `Option<Result<bool,String>>`
+  / `Result<_,String>` fields carry the reason so nothing is *swallowed* while the command still runs.
+  `tess test` performs no unseal and no unlock on purpose — it must consume no DA attempt.
+- **Shared `tcti::from_env()` and `doctor::read_caps(tcti)`** were factored out of `enroll::cli` /
+  `doctor` so the lifecycle commands reuse one transport-selection and one read-only TPM cap probe
+  instead of duplicating them.
+- A `status` sim test that locks the keyring then asserts items decrypt will fail — locked items
+  aren't unlocked. Assert items intact *before* locking to prove the locked-state report.

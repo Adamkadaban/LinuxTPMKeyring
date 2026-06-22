@@ -55,7 +55,9 @@ tess enroll        # set a PIN, seal a random key, rekey your keyring (transacti
 ```sh
 tess status        # enrollment + keyring + TPM state
 tess enroll        # enroll (prints a recovery secret — keep it safe)
-tess recover       # re-unlock using the recovery secret
+tess unlock        # one-shot manual unlock (unseal with PIN → unlock keyring)
+tess test          # dry-run the session unlock path (no changes)
+tess recover       # re-unlock using the recovery secret (add --reseal to re-seal under a new PIN)
 tess unenroll      # restore the password-based keyring (items preserved)
 tess doctor        # check TPM / keyring / fprintd readiness
 tess install       # wire pam_tess.so into the session stack (idempotent, fail-open)
