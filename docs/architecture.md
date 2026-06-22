@@ -476,10 +476,14 @@ The module argument `fingerprint=yes` enables an fprintd verify ahead of the PIN
 default is PIN-only** (the safe default — no fingerprint dependency unless explicitly opted in). When
 enabled, the module resolves `PAM_USER`, hands it and a `--fingerprint` flag to the helper, and
 widens the watchdog deadline (`Watchdog::FINGERPRINT_DEADLINE`, 12 s) so a real swipe has room ahead
-of the unseal. Inside the helper the verify is itself bounded (default 8 s, overridable in tests via
-`TESS_FPRINT_TIMEOUT_MS`) through `tess_fprint::FprintClient::verify`, well inside the watchdog
-ceiling. The verify connects to the system fprintd in production; tests point it at a private
-`python-dbusmock` bus via `TESS_FPRINT_BUS_ADDRESS`.
+of the unseal. Inside the helper the verify is itself bounded through
+`tess_fprint::FprintClient::verify`, well inside the watchdog ceiling, and connects to the system
+fprintd. Both the verify deadline (default 8 s) and the fprintd bus are fixed in release builds: the
+helper never consults the environment in production, so a caller cannot redirect the privileged
+helper to an attacker-controlled D-Bus address or push the verify into watchdog-kill territory.
+Debug/test builds only honour `TESS_FPRINT_TIMEOUT_MS` (shorten the deadline) and
+`TESS_FPRINT_BUS_ADDRESS` (point at a private `python-dbusmock` bus), mirroring how `TESS_PAM_HELPER`
+is debug-gated.
 
 **Precedence: fingerprint (convenience) → PIN (the real gate) → password fallthrough.** Every
 fingerprint outcome — `match`, `no-match`, `timeout`, `unavailable`/absent — falls through to the

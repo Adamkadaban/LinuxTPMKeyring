@@ -22,18 +22,24 @@ use crate::enroll::Paths;
 /// own limit regardless.
 const MAX_PIN_BYTES: u64 = 1024;
 
-/// Default wall-clock budget for the optional fingerprint front gate's fprintd verify, well inside
-/// the PAM module's watchdog deadline so the TPM unseal still has headroom. Overridable for tests
-/// via `TESS_FPRINT_TIMEOUT_MS`.
+/// Wall-clock budget for the optional fingerprint front gate's fprintd verify, well inside the PAM
+/// module's watchdog deadline so the TPM unseal still has headroom. Release builds always use this
+/// value; debug/test builds may shorten it via `TESS_FPRINT_TIMEOUT_MS`.
 const FINGERPRINT_VERIFY_DEADLINE_MS: u64 = 8_000;
 
-/// Test/CI override pointing the helper's fprintd verify at a private mock bus instead of the system
-/// bus. When unset (production) the verify always uses the system bus.
+/// Debug/test-only override pointing the helper's fprintd verify at a private mock bus instead of the
+/// system bus. Release builds ignore the environment entirely and always use the system bus, so a
+/// caller's environment cannot redirect the verify to an attacker-controlled D-Bus address in the
+/// privileged PAM helper.
+#[cfg(debug_assertions)]
 const FPRINT_BUS_ADDRESS_ENV: &str = "TESS_FPRINT_BUS_ADDRESS";
 /// The login user to claim the fprintd device for, set by the PAM module from `PAM_USER`. Empty (the
-/// calling user, as `pam_fprintd` defaults) when unset.
+/// calling user, as `pam_fprintd` defaults) when unset. A production channel, honoured in all builds.
 const FPRINT_USER_ENV: &str = "TESS_FPRINT_USER";
-/// Test override for the fprintd verify deadline (milliseconds).
+/// Debug/test-only override for the fprintd verify deadline (milliseconds). Release builds ignore it
+/// and always use [`FINGERPRINT_VERIFY_DEADLINE_MS`], so a caller cannot push the helper into
+/// watchdog-kill territory.
+#[cfg(debug_assertions)]
 const FPRINT_TIMEOUT_ENV: &str = "TESS_FPRINT_TIMEOUT_MS";
 
 /// Select the TPM transport for the session helper. Delegates to the binary's shared selector so
@@ -125,19 +131,31 @@ enum FingerprintGate {
     Unavailable(String),
 }
 
+/// The fprintd verify deadline. Release builds always use [`FINGERPRINT_VERIFY_DEADLINE_MS`];
+/// debug/test builds may shorten it via `TESS_FPRINT_TIMEOUT_MS` (a positive millisecond value).
 fn fingerprint_deadline_ms() -> u64 {
-    std::env::var(FPRINT_TIMEOUT_ENV)
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var(FPRINT_TIMEOUT_ENV)
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
         .filter(|ms| *ms > 0)
-        .unwrap_or(FINGERPRINT_VERIFY_DEADLINE_MS)
+    {
+        return ms;
+    }
+    FINGERPRINT_VERIFY_DEADLINE_MS
 }
 
+/// Connect to fprintd for the verify. Production always uses the system bus; debug/test builds may
+/// redirect to a private mock bus via `TESS_FPRINT_BUS_ADDRESS`. Release builds never consult the
+/// environment, so a caller cannot point the privileged helper at an attacker-controlled bus.
 fn connect_fprint(user: &str) -> tess_core::Result<FprintClient> {
-    match std::env::var(FPRINT_BUS_ADDRESS_ENV) {
-        Ok(address) if !address.is_empty() => FprintClient::connect_address(&address, user),
-        _ => FprintClient::system(user),
+    #[cfg(debug_assertions)]
+    if let Ok(address) = std::env::var(FPRINT_BUS_ADDRESS_ENV) {
+        if !address.is_empty() {
+            return FprintClient::connect_address(&address, user);
+        }
     }
+    FprintClient::system(user)
 }
 
 /// Run one bounded fprintd verify and classify the outcome. Never returns an error: a fingerprint

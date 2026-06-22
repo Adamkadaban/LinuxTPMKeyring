@@ -505,10 +505,14 @@ Gotchas worth remembering:
   (and even then the session still opens with the keyring locked). The front gate can never freeze or
   fail login. `FingerprintGate` carries the verdict for the secret-free stderr line only.
 - **The fprintd verify runs on its own private bus in tests, separate from the keyring bus.** The
-  helper reads `TESS_FPRINT_BUS_ADDRESS` (test-only; production uses the system bus) so the
+  helper reads `TESS_FPRINT_BUS_ADDRESS` (debug/test builds only — release ignores the environment
+  and always uses the system bus, like the `#[cfg(debug_assertions)]`-gated `TESS_PAM_HELPER`, so a
+  caller can't redirect the privileged helper to an attacker-controlled bus) so the
   `python-dbusmock` fprintd mock and the throwaway gnome-keyring can each own a distinct
   `dbus-run-session`/`dbus-daemon`. `crates/tess-cli/tests/fprint_gate_session.rs` drives all three
   scenarios (match/no-match/stall) sequentially on one enrolled keyring to keep swtpm single-client.
-- **`TESS_FPRINT_TIMEOUT_MS` keeps the stall test fast.** The mock `stall` scenario never emits, so
-  the test sets a 500ms verify deadline; the helper then falls back to the PIN and the whole run
-  finishes in ~2s for all three scenarios. swtpm/keyring/fprintd-mock/helper all reaped on drop.
+- **`TESS_FPRINT_TIMEOUT_MS` keeps the stall test fast (debug/test builds only).** The mock `stall`
+  scenario never emits, so the test sets a 500ms verify deadline; release builds ignore the override
+  and always use the 8 s default so a caller can't push the helper into watchdog-kill territory. The
+  helper then falls back to the PIN and the whole run finishes in ~2s for all three scenarios.
+  swtpm/keyring/fprintd-mock/helper all reaped on drop.
