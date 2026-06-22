@@ -7,13 +7,27 @@
 //! counter lets callers warn before lockout; mapping the TPM's lockout response code to a distinct
 //! error lets callers tell "locked out" apart from "wrong PIN".
 
+use std::io::Write as _;
+use std::process::{Command, Stdio};
+
+use tess_core::SecretBytes;
 use tss_esapi::constants::{CapabilityType, PropertyTag};
-use tss_esapi::handles::KeyHandle;
-use tss_esapi::structures::CapabilityData;
+use tss_esapi::handles::{AuthHandle, KeyHandle, ObjectHandle, SessionHandle};
+use tss_esapi::structures::{Auth, CapabilityData};
 use tss_esapi::Context;
 
-use crate::esapi::{Error, Result};
-use crate::seal::{unseal, SealedObject};
+use crate::esapi::{start_salted_hmac_session, Error, Result};
+use crate::seal::{flush, unseal, SealedObject};
+use crate::TctiConfig;
+
+/// `TPMA_PERMANENT.lockoutAuthSet` (bit 2): set once the lockout-hierarchy authValue is non-empty.
+/// Read via `TPM2_GetCapability` on `TPM2_PT_PERMANENT` — a read-only probe that, unlike trying a
+/// wrong auth, does not touch the lockout DA counter. (TCG TPM2 spec, Part 2, TPMA_PERMANENT.)
+const TPMA_PERMANENT_LOCKOUT_AUTH_SET: u32 = 0x0000_0004;
+
+/// Largest authValue tess sets on the lockout hierarchy: the SHA-256 digest size, the cap for an
+/// authValue on a TPM whose lockout name algorithm is SHA-256.
+const MAX_LOCKOUT_AUTH_LEN: usize = 32;
 
 /// A snapshot of the TPM's dictionary-attack lockout parameters and current failure count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,9 +97,8 @@ pub(crate) fn read_property(context: &mut Context, tag: PropertyTag) -> Result<u
 /// This is **not** the privileged DA-counter reset: once the TPM is in *hard* lockout
 /// (`counter >= max_auth_fail`) it refuses the authorization with [`Error::Lockout`], which this
 /// function surfaces rather than clears. Escaping a hard lockout needs the lockout hierarchy's
-/// `TPM2_DictionaryAttackLockReset` (not yet wired — the pinned `tss-esapi` exposes no safe wrapper
-/// and `unsafe` FFI is disallowed in this crate) or waiting out the lockout interval. The name
-/// `reset_lockout` is deliberately reserved for that future privileged reset.
+/// `TPM2_DictionaryAttackLockReset` ([`reset_lockout`], gated by the recovery secret) or waiting out
+/// the lockout interval.
 pub fn pin_holder_recover(
     context: &mut Context,
     primary: KeyHandle,
@@ -96,6 +109,103 @@ pub fn pin_holder_recover(
         return Err(Error::Lockout);
     }
     let _secret = unseal(context, primary, sealed, pin)?;
+    Ok(())
+}
+
+/// Whether the TPM lockout hierarchy already carries a non-empty authValue (`lockoutAuthSet`). A
+/// read-only `TPM2_GetCapability` probe — it never tries an authorization, so it consumes no DA
+/// attempt. Enrollment reads this first and refuses to clobber a lockout hierarchy it did not set.
+pub fn lockout_auth_is_set(context: &mut Context) -> Result<bool> {
+    let permanent = read_property(context, PropertyTag::Permanent)?;
+    Ok(permanent & TPMA_PERMANENT_LOCKOUT_AUTH_SET != 0)
+}
+
+/// Change the TPM lockout-hierarchy authValue from `current` to `new`, under the mandatory salted
+/// HMAC + parameter-encryption session (so the new authValue is encrypted on the bus). An empty
+/// `SecretBytes` denotes the empty authValue: enrollment sets `empty -> derived`, unenroll restores
+/// `derived -> empty`. `current` is bound to the permanent lockout handle so the session can
+/// authorize the change with whatever the hierarchy's authValue currently is.
+pub fn set_lockout_auth(
+    context: &mut Context,
+    primary: KeyHandle,
+    current: &SecretBytes,
+    new: &SecretBytes,
+) -> Result<()> {
+    let current_auth = lockout_auth_value(current)?;
+    let new_auth = lockout_auth_value(new)?;
+
+    context
+        .tr_set_auth(ObjectHandle::Lockout, current_auth)
+        .map_err(|e| Error::LockoutAuth(e.to_string()))?;
+
+    let session = start_salted_hmac_session(context, primary)?;
+    let changed = context.execute_with_session(Some(session), |ctx| {
+        ctx.hierarchy_change_auth(AuthHandle::Lockout, new_auth)
+    });
+    let session_flushed = flush(context, SessionHandle::from(session).into());
+
+    changed.map_err(|e| Error::LockoutAuth(e.to_string()))?;
+    session_flushed?;
+    Ok(())
+}
+
+/// Convert a recovery-derived secret into the TPM lockout `Auth`, rejecting anything longer than the
+/// SHA-256 authValue cap. An empty secret yields the empty authValue (the stock lockout state).
+fn lockout_auth_value(secret: &SecretBytes) -> Result<Auth> {
+    if secret.len() > MAX_LOCKOUT_AUTH_LEN {
+        return Err(Error::LockoutAuth(format!(
+            "lockout authValue is {} bytes, exceeds the {MAX_LOCKOUT_AUTH_LEN}-byte limit",
+            secret.len()
+        )));
+    }
+    Auth::try_from(secret.as_slice()).map_err(|e| Error::LockoutAuth(e.to_string()))
+}
+
+/// Privileged dictionary-attack reset: run `TPM2_DictionaryAttackLockReset` so the global
+/// `lockoutCounter` returns to zero even from a *hard* lockout, authorized by the lockout-hierarchy
+/// authValue. The pinned `tss-esapi` 7.7 exposes no safe wrapper for this command, so it runs via
+/// the tpm2-tools `tpm2_dictionarylockout` subprocess (keeping `tess-tpm` free of `unsafe`).
+///
+/// `lockout_auth` is the raw authValue (recovery-derived, set by [`set_lockout_auth`]). It is fed on
+/// the subprocess **stdin** (`--auth file:-`), never argv, so it does not leak via `/proc`.
+/// `TPM2TOOLS_TCTI` is set to the same transport tess uses so tpm2-tools targets the same TPM. A
+/// wrong authValue (or a still-locked lockout hierarchy) makes tpm2-tools exit non-zero, surfaced as
+/// [`Error::LockoutReset`].
+pub fn reset_lockout(tcti: &TctiConfig, lockout_auth: &SecretBytes) -> Result<()> {
+    let mut child = Command::new("tpm2_dictionarylockout")
+        .arg("--clear-lockout")
+        .arg("--auth")
+        .arg("file:-")
+        .env("TPM2TOOLS_TCTI", tcti.tpm2_tools_tcti())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => Error::LockoutReset(
+                "tpm2_dictionarylockout not found; install tpm2-tools for hard-lockout recovery"
+                    .to_string(),
+            ),
+            _ => Error::LockoutReset(format!("spawn tpm2_dictionarylockout: {e}")),
+        })?;
+
+    let mut stdin = child.stdin.take().ok_or_else(|| {
+        Error::LockoutReset("tpm2_dictionarylockout stdin unavailable".to_string())
+    })?;
+    let written = stdin.write_all(lockout_auth.as_slice());
+    drop(stdin); // EOF so tpm2-tools stops reading the authValue.
+    written.map_err(|e| Error::LockoutReset(format!("write authValue to stdin: {e}")))?;
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| Error::LockoutReset(format!("wait for tpm2_dictionarylockout: {e}")))?;
+    if !output.status.success() {
+        return Err(Error::LockoutReset(format!(
+            "tpm2_dictionarylockout exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
     Ok(())
 }
 
@@ -134,5 +244,20 @@ mod tests {
         };
         assert!(!state.is_locked_out());
         assert_eq!(state.remaining_attempts(), None);
+    }
+
+    #[test]
+    fn lockout_auth_value_accepts_empty_and_max() {
+        assert!(lockout_auth_value(&SecretBytes::new(Vec::new())).is_ok());
+        assert!(lockout_auth_value(&SecretBytes::new(vec![0u8; MAX_LOCKOUT_AUTH_LEN])).is_ok());
+    }
+
+    #[test]
+    fn lockout_auth_value_rejects_oversized() {
+        let too_long = SecretBytes::new(vec![0u8; MAX_LOCKOUT_AUTH_LEN + 1]);
+        assert!(matches!(
+            lockout_auth_value(&too_long),
+            Err(Error::LockoutAuth(_))
+        ));
     }
 }

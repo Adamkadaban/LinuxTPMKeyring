@@ -319,7 +319,7 @@ fn is_auth_failure(e: &tss_esapi::Error) -> bool {
 /// (so handles never leak); error precedence is: if the primary operation already failed, its error
 /// takes precedence and the flush is best-effort; if the primary operation succeeded, a flush
 /// failure is surfaced as the result instead of being silently dropped.
-fn flush(context: &mut Context, handle: ObjectHandle) -> Result<()> {
+pub(crate) fn flush(context: &mut Context, handle: ObjectHandle) -> Result<()> {
     context
         .flush_context(handle)
         .map_err(|e| Error::Flush(e.to_string()))

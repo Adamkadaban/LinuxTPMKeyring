@@ -19,7 +19,7 @@ use tess_core::{KeyringBackend, SecretBytes};
 use tess_keyring::SecretServiceBackend;
 use tess_tpm::TctiConfig;
 
-use tess_cli::enroll::sealer::TpmSealer;
+use tess_cli::enroll::sealer::{KeySealer, TpmSealer};
 use tess_cli::enroll::{enroll, Paths};
 use tess_cli::lifecycle::{gather_status, recover, reseal, unenroll, unlock};
 
@@ -219,17 +219,41 @@ fn unenroll_restores_password_keyring_with_items_intact() {
     with_fixture(|service, address, collection_path, tcti| {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths_in(dir.path());
-        enroll_fixture(tcti, address, collection_path, &paths);
+        let recovery_display = enroll_fixture(tcti, address, collection_path, &paths);
+        let recovery_secret =
+            tess_cli::enroll::recovery::decode(&recovery_display).expect("decode recovery secret");
 
         let backend = SecretServiceBackend::connect_to(address, collection_path).unwrap();
         let mut sealer = TpmSealer::open(tcti).expect("open swtpm sealer");
         let pin = SecretBytes::new(PIN.to_vec());
         let new_password = SecretBytes::new(NEW_PASSWORD.to_vec());
 
-        unenroll(&mut sealer, &backend, &paths, &pin, &new_password).expect("unenroll succeeds");
+        // Enroll bound the TPM lockout hierarchy to the recovery secret.
+        assert!(
+            sealer
+                .lockout_auth_is_set()
+                .expect("read lockout-auth state"),
+            "enroll must set a non-empty lockout authValue"
+        );
+
+        unenroll(
+            &mut sealer,
+            &backend,
+            &paths,
+            &pin,
+            &new_password,
+            Some(&recovery_secret),
+        )
+        .expect("unenroll succeeds");
 
         assert!(!paths.metadata.exists(), "sealed metadata removed");
         assert!(!paths.recovery.exists(), "recovery blob removed");
+        assert!(
+            !sealer
+                .lockout_auth_is_set()
+                .expect("read lockout-auth state"),
+            "unenroll must restore the lockout authValue to empty"
+        );
 
         // The keyring is back on the user password, every item still decrypts.
         let restored = SecretServiceBackend::connect_to(address, collection_path).unwrap();

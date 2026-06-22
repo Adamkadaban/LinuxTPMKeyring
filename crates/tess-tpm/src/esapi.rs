@@ -67,6 +67,15 @@ pub enum Error {
     #[error("TPM is in dictionary-attack lockout")]
     Lockout,
 
+    #[error("failed to set the TPM lockout-hierarchy authValue: {0}")]
+    LockoutAuth(String),
+
+    #[error("the TPM lockout hierarchy already has an authValue tess did not set; refusing to clobber another owner")]
+    LockoutAuthOwned,
+
+    #[error("failed to reset the TPM dictionary-attack lockout: {0}")]
+    LockoutReset(String),
+
     #[error("failed to flush a transient TPM handle: {0}")]
     Flush(String),
 

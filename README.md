@@ -111,10 +111,25 @@ explicit, fail-open `tess install`, so installing the package can never lock you
 packaged `tess` lands in `/usr/bin` with no module beside it (`tess install` looks next to the
 binary by default), point it at the installed module with
 `--module /usr/lib/x86_64-linux-gnu/security/pam_tess.so` — which `deploy/install.sh` does for you. Runtime
-dependencies (`gnome-keyring`, the tpm2-tss libraries) are pulled in automatically. `fprintd` (the
+dependencies (`gnome-keyring`, the tpm2-tss libraries) are pulled in automatically. `tpm2-tools`
+(`tpm2_dictionarylockout`) is a runtime dependency of the hard-lockout recovery path only — `tess
+recover` uses it to clear a tripped TPM dictionary-attack lockout with your recovery secret; install
+it (`apt install tpm2-tools`) if you expect to recover from a hard lockout, otherwise the rest of tess
+works without it. `fprintd` (the
 optional fingerprint front gate; tess runs PIN-only without it) is a Recommends — apt installs it by
 default, but it is removable and you can skip it with `deploy/install.sh --no-recommends` (or
 `apt --no-install-recommends`).
+
+### Recovering from a hard TPM lockout
+
+Every wrong PIN counts toward the TPM's hardware dictionary-attack counter; after enough misses the
+TPM enters a **hard lockout** and refuses even the correct PIN until the lockout interval elapses. To
+recover immediately, run `tess recover` and enter your **recovery secret**: enrollment bound the TPM
+lockout hierarchy to a key derived from that secret, so `tess recover` can run the privileged
+`TPM2_DictionaryAttackLockReset` (via `tpm2_dictionarylockout`) to clear the counter, then restore
+keyring access. Only the recovery-secret holder can do this — a PIN-guessing attacker who trips the
+lockout cannot clear it, so anti-hammering is preserved. `tess unenroll` releases the lockout
+hierarchy back to its stock (empty) state.
 
 ## Use
 
@@ -123,8 +138,8 @@ tess status        # enrollment + keyring + TPM state
 tess enroll        # enroll (prints a recovery secret — keep it safe)
 tess unlock        # one-shot manual unlock (unseal with PIN → unlock keyring)
 tess test          # dry-run the session unlock path (no changes)
-tess recover       # re-unlock using the recovery secret (add --reseal to re-seal under a new PIN)
-tess unenroll      # restore the password-based keyring (items preserved)
+tess recover       # re-unlock using the recovery secret; auto-resets a hard TPM lockout, and with --reseal re-seals under a new PIN
+tess unenroll      # restore the password-based keyring (items preserved); also releases the TPM lockout hierarchy
 tess doctor        # check TPM / keyring / fprintd / enrollment readiness (non-zero exit when not ready)
 tess doctor --post-install   # stricter check: also require a keyring provider binary on PATH + a completed enrollment
 tess install       # wire pam_tess.so into the session stack (idempotent, fail-open)

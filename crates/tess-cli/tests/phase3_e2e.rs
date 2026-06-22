@@ -268,8 +268,15 @@ fn full_phase3_cycle_preserves_all_items() {
     // -- Step 4: unenroll back to a stock password keyring. --------------------------------------
     {
         let mut sealer = TpmSealer::open(&tcti).expect("reopen swtpm sealer");
-        unenroll(&mut sealer, &backend, &paths, &new_pin, &restored_password)
-            .expect("unenroll succeeds");
+        unenroll(
+            &mut sealer,
+            &backend,
+            &paths,
+            &new_pin,
+            &restored_password,
+            Some(&recovery_secret),
+        )
+        .expect("unenroll succeeds");
     }
     assert!(
         !paths.metadata.exists(),

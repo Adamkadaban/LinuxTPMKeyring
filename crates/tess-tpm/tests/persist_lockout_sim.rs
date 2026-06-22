@@ -203,7 +203,7 @@ fn hard_lockout_surfaces_distinct_error() {
     );
 
     // A hard lockout is not PIN-recoverable: even the correct PIN is refused with Error::Lockout
-    // (the privileged TPM2_DictionaryAttackLockReset path is tracked as tech-debt #16).
+    // (escaping it needs the privileged `reset_lockout`, gated by the recovery secret).
     let recover = pin_holder_recover(&mut context, primary.key_handle, &sealed, &pin);
     assert!(
         matches!(recover, Err(Error::Lockout)),

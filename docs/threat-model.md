@@ -115,6 +115,29 @@ PIN, so it does not weaken the at-rest guarantee, but it shifts the burden to th
 safe. It is **not** TPM-protected and therefore has no hardware anti-hammering: treat `R` like a
 root password / BIP-39 seed phrase.
 
+## Hard-lockout reset is gated by the recovery secret, so anti-hammering holds
+
+Every wrong PIN counts toward the TPM's global dictionary-attack counter; at `maxAuthFail` the TPM
+enters a **hard lockout** and refuses even the correct PIN until the lockout interval self-heals.
+Clearing it promptly needs the privileged `TPM2_DictionaryAttackLockReset`, authorized by the TPM's
+**lockout hierarchy**. Per [ADR-0011](adr/0011-privileged-da-lockout-reset.md), enrollment binds the
+lockout-hierarchy authValue to a key derived **only** from the recovery secret:
+`HKDF-SHA256(ikm = R, salt = "", info = "tess-lockout-auth-v1")`, a distinct sub-key that is never
+equal to the keyring-wrapping key `K`. `tess recover` detects a hard lockout, reproduces that
+authValue from the user-entered `R`, and runs the reset (shelling out to `tpm2_dictionarylockout` with
+the authValue fed on stdin, never argv, so it does not leak via `/proc`) before restoring keyring
+access.
+
+The security property: **only the recovery-secret holder can reset the counter.** A PIN-guessing
+attacker who trips the lockout has, by construction, no way to derive the lockout authValue (it comes
+from `R`, not the PIN and not `K`), so they cannot clear their own lockout — the hardware throttle
+stays in force. The reset is a *recovery* convenience for the legitimate user, not a bypass of
+anti-hammering. The reset is the same strength as `R` (a wrong authValue is refused by the TPM and
+itself trips the lockout-hierarchy's own recovery delay). `tess unenroll` releases the lockout
+hierarchy back to empty, so uninstalling tess leaves the TPM as it was found; on a machine whose
+lockout hierarchy is already owned by something else, tess refuses to clobber it and the privileged
+reset is simply unavailable there.
+
 ## Enrollment is transactional and recoverable; uninstall restores stock behavior
 
 Enrollment is the project's #1 safety-critical path and its #1 safety risk: it rekeys the login
@@ -131,7 +154,8 @@ The one path that deliberately keeps the blobs is a failure to restore the crede
 sealed and recovery blobs are the only way back in, and the error directs the user to `tess recover`.
 
 - `tess unenroll` transactionally rekeys the keyring back to a user-supplied password and removes the
-  sealed + recovery blobs, restoring stock GNOME behavior with every item intact.
+  sealed + recovery blobs, restoring stock GNOME behavior with every item intact, and (given the
+  recovery secret) releases the TPM lockout hierarchy back to empty.
 - `tess install --uninstall` removes the tess PAM block and module, returning the login stack to its
   pre-tess state.
 
@@ -179,6 +203,7 @@ avoid.
 | Bus sniff / interposer (Dolos BitLocker, TPM Genie) | No PCR-only sealing; PIN authValue + **mandatory HMAC / parameter-encryption sessions** on every seal/unseal ([ADR-0001](adr/0001-tpm-seal-random-key-pin-authvalue-hmac-sessions.md)) |
 | Weak keygen / RNG (ROCA) | Seal a **self-generated** random blob (not a TPM-born RSA key); ECC P-256; `getrandom` XOR-mixed with TPM `GetRandom` |
 | Timing side channel (TPM-FAIL, Hertzbleed) | Constant-time PIN handling; rely on the TPM **DA-lockout**, not comparison-timing secrecy |
+| Online PIN brute force / lockout abuse | Wrong PINs trip the hardware DA-lockout; the privileged reset is gated by the **recovery secret** (a sub-key never equal to `K`), so an attacker who trips the lockout cannot clear it ([ADR-0011](adr/0011-privileged-da-lockout-reset.md)) |
 | Biometric spoof (Windows Hello IR replay, CVE-2021-34466) | Biometric is **host-trusted, never the sole gate**; the PIN authValue is the real gate; IR-reflectance liveness deferred to the Phase 5 face daemon (Mug) |
 | TOCTOU / confused deputy in PAM | Unseal is bound to the authenticated PAM session and gated by TPM policy; no replayable out-of-band "verify-match" |
 | Memory disclosure (cold boot, swap, ptrace, core dump) | `zeroize`-on-drop + minimal key lifetime today; `mlock` and core-dump disabling (`PR_SET_DUMPABLE`/`RLIMIT_CORE`) are planned hardening, available now as an operator-level recommendation |

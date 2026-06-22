@@ -102,6 +102,26 @@ pub fn recover(
     unlock_and_verify(keyring, &key, "recovered key")
 }
 
+/// Reset a *hard* TPM dictionary-attack lockout using the recovery secret, so the normal PIN-unseal
+/// path works again. Reads the lockout state first; when the TPM is hard-locked it derives the
+/// lockout-hierarchy authValue from `recovery_secret` and runs the privileged
+/// `TPM2_DictionaryAttackLockReset` (via `tess_tpm::reset_lockout`). Returns whether a reset was
+/// performed (`false` when the TPM was not locked out, so the caller can stay quiet). The TPM read
+/// and the subprocess run sequentially — no ESAPI context is held open while tpm2-tools talks to the
+/// same (single-client) TPM.
+pub fn reset_hard_lockout(tcti: &TctiConfig, recovery_secret: &SecretBytes) -> Result<bool> {
+    let (_, lockout) =
+        read_caps(tcti).map_err(|e| anyhow::anyhow!("read TPM lockout state before reset: {e}"))?;
+    if !lockout.is_locked_out() {
+        return Ok(false);
+    }
+    let lockout_auth = recovery::derive_lockout_auth(recovery_secret)
+        .context("derive the lockout authValue from the recovery secret")?;
+    tess_tpm::reset_lockout(tcti, &lockout_auth)
+        .context("run the privileged TPM dictionary-attack lockout reset")?;
+    Ok(true)
+}
+
 /// Re-seal the recovered keyring key under `new_pin` against the current TPM and rewrite the sealed
 /// metadata, re-establishing the normal PIN-unseal path after a TPM clear. The keyring credential is
 /// unchanged (it remains the recovered key), so this only seals + atomically overwrites
@@ -134,12 +154,19 @@ pub fn reseal<S: KeySealer>(
 /// behaviour with every item intact. Reuses enrollment's credential-first rollback discipline: the
 /// destructive rekey is verified before any blob is removed, and a failed verification rekeys back to
 /// the TPM-sealed key (keeping the blobs, which still gate that key) rather than stranding the user.
+///
+/// When `recovery_secret` is supplied, the TPM lockout-hierarchy authValue tess bound at enroll is
+/// also reset to empty (authorized by the recovery-derived value), leaving the lockout hierarchy as
+/// tess found it. Releasing the lockout hierarchy is best-effort: it runs only after the keyring is
+/// safely back on the password, and a failure is surfaced as a warning rather than failing the
+/// unenroll (the keyring — the load-bearing guarantee — is already restored).
 pub fn unenroll<S: KeySealer>(
     sealer: &mut S,
     keyring: &dyn KeyringBackend,
     paths: &Paths,
     pin: &SecretBytes,
     new_password: &SecretBytes,
+    recovery_secret: Option<&SecretBytes>,
 ) -> Result<()> {
     ensure!(
         !new_password.is_empty(),
@@ -167,10 +194,39 @@ pub fn unenroll<S: KeySealer>(
             .context("unenroll failed after rekey and was rolled back to the TPM-sealed keyring"));
     }
 
-    // The keyring is safely on the user password; the sealed/recovery blobs are now stale. Removing
-    // them is the final, non-destructive cleanup — a failure here leaves only orphaned files.
+    // The keyring is safely on the user password. Release the TPM lockout hierarchy back to empty so
+    // uninstalling tess leaves the TPM as it was found. Best-effort: a failure here is not a keyring
+    // lockout, so warn and continue to blob removal rather than failing the whole unenroll.
+    if let Some(recovery_secret) = recovery_secret {
+        if let Err(err) = release_lockout_auth(sealer, recovery_secret) {
+            eprintln!(
+                "warning: could not reset the TPM lockout-hierarchy authValue to empty ({err:#}); \
+                 it remains bound to the recovery secret"
+            );
+        }
+    }
+
+    // The sealed/recovery blobs are now stale. Removing them is the final, non-destructive cleanup —
+    // a failure here leaves only orphaned files.
     remove_blobs(paths)
         .context("remove the sealed metadata and recovery blob after a successful unenroll")
+}
+
+/// Reset the TPM lockout-hierarchy authValue from the recovery-derived value back to empty. A no-op
+/// (with no error) when tess does not own the lockout hierarchy, so a managed machine — where enroll
+/// skipped the binding — unenrolls cleanly.
+fn release_lockout_auth<S: KeySealer>(sealer: &mut S, recovery_secret: &SecretBytes) -> Result<()> {
+    if !sealer
+        .lockout_auth_is_set()
+        .context("read the TPM lockout-auth state")?
+    {
+        return Ok(());
+    }
+    let lockout_auth = recovery::derive_lockout_auth(recovery_secret)
+        .context("derive the lockout authValue from the recovery secret")?;
+    sealer
+        .set_lockout_auth(&lockout_auth, &SecretBytes::new(Vec::new()))
+        .context("reset the TPM lockout-hierarchy authValue to empty")
 }
 
 /// Remove the sealed metadata and recovery blob, idempotently (an already-absent file is success).

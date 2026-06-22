@@ -1,7 +1,13 @@
 # 0008 — Defer the privileged DA-lockout reset; ship persistence + lockout detection now
 
-- Status: Accepted
+- Status: Superseded by [0011](./0011-privileged-da-lockout-reset.md)
 - Date: 2026-06-21
+
+> **Superseded by [0011](./0011-privileged-da-lockout-reset.md).** The privileged
+> `TPM2_DictionaryAttackLockReset` deferred here is now implemented: the lockout-hierarchy authValue
+> is bound to the recovery secret at enroll and reset via a `tpm2_dictionarylockout` subprocess
+> (still no `unsafe` in `tess-tpm`). This document is retained unchanged below as the original
+> reasoning for the deferral.
 
 ## Context
 

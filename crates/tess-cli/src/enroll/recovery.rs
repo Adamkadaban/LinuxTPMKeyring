@@ -41,6 +41,13 @@ const WRAPPED_KEY_LEN: usize = 32;
 const AEAD_TAG_LEN: usize = 16;
 const WRAPPED_CIPHERTEXT_LEN: usize = WRAPPED_KEY_LEN + AEAD_TAG_LEN;
 const HKDF_INFO: &[u8] = b"tess recovery key-encryption key v1";
+/// Domain-separation label for the lockout-hierarchy authValue sub-key. Distinct from [`HKDF_INFO`]
+/// so the lockout authValue is never equal to the recovery key-encryption key; salt-less so it is
+/// deterministic from the recovery secret alone (a hard-lockout reset has no stored salt to read).
+const LOCKOUT_AUTH_INFO: &[u8] = b"tess-lockout-auth-v1";
+/// Length of the derived lockout authValue: the SHA-256 digest size, the authValue cap the TPM
+/// enforces on the lockout hierarchy.
+const LOCKOUT_AUTH_LEN: usize = 32;
 
 /// Schema version of the on-disk recovery blob, independent of the TPM metadata schema.
 pub const RECOVERY_BLOB_VERSION: u32 = 1;
@@ -126,6 +133,18 @@ fn derive_kek(recovery: &SecretBytes, salt: &[u8]) -> Result<Zeroizing<[u8; KEK_
     hk.expand(HKDF_INFO, &mut *kek)
         .map_err(|e| anyhow!("derive recovery key-encryption key: {e}"))?;
     Ok(kek)
+}
+
+/// Derive the TPM lockout-hierarchy authValue from the recovery secret via HKDF-SHA256 with a
+/// distinct `info` label and no salt. Deterministic (no stored salt to read at reset time),
+/// domain-separated from the recovery key-encryption key, and never equal to the keyring-wrapping
+/// key — so only the recovery-secret holder can authorize the privileged dictionary-attack reset.
+pub fn derive_lockout_auth(recovery: &SecretBytes) -> Result<SecretBytes> {
+    let hk = Hkdf::<Sha256>::new(None, recovery.as_slice());
+    let mut auth = Zeroizing::new(vec![0u8; LOCKOUT_AUTH_LEN]);
+    hk.expand(LOCKOUT_AUTH_INFO, &mut auth[..])
+        .map_err(|e| anyhow!("derive lockout authValue: {e}"))?;
+    Ok(SecretBytes::new(std::mem::take(&mut *auth)))
 }
 
 /// AEAD-seal `key` under a key-encryption key derived from `recovery`, returning the persistable
@@ -309,6 +328,35 @@ mod tests {
         let blob = wrap_key(&k, &r).unwrap();
         let back = unwrap_key(&blob, &r).unwrap();
         assert_eq!(back.as_slice(), k.as_slice());
+    }
+
+    #[test]
+    fn lockout_auth_is_deterministic_per_secret() {
+        let r = generate_recovery_secret().unwrap();
+        let a = derive_lockout_auth(&r).unwrap();
+        let b = derive_lockout_auth(&r).unwrap();
+        assert_eq!(a.as_slice(), b.as_slice(), "same secret -> same authValue");
+        assert_eq!(a.len(), LOCKOUT_AUTH_LEN);
+    }
+
+    #[test]
+    fn lockout_auth_differs_per_secret() {
+        let r1 = generate_recovery_secret().unwrap();
+        let r2 = generate_recovery_secret().unwrap();
+        assert_ne!(
+            derive_lockout_auth(&r1).unwrap().as_slice(),
+            derive_lockout_auth(&r2).unwrap().as_slice()
+        );
+    }
+
+    #[test]
+    fn lockout_auth_is_not_the_recovery_kek() {
+        // Domain separation: the lockout authValue must not equal the recovery key-encryption key
+        // derived from the same secret (distinct HKDF info labels).
+        let r = generate_recovery_secret().unwrap();
+        let auth = derive_lockout_auth(&r).unwrap();
+        let kek = derive_kek(&r, &[0u8; SALT_LEN]).unwrap();
+        assert_ne!(auth.as_slice(), &kek[..]);
     }
 
     #[test]
