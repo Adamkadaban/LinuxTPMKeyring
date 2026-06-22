@@ -516,3 +516,22 @@ Gotchas worth remembering:
   and always use the 8 s default so a caller can't push the helper into watchdog-kill territory. The
   helper then falls back to the PIN and the whole run finishes in ~2s for all three scenarios.
   swtpm/keyring/fprintd-mock/helper all reaped on drop.
+
+## 2026-06-22 — Phase 4 docs finalized: threat-model + README to shipped MVP (issue #40)
+**Resolution:** Rewrote `docs/threat-model.md` from stub to the full shipped model (at-rest guarantee,
+root/runtime out of scope per ADR-0002, auth-not-attestation framing, fingerprint host-trusted vs PIN
+gate, ADR-0009 recovery scheme limits, transactional enroll + uninstall, attack-class→control table)
+and updated `README.md` to the shipped state (platform matrix, build-from-source install path, opt-in
+fingerprint front gate, status MVP/phase-4). `docs/threat-model.md` · `README.md` · PR for #40.
+
+Doc/behavior mismatch noted (no code fix — out of this docs PR's scope):
+- **There is no `tess`-CLI `--fingerprint` flag.** Issue #40 and the task brief assume one, but
+  `crates/tess-cli/src/main.rs` exposes only `--pin` (enroll/recover/unenroll/unlock), `--reseal`
+  (recover), and the `install` path flags. The fingerprint front gate is enabled purely via the PAM
+  **module argument** `fingerprint=yes` on the `session optional pam_tess.so` line — and `tess
+  install` does NOT add it automatically (the installed line has no args). Multi-factor enroll UX
+  (`tess enroll --pin --fingerprint --face`) is PLAN §5 Phase 5, not shipped. Documented the gate as
+  the PAM arg, not a CLI flag, to stay accurate.
+- **`.deb` / `deploy/install.sh` do not exist yet** (issue #38 still open). README describes the
+  working build-from-source + `tess install` path and notes the packaged `.deb` is the smooth path
+  landing with #38, incl. the helper resolving from `/usr/lib/tess/tess-pam-helper`.
