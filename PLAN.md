@@ -186,7 +186,7 @@ swtpm in CI (`--features sim`).
 - [x] `unseal(pin)`: policy session → `unseal` → `SecretBytes` (mlock'd, zeroized)
 - [x] Key-gen: `getrandom` mixed with TPM `GetRandom`; constant-time PIN handling
 - [x] Versioned blob+metadata persistence; **no secret/secret-hash ever on disk**
-- [x] DA-lockout error mapping + owner-guarded `reset_lockout`
+- [x] DA-lockout error mapping + lockout-state read + PIN-holder recovery (privileged lockout-hierarchy reset deferred → #16 / ADR-0008)
 - [ ] Tests: round-trip, wrong-PIN, lockout, persistence reload, **session-encryption assertion** — swtpm (CI) + vTPM (hw)
 
 | Wave | Worktree slug | Depends on | Tasks |
