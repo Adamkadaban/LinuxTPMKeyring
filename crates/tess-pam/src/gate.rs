@@ -260,10 +260,25 @@ mod tests {
     #[cfg(not(debug_assertions))]
     #[test]
     fn helper_spec_release_ignores_env_override() {
-        // In release builds resolution never consults the environment. (HELPER_PATH_ENV only exists
-        // under debug_assertions, so reference the variable name by literal here.)
-        let prev = std::env::var_os("TESS_PAM_HELPER");
+        // RAII restore so a panicking assertion can't leak the mutation into other tests.
+        // (HELPER_PATH_ENV only exists under debug_assertions, so the var name is a literal here.)
+        struct EnvGuard {
+            prev: Option<OsString>,
+        }
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.prev {
+                    Some(value) => std::env::set_var("TESS_PAM_HELPER", value),
+                    None => std::env::remove_var("TESS_PAM_HELPER"),
+                }
+            }
+        }
+        let _guard = EnvGuard {
+            prev: std::env::var_os("TESS_PAM_HELPER"),
+        };
         std::env::set_var("TESS_PAM_HELPER", "/env/should/be/ignored");
+
+        // In release builds resolution never consults the environment.
         assert_eq!(
             HelperSpec::resolve(&[]).program,
             PathBuf::from(DEFAULT_HELPER_PATH)
@@ -272,10 +287,6 @@ mod tests {
             HelperSpec::resolve(&["helper=relative/helper"]).program,
             PathBuf::from(DEFAULT_HELPER_PATH)
         );
-        match prev {
-            Some(value) => std::env::set_var("TESS_PAM_HELPER", value),
-            None => std::env::remove_var("TESS_PAM_HELPER"),
-        }
     }
 
     #[cfg(debug_assertions)]

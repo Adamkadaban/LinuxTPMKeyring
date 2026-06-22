@@ -166,7 +166,7 @@ fn reap_in_background(mut child: Child) {
 }
 
 fn send_signal(pid: u32, signal: Signal) -> io::Result<()> {
-    match kill(Pid::from_raw(pid as i32), signal) {
+    match kill(Pid::from_raw(pid as i32), Some(signal)) {
         Ok(()) => Ok(()),
         // The child has already exited (we have not yet reaped it, so its PID is still ours and
         // cannot have been recycled); there is nothing to signal.
