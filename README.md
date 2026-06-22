@@ -47,7 +47,7 @@ isolation, which doesn't exist on commodity hardware. This is the same boundary 
 | Component | Supported | Notes |
 |---|---|---|
 | OS | **Debian 13** (trixie) | The reference target. Other systemd + PAM distros are likely workable but untested. |
-| TPM | **TPM 2.0** — discrete/firmware, or an **Azure Gen2 Trusted-Launch vTPM** | Accessed via `/dev/tpmrm0`. The MVP policy binds the PIN authValue only (no PCR binding), so Azure's differing vTPM PCRs are fine. |
+| TPM | **TPM 2.0** — discrete/firmware, or an **Azure Gen2 Trusted-Launch vTPM** | Operations go through the kernel TPM **resource manager** `/dev/tpmrm0` (required by enroll/unlock and `tess doctor`'s verdict). Debian 13 exposes it by default for a TPM 2.0. The MVP policy binds the PIN authValue only (no PCR binding), so Azure's differing vTPM PCRs are fine. |
 | Keyring | **GNOME** login keyring (freedesktop **Secret Service**, `org.freedesktop.secrets`) | Reference daemon. KWallet/KeePassXC expose the same API, so lock-state works, but headless rekey/unlock on non-GNOME daemons is future work. |
 | Login stack | **PAM** session phase (`pam_tess.so`, fail-open `optional`) | Wired by `tess install`; never blocks or fails a login. |
 | Fingerprint | **fprintd** (`net.reactivated.Fprint`), consumed unmodified | Optional front gate (opt-in); convenience only. |
@@ -61,7 +61,8 @@ isolation, which doesn't exist on commodity hardware. This is the same boundary 
 > build from source — the path below works today on Debian 13 with a TPM 2.0.
 
 ```sh
-# Debian 13 with a TPM 2.0 (/dev/tpmrm0). Build everything (tess, the PAM helper, pam_tess.so):
+# Debian 13 with a TPM 2.0 exposed through the kernel resource manager (/dev/tpmrm0).
+# Build everything (tess, the PAM helper, pam_tess.so):
 git clone https://github.com/Adamkadaban/LinuxTPMKeyring && cd LinuxTPMKeyring
 cargo build --workspace --release
 
