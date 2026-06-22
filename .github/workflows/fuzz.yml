@@ -43,6 +43,14 @@ jobs:
         with:
           tool: cargo-fuzz
 
+      - name: Audit fuzz-only dependencies
+        uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
+        with:
+          tool: cargo-audit
+      - name: cargo audit (fuzz/Cargo.lock)
+        working-directory: fuzz
+        run: cargo audit
+
       - name: Smoke each target (seed + short bounded run)
         run: |
           set -euxo pipefail
@@ -75,6 +83,14 @@ jobs:
         uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
         with:
           tool: cargo-fuzz
+
+      - name: Audit fuzz-only dependencies
+        uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
+        with:
+          tool: cargo-audit
+      - name: cargo audit (fuzz/Cargo.lock)
+        working-directory: fuzz
+        run: cargo audit
 
       - name: Fuzz each target (longer bounded run)
         run: |
