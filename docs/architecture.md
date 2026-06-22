@@ -481,8 +481,10 @@ of the unseal. Inside the helper the verify is itself bounded through
 fprintd. Both the verify deadline (default 8 s) and the fprintd bus are fixed in release builds: a
 caller's environment cannot change them, so it cannot redirect the privileged helper to an
 attacker-controlled D-Bus address or push the verify into watchdog-kill territory. The only
-environment the release helper reads is `TESS_FPRINT_USER`, a trusted channel the PAM module sets
-from `PAM_USER` (and clears when no user is resolved) to select whose finger fprintd matches.
+*fingerprint-related* environment the release helper reads is `TESS_FPRINT_USER`, a trusted channel
+the PAM module sets from `PAM_USER` (and clears when no user is resolved) to select whose finger
+fprintd matches. (The helper still reads the non-fingerprint deployment vars it always has —
+`DBUS_SESSION_BUS_ADDRESS`, `XDG_DATA_HOME`, and the `TESS_SWTPM_*` transport selector.)
 Debug/test builds additionally honour `TESS_FPRINT_TIMEOUT_MS` (shorten the deadline) and
 `TESS_FPRINT_BUS_ADDRESS` (point at a private `python-dbusmock` bus), mirroring how `TESS_PAM_HELPER`
 is debug-gated.

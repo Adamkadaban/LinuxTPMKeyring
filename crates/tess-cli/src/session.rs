@@ -95,13 +95,14 @@ fn read_pin_from_stdin() -> Result<SecretBytes> {
     Ok(SecretBytes::new(buf))
 }
 
-/// Entry point for the `tess-pam-helper` binary: read the PIN from stdin, optionally run the
-/// fingerprint front gate, then run the session unlock against the user's enrollment data, the
-/// environment-selected TPM, and the Secret Service login keyring. Returns an error (mapped by the
-/// binary to a non-zero exit) on any failure of the **PIN** path — the real gate. The fingerprint
-/// gate never produces such an error: it is host-trusted convenience layered on the PIN, so any
-/// fingerprint result (match, no-match, timeout, unavailable) falls through to the PIN unseal, which
-/// alone can release the sealed key.
+/// Entry point for the `tess-pam-helper` binary: optionally run the fingerprint front gate, then
+/// read the PIN from stdin and run the session unlock against the user's enrollment data, the
+/// environment-selected TPM, and the Secret Service login keyring. The PIN is read *after* the
+/// (potentially multi-second) fingerprint verify so its in-memory lifetime spans only the unseal.
+/// Returns an error (mapped by the binary to a non-zero exit) on any failure of the **PIN** path —
+/// the real gate. The fingerprint gate never produces such an error: it is host-trusted convenience
+/// layered on the PIN, so any fingerprint result (match, no-match, timeout, unavailable) falls
+/// through to the PIN unseal, which alone can release the sealed key.
 pub fn run_pam_helper(fingerprint: bool) -> Result<()> {
     let paths = Paths::for_user().context("resolve the tess data directory")?;
     let tcti = tcti_from_env();
@@ -123,11 +124,13 @@ pub fn run_pam_helper(fingerprint: bool) -> Result<()> {
 enum FingerprintGate {
     /// fprintd matched an enrolled finger (host-trusted convenience).
     Matched,
-    /// A finger was read but did not match, or fprintd reported a terminal verification failure.
+    /// A finger was read but matched no enrolled template (the explicit `NO_MATCH_REASON`).
     NoMatch,
     /// The bounded verify deadline elapsed first.
     TimedOut,
-    /// fprintd was absent or unreachable (no reader, no service, bus error); carries the reason.
+    /// fprintd was absent or unreachable, or reported any other terminal verification failure
+    /// (no reader, no service, bus error, claim/start error, device disconnect, closed stream);
+    /// carries the reason.
     Unavailable(String),
 }
 
