@@ -278,6 +278,14 @@ installable on Debian 13.
 unlocks the GNOME login keyring with **no password** (verified by `secret-tool`/`tess status`);
 survives reboot; stall-injection proves login never freezes; teardown removes all Azure resources.
 
+**✓ PASSED on the real Azure vTPM (2026-06-22, #44):** fresh Gen2 Trusted-Launch Debian 13 B4ms;
+`tess enroll` sealed a random key to the vTPM under a PIN; `tess doctor --post-install` → READY
+(TPM 2.0 spec rev 138, DA lockout 0/3); a scripted fprintd-virtual + PIN session via the real
+`tess-pam-helper` unlocked the GNOME login keyring with **no password**; reboot-persistence re-unlocked
+the persisted keyring after a guest reboot; resource group deleted right after ($0 residual). The
+enrolling user needs TPM device access (granted via ACL in the harness; production install follow-up
+tracked in #46).
+
 **Deliverables:**
 - [x] Wire `tess-fprint` verify as the PAM gate (PIN kept as fallback), still non-blocking
 - [x] `deploy/install.sh`: detect Debian 13, install runtime deps, build/fetch binaries, `tess install`

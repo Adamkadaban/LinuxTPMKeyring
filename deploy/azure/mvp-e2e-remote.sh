@@ -88,6 +88,25 @@ cleanup() {
   fi
 }
 
+# Grant the *invoking* user read+write on /dev/tpmrm0 so the TPM-touching commands (enroll, the PAM
+# helper) run as that user rather than under sudo. This is essential, not cosmetic: those commands
+# also talk to the user's private D-Bus session bus, and a D-Bus session bus authorizes only its
+# owner UID over EXTERNAL auth — root (a different UID) is refused even though it can read the socket
+# file. Running enroll under sudo therefore can reach the TPM but NOT the Secret Service. Granting
+# the user direct TPM access (here via a POSIX ACL; production does the equivalent with a tss-group
+# udev rule) keeps enroll a single same-UID process that can reach both. The ACL is reapplied each
+# phase because /dev/tpmrm0 is recreated on boot (the reboot phase re-grants after the restart).
+ensure_tpm_access() {
+  if [[ -r /dev/tpmrm0 && -w /dev/tpmrm0 ]]; then
+    return 0
+  fi
+  log "Granting $(id -un) rw on /dev/tpmrm0 (ACL) so enroll/helper run as the user, not root ..."
+  sudo setfacl -m "u:$(id -un):rw" /dev/tpmrm0 \
+    || die "could not grant TPM access to $(id -un) via setfacl"
+  [[ -r /dev/tpmrm0 && -w /dev/tpmrm0 ]] \
+    || die "still cannot read+write /dev/tpmrm0 after setfacl"
+}
+
 # --- privileged execution (TPM access) ------------------------------------------------------------
 
 # Forward only absolute PATH entries to a sudo child so cargo's sub-tools can never be resolved from
@@ -148,11 +167,12 @@ install_deps() {
     || ! dpkg -s libtss2-dev >/dev/null 2>&1 \
     || ! command -v gnome-keyring-daemon >/dev/null 2>&1 \
     || ! command -v secret-tool >/dev/null 2>&1 \
+    || ! command -v setfacl >/dev/null 2>&1 \
     || ! command -v dbus-run-session >/dev/null 2>&1 \
     || ! python3 -c 'import dbus, dbusmock; from gi.repository import GLib' >/dev/null 2>&1; then
     sudo apt-get update -qq
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-      build-essential pkg-config libtss2-dev curl ca-certificates \
+      build-essential pkg-config libtss2-dev curl ca-certificates acl \
       dbus gnome-keyring libsecret-tools \
       python3 python3-dbus python3-dbusmock python3-gi
   fi
@@ -397,6 +417,7 @@ phase_full() {
   [[ -e /dev/tpmrm0 ]] || die "/dev/tpmrm0 is absent — this guest has no vTPM"
   install_deps
   resolve_binaries
+  ensure_tpm_access
   compute_priv
 
   start_dbus
@@ -422,6 +443,7 @@ phase_reboot() {
   [[ -e /dev/tpmrm0 ]] || die "/dev/tpmrm0 is absent — this guest has no vTPM"
   install_deps
   resolve_binaries
+  ensure_tpm_access
   compute_priv
 
   [[ -f "${XDG_DATA_HOME}/tess/metadata.json" ]] \

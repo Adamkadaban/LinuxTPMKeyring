@@ -11,6 +11,9 @@ ritual. Newest entries at the bottom of each section.
 ## Azure cost tracking
 
 - Budget: ~$50 for the week beginning 2026-06-21. Default VM: Standard_B4ms. **Kill-by: 2026-06-28.**
+- **No active VM.** Phase 4 wave-3 acceptance run (#44) completed 2026-06-22 on `tess-vtpm` (B4ms,
+  eastus); resource group `tess-vtpm-rg` **deleted** right after (both exit gates green). `$0` residual,
+  confirmed via `az resource list --tag project=LinuxTPMKeyring` (empty) + `az group exists` (false).
 - Deallocate whenever idle; delete all `project=LinuxTPMKeyring` resources at wind-down via
   `deploy/azure/teardown.sh`. The user is away from the laptop — a forgotten running VM is the main risk.
 
@@ -313,6 +316,19 @@ Gotchas worth remembering:
   through libpam and a no-op session returns `PAM_SUCCESS`. The dlopen can't be a Rust test because
   `libloading` needs `unsafe` outside the `ffi` module (forbidden); pamtester keeps the unsafe in C.
   The bounded + reap proof is the pure-Rust `tests/stall_injection.rs`.
+
+## 2026-06-22 — MVP acceptance on real Azure vTPM: sudo enroll can't reach the user's session bus
+**Resolution:** First real-vTPM run of `mvp-e2e.sh` failed: `tess enroll` ran under `sudo` (because
+`/dev/tpmrm0` was `root:root 0600` at first boot, then `tss:tss 0660` once the tpm2 udev rule
+applied) and could reach the TPM but NOT the user's private D-Bus session bus — a session bus
+authorizes only its **owner UID** over EXTERNAL auth, so root (a different UID) is refused even though
+it can read the socket file ("Did not receive a reply / security policy blocked"). Fix: grant the
+*invoking* user rw on `/dev/tpmrm0` (POSIX ACL via `setfacl`, `acl` added to the apt list) in a new
+`ensure_tpm_access` step run before `compute_priv` in both phases, so enroll/the helper run as a
+single same-UID process reaching both TPM and Secret Service (no sudo). ACL is reapplied each phase
+since the device is recreated on boot. Both exit gates then PASSED on the real vTPM (TPM 2.0 spec
+rev 138; full demo + reboot-persistence). Production must do the equivalent (tss-group/udev uaccess
+for the seat user) → IOU #46. `deploy/azure/mvp-e2e-remote.sh:99` · PR for #44.
 
 ## 2026-06-22 — atomic, recoverable enrollment transaction (issue #26)
 **Resolution:** `tess enroll` composes seal/rekey into a credential-first transactional flow:
