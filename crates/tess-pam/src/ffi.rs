@@ -132,15 +132,28 @@ fn run_default_gate(
     argc: c_int,
     argv: *const *const c_char,
 ) -> i32 {
-    let env = GateEnv::detect(get_rhost(pamh).as_deref());
-    let args = module_args(argc, argv);
-    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    crate::run_gate(
-        phase,
-        &env,
-        &HelperSpec::resolve(&arg_refs),
-        &Watchdog::default(),
-    )
+    // A panic must never unwind across the `extern "C"` boundary into the PAM host process (it would
+    // abort the login process). Catch it and fail open: auth falls through to password, a session
+    // open succeeds so login proceeds.
+    let gate = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let env = GateEnv::detect(get_rhost(pamh).as_deref());
+        let args = module_args(argc, argv);
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        crate::run_gate(
+            phase,
+            &env,
+            &HelperSpec::resolve(&arg_refs),
+            &Watchdog::default(),
+        )
+    }));
+    gate.unwrap_or_else(|_| fail_open_code(phase))
+}
+
+fn fail_open_code(phase: GatePhase) -> i32 {
+    match phase {
+        GatePhase::Auth => ret::PAM_AUTHINFO_UNAVAIL,
+        GatePhase::Session => ret::PAM_SUCCESS,
+    }
 }
 
 #[unsafe(no_mangle)]

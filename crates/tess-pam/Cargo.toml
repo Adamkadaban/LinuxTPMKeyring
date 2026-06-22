@@ -15,13 +15,8 @@ name = "pam_tess"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-tess-core.workspace = true
-tess-tpm.workspace = true
-tess-keyring.workspace = true
-tess-fprint.workspace = true
 libc.workspace = true
 nix.workspace = true
-thiserror.workspace = true
 
 # This crate intentionally does NOT inherit the workspace `unsafe_code = "forbid"` lint. Instead
 # lib.rs sets `#![deny(unsafe_code)]` and only the `ffi` module is `#[allow(unsafe_code)]`, confining
