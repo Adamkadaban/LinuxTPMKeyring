@@ -159,7 +159,8 @@ jobs:
           tool: cargo-vet
 
       # --locked uses the recorded supply-chain/imports.lock, so the imported audit sets are not
-      # re-fetched: the gate is deterministic and offline-stable. cargo vet only inspects crate
-      # sources + the lockfile; it never compiles the workspace, so no system libraries are needed.
+      # re-fetched: the audit metadata is deterministic run-to-run. cargo vet still fetches crate
+      # sources + the registry index to inspect them, but it never compiles the workspace, so no
+      # system libraries (libtss2-dev, clang) are needed.
       - name: cargo vet
         run: cargo vet --locked
