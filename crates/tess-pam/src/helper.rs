@@ -33,6 +33,11 @@ pub struct Watchdog {
 
 impl Watchdog {
     pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(3);
+    /// Wall-clock budget for a session helper that runs the fingerprint front gate. It must cover a
+    /// real fingerprint swipe (bounded inside the helper) plus the TPM unseal and keyring unlock, so
+    /// it is larger than [`DEFAULT_DEADLINE`]; the helper still bounds its own fprintd verify well
+    /// inside this ceiling, leaving headroom for the unseal.
+    pub const FINGERPRINT_DEADLINE: Duration = Duration::from_secs(12);
     pub const DEFAULT_TERM_GRACE: Duration = Duration::from_millis(250);
     pub const DEFAULT_POLL: Duration = Duration::from_millis(5);
 

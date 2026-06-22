@@ -9,7 +9,8 @@ use std::io::Read;
 use std::path::Path;
 
 use anyhow::{ensure, Context, Result};
-use tess_core::{KeyringBackend, SecretBytes};
+use tess_core::{Error as CoreError, KeyringBackend, SecretBytes};
+use tess_fprint::FprintClient;
 use tess_keyring::SecretServiceBackend;
 use tess_tpm::{persist, TctiConfig};
 
@@ -20,6 +21,20 @@ use crate::enroll::Paths;
 /// unbounded amount. A real PIN is far smaller; the TPM authValue layer rejects anything over its
 /// own limit regardless.
 const MAX_PIN_BYTES: u64 = 1024;
+
+/// Default wall-clock budget for the optional fingerprint front gate's fprintd verify, well inside
+/// the PAM module's watchdog deadline so the TPM unseal still has headroom. Overridable for tests
+/// via `TESS_FPRINT_TIMEOUT_MS`.
+const FINGERPRINT_VERIFY_DEADLINE_MS: u64 = 8_000;
+
+/// Test/CI override pointing the helper's fprintd verify at a private mock bus instead of the system
+/// bus. When unset (production) the verify always uses the system bus.
+const FPRINT_BUS_ADDRESS_ENV: &str = "TESS_FPRINT_BUS_ADDRESS";
+/// The login user to claim the fprintd device for, set by the PAM module from `PAM_USER`. Empty (the
+/// calling user, as `pam_fprintd` defaults) when unset.
+const FPRINT_USER_ENV: &str = "TESS_FPRINT_USER";
+/// Test override for the fprintd verify deadline (milliseconds).
+const FPRINT_TIMEOUT_ENV: &str = "TESS_FPRINT_TIMEOUT_MS";
 
 /// Select the TPM transport for the session helper. Delegates to the binary's shared selector so
 /// the swtpm-vs-`/dev/tpmrm0` choice can't drift between subcommands.
@@ -74,13 +89,86 @@ fn read_pin_from_stdin() -> Result<SecretBytes> {
     Ok(SecretBytes::new(buf))
 }
 
-/// Entry point for the `tess-pam-helper` binary: read the PIN from stdin, then run the session
-/// unlock against the user's enrollment data, the environment-selected TPM, and the Secret Service
-/// login keyring. Returns an error (mapped by the binary to a non-zero exit) on any failure.
-pub fn run_pam_helper() -> Result<()> {
+/// Entry point for the `tess-pam-helper` binary: read the PIN from stdin, optionally run the
+/// fingerprint front gate, then run the session unlock against the user's enrollment data, the
+/// environment-selected TPM, and the Secret Service login keyring. Returns an error (mapped by the
+/// binary to a non-zero exit) on any failure of the **PIN** path — the real gate. The fingerprint
+/// gate never produces such an error: it is host-trusted convenience layered on the PIN, so any
+/// fingerprint result (match, no-match, timeout, unavailable) falls through to the PIN unseal, which
+/// alone can release the sealed key.
+pub fn run_pam_helper(fingerprint: bool) -> Result<()> {
     let pin = read_pin_from_stdin()?;
     let paths = Paths::for_user().context("resolve the tess data directory")?;
     let tcti = tcti_from_env();
+    if fingerprint {
+        // Precedence: fingerprint (convenience) -> PIN (the real TPM gate) -> password fallthrough.
+        // The verify is bounded and its outcome only logged; the PIN below is what unseals the key.
+        report_fingerprint(fingerprint_front_gate());
+    }
     let keyring = SecretServiceBackend::connect().context("connect to the Secret Service")?;
     unseal_and_unlock(&tcti, &paths.metadata, &pin, &keyring)
+}
+
+/// The result of the optional fingerprint front gate. Every variant proceeds to the PIN unseal: a
+/// match is convenience confirmation that the right user is present, never a substitute for the PIN,
+/// and every failure mode degrades to the PIN rather than blocking login.
+enum FingerprintGate {
+    /// fprintd matched an enrolled finger (host-trusted convenience).
+    Matched,
+    /// A finger was read but did not match, or fprintd reported a terminal verification failure.
+    NoMatch,
+    /// The bounded verify deadline elapsed first.
+    TimedOut,
+    /// fprintd was absent or unreachable (no reader, no service, bus error); carries the reason.
+    Unavailable(String),
+}
+
+fn fingerprint_deadline_ms() -> u64 {
+    std::env::var(FPRINT_TIMEOUT_ENV)
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
+        .unwrap_or(FINGERPRINT_VERIFY_DEADLINE_MS)
+}
+
+fn connect_fprint(user: &str) -> tess_core::Result<FprintClient> {
+    match std::env::var(FPRINT_BUS_ADDRESS_ENV) {
+        Ok(address) if !address.is_empty() => FprintClient::connect_address(&address, user),
+        _ => FprintClient::system(user),
+    }
+}
+
+/// Run one bounded fprintd verify and classify the outcome. Never returns an error: a fingerprint
+/// failure must degrade to the PIN, never abort the session helper.
+fn fingerprint_front_gate() -> FingerprintGate {
+    let user = std::env::var(FPRINT_USER_ENV).unwrap_or_default();
+    let client = match connect_fprint(&user) {
+        Ok(client) => client,
+        Err(e) => return FingerprintGate::Unavailable(e.to_string()),
+    };
+    match client.verify(fingerprint_deadline_ms()) {
+        Ok(()) => FingerprintGate::Matched,
+        Err(CoreError::Timeout(_)) => FingerprintGate::TimedOut,
+        Err(CoreError::Auth(_)) => FingerprintGate::NoMatch,
+        Err(e) => FingerprintGate::Unavailable(e.to_string()),
+    }
+}
+
+/// Write a secret-free line about the fingerprint outcome to stderr (the journal). No PIN, key, or
+/// fingerprint data is ever logged — only the verdict and, for an unavailable reader, the reason.
+fn report_fingerprint(gate: FingerprintGate) {
+    match gate {
+        FingerprintGate::Matched => eprintln!(
+            "tess-pam-helper: fingerprint verified (host-trusted convenience); the PIN still unseals the key"
+        ),
+        FingerprintGate::NoMatch => {
+            eprintln!("tess-pam-helper: fingerprint did not match — falling back to the PIN")
+        }
+        FingerprintGate::TimedOut => {
+            eprintln!("tess-pam-helper: fingerprint verify timed out — falling back to the PIN")
+        }
+        FingerprintGate::Unavailable(reason) => eprintln!(
+            "tess-pam-helper: fingerprint unavailable ({reason}) — falling back to the PIN"
+        ),
+    }
 }

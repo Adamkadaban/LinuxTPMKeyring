@@ -118,6 +118,12 @@ pub fn get_rhost(pamh: *const pam_handle_t) -> Option<String> {
     get_string_item(pamh, PAM_RHOST)
 }
 
+/// Safe wrapper for the login user (`PAM_USER`), passed to the helper so its fprintd verify claims
+/// the device for the right user. Not a secret.
+pub fn get_user(pamh: *const pam_handle_t) -> Option<String> {
+    get_string_item(pamh, PAM_USER).filter(|user| !user.is_empty())
+}
+
 /// Obtain the PIN from the PAM conversation (`pam_get_authtok`, which returns the cached
 /// `PAM_AUTHTOK` if a prior phase gathered it, else prompts via the conversation). The bytes are
 /// copied into an owned zeroizing buffer and never logged; the `authtok` pointer `pam_get_authtok`
@@ -208,15 +214,21 @@ fn run_session_gate(pamh: *mut pam_handle_t, argc: c_int, argv: *const *const c_
         let env = GateEnv::detect(get_rhost(pamh).as_deref());
         // SAFETY: argc/argv are the arguments PAM passed straight into the entrypoint.
         let spec = unsafe { helper_spec(argc, argv) };
+        // The fingerprint front gate needs the login user for its fprintd claim, and a wider
+        // wall-clock budget to cover a real swipe ahead of the unseal. PIN-only sessions keep the
+        // default deadline.
+        let (spec, watchdog) = if spec.fingerprint {
+            (
+                spec.with_fingerprint_user(get_user(pamh)),
+                Watchdog::new(Watchdog::FINGERPRINT_DEADLINE),
+            )
+        } else {
+            (spec, Watchdog::default())
+        };
         // Only prompt for a PIN once a gesture is known to be possible, so SSH/remote and no-TPM
         // hosts are never prompted.
         let pin = if env.aborts() { None } else { get_pin(pamh) };
-        let outcome = crate::evaluate(
-            &env,
-            &spec,
-            &Watchdog::default(),
-            pin.as_ref().map(|p| p.as_slice()),
-        );
+        let outcome = crate::evaluate(&env, &spec, &watchdog, pin.as_ref().map(|p| p.as_slice()));
         log_session_outcome(outcome);
         match outcome {
             None => ret::PAM_SUCCESS,

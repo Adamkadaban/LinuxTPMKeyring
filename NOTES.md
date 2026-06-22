@@ -484,3 +484,31 @@ Gotchas worth remembering:
   and the only `dbus-daemon --session` is the host's systemd bus (`--address=systemd:`); the harness
   spawns its own private-bus `dbus-daemon --print-address` + keyring under a throwaway HOME, both
   reaped on `Drop`. No swtpm/tess-pam-helper left behind.
+
+## 2026-06-22 — fprintd verify front gate ahead of the PIN, non-blocking (issue #36)
+**Resolution:** `pam_tess.so` gains an optional fingerprint front gate selected by the
+`fingerprint=yes` module argument (default PIN-only). The session phase resolves `PAM_USER`, passes a
+`--fingerprint` flag + the user to the watchdog'd `tess-pam-helper`, and widens the watchdog to
+`Watchdog::FINGERPRINT_DEADLINE` (12s). The helper runs one bounded `tess_fprint::FprintClient::verify`
+(default 8s), logs the verdict, then runs the PIN unseal/unlock **regardless** of the fingerprint
+result. Precedence: fingerprint (convenience) → PIN (real gate) → password fallthrough.
+`crates/tess-pam/src/gate.rs:103` · `crates/tess-pam/src/ffi.rs:206` ·
+`crates/tess-cli/src/session.rs:80` · PR for #36.
+
+Gotchas worth remembering:
+- **Scheme (a), the honest MVP: a fingerprint match cannot unseal alone.** The key is sealed under
+  the PIN authValue, so the PIN is always required. The fingerprint is a host-trusted presence signal
+  layered *on* the PIN, not a replacement — it does not skip the PIN prompt. True swipe-instead-of-PIN
+  (scheme b) would need a TPM/recovery-protected stored PIN and its own ADR; deliberately out of scope.
+- **Every fingerprint failure mode degrades to the PIN, never aborts the helper.** `no-match`/`timeout`/
+  `unavailable` are logged and fall through; only a PIN-path failure makes the helper exit non-zero
+  (and even then the session still opens with the keyring locked). The front gate can never freeze or
+  fail login. `FingerprintGate` carries the verdict for the secret-free stderr line only.
+- **The fprintd verify runs on its own private bus in tests, separate from the keyring bus.** The
+  helper reads `TESS_FPRINT_BUS_ADDRESS` (test-only; production uses the system bus) so the
+  `python-dbusmock` fprintd mock and the throwaway gnome-keyring can each own a distinct
+  `dbus-run-session`/`dbus-daemon`. `crates/tess-cli/tests/fprint_gate_session.rs` drives all three
+  scenarios (match/no-match/stall) sequentially on one enrolled keyring to keep swtpm single-client.
+- **`TESS_FPRINT_TIMEOUT_MS` keeps the stall test fast.** The mock `stall` scenario never emits, so
+  the test sets a 500ms verify deadline; the helper then falls back to the PIN and the whole run
+  finishes in ~2s for all three scenarios. swtpm/keyring/fprintd-mock/helper all reaped on drop.
