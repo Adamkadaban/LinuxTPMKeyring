@@ -92,7 +92,16 @@ pub fn run(command: &mut Command, watchdog: &Watchdog) -> io::Result<RunOutcome>
         std::thread::sleep(watchdog.poll.min(remaining));
     }
 
-    match escalate_termination(&mut child, pid, watchdog)? {
+    let kill = match escalate_termination(&mut child, pid, watchdog) {
+        Ok(kill) => kill,
+        Err(e) => {
+            // Don't drop the Child unreaped on the error path (dropping doesn't reap) — defer the
+            // reap so a live helper can't be left behind, then propagate the error.
+            reap_in_background(child);
+            return Err(e);
+        }
+    };
+    match kill {
         Kill::Reaped {
             escalated_to_sigkill,
         } => Ok(RunOutcome {
