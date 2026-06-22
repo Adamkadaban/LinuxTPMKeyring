@@ -1,9 +1,11 @@
-//! Bounded, killable, reaped execution of a short-lived child process.
+//! Bounded, killable execution of a short-lived child process.
 //!
 //! The PAM thread must never block on TPM / D-Bus / camera I/O, so all heavy or fallible work runs
 //! in a child process supervised here under a hard wall-clock deadline. On deadline the child is
-//! sent `SIGTERM`, given a short grace period, then `SIGKILL`ed and reaped — all without ever
-//! blocking the caller past `deadline + 2 * term_grace`.
+//! sent `SIGTERM`, given a short grace period, then `SIGKILL`ed and reaped — without ever blocking
+//! the caller past `deadline + 2 * term_grace`. If a `SIGKILL`ed child is stuck in uninterruptible
+//! I/O the reap is deferred to a background thread (best-effort — see [`RunOutcome`]), so the caller
+//! still returns within that bound.
 
 use std::io;
 use std::process::{Child, Command, ExitStatus};
