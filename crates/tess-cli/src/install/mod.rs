@@ -194,16 +194,43 @@ fn install_module(plan: &InstallPlan) -> Result<()> {
         );
     }
     let dst = plan.installed_module();
-    fs::copy(&plan.module_src, &dst).with_context(|| {
-        format!(
-            "install module {} -> {}",
-            plan.module_src.display(),
-            dst.display()
-        )
-    })?;
-    fs::set_permissions(&dst, fs::Permissions::from_mode(0o644))
-        .with_context(|| format!("set mode on {}", dst.display()))?;
-    Ok(())
+    // `--module-dir` is user-controllable and this runs as root: refuse to write through a symlink
+    // planted at the destination, then install atomically via an unpredictable temp + rename so a
+    // copy is never partially visible and never follows a pre-created path.
+    if let Ok(meta) = fs::symlink_metadata(&dst) {
+        if meta.file_type().is_symlink() {
+            bail!(
+                "refusing to install the module over a symlink at {}",
+                dst.display()
+            );
+        }
+    }
+    let bytes = fs::read(&plan.module_src)
+        .with_context(|| format!("read module source {}", plan.module_src.display()))?;
+    let tmp = unpredictable_temp_path(&dst)?;
+    let install_result = (|| -> Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .with_context(|| format!("create temp module file {}", tmp.display()))?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o644))?;
+        fs::rename(&tmp, &dst).with_context(|| {
+            format!(
+                "install module {} -> {}",
+                plan.module_src.display(),
+                dst.display()
+            )
+        })?;
+        Ok(())
+    })();
+    if install_result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    install_result
 }
 
 /// Backup path for a service file: the file with [`BACKUP_SUFFIX`] appended.

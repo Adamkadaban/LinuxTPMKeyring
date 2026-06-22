@@ -67,7 +67,8 @@ tess install --uninstall   # remove the wiring and module, restoring the origina
 `tess install` (run as root) does two things, idempotently:
 
 1. copies the built `pam_tess.so` into the system PAM module directory (auto-detected the way the CI
-   smoke test finds it — via `pam_permit.so` under `/lib` and `/usr/lib`), and
+   smoke test finds it — via `pam_permit.so` under `/lib`, `/usr/lib`, `/lib64`, and `/usr/lib64`),
+   and
 2. adds one line to the session stack (`/etc/pam.d/common-session` by default) inside a re-runnable
    marked block:
 

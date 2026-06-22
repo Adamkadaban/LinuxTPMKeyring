@@ -315,6 +315,14 @@ session optional     pam_gnome_keyring.so auto_start
     }
 
     #[test]
+    fn deploy_snippet_matches_block_text() {
+        // The canonical `deploy/pam/tess-session.pam` must be byte-for-byte what the installer
+        // writes, so docs and the on-disk managed block can't drift.
+        let snippet = include_str!("../../../../deploy/pam/tess-session.pam");
+        assert_eq!(snippet, block_text());
+    }
+
+    #[test]
     fn add_then_remove_restores_byte_for_byte() {
         let added = add_block(COMMON_SESSION);
         assert!(has_block(&added));
