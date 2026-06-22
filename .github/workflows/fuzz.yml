@@ -44,13 +44,18 @@ jobs:
         with:
           tool: cargo-fuzz
 
-      - name: Audit fuzz-only dependencies
+      - name: Install supply-chain tools
         uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
         with:
-          tool: cargo-audit
-      - name: cargo audit (fuzz/Cargo.lock)
-        working-directory: fuzz
-        run: cargo audit
+          tool: cargo-audit,cargo-deny
+      - name: Audit + deny fuzz-only dependencies
+        run: |
+          set -euxo pipefail
+          # fuzz/ is a separate workspace with its own lockfile, so the main test.yml audit/deny gate
+          # doesn't cover it. Audit fuzz/Cargo.lock, and run cargo deny from the repo root against the
+          # fuzz manifest so fuzz-only deps are held to the same root deny.toml license/bans/sources.
+          (cd fuzz && cargo audit)
+          cargo deny --manifest-path fuzz/Cargo.toml check
 
       - name: Smoke each target (seed + short bounded run)
         run: |
@@ -86,13 +91,18 @@ jobs:
         with:
           tool: cargo-fuzz
 
-      - name: Audit fuzz-only dependencies
+      - name: Install supply-chain tools
         uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
         with:
-          tool: cargo-audit
-      - name: cargo audit (fuzz/Cargo.lock)
-        working-directory: fuzz
-        run: cargo audit
+          tool: cargo-audit,cargo-deny
+      - name: Audit + deny fuzz-only dependencies
+        run: |
+          set -euxo pipefail
+          # fuzz/ is a separate workspace with its own lockfile, so the main test.yml audit/deny gate
+          # doesn't cover it. Audit fuzz/Cargo.lock, and run cargo deny from the repo root against the
+          # fuzz manifest so fuzz-only deps are held to the same root deny.toml license/bans/sources.
+          (cd fuzz && cargo audit)
+          cargo deny --manifest-path fuzz/Cargo.toml check
 
       - name: Fuzz each target (longer bounded run)
         run: |
