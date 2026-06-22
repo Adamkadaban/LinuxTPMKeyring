@@ -47,9 +47,13 @@ clap = { version = "4", features = ["derive"] }
 
 # TPM (pinned ≥7.1.0 — RUSTSEC-2023-0044).
 tss-esapi = "7.7"
-# D-Bus / Secret Service. Added in Phase 2.
-# zbus = "5"
-# secret-service = "5"
+
+# D-Bus / Secret Service. async-io runtime on both so the blocking wrappers share one executor.
+zbus = "5"
+secret-service = { version = "5", default-features = false, features = [
+    "rt-async-io-crypto-rust",
+] }
+tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

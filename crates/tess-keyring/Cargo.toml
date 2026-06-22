@@ -1,6 +1,6 @@
 [package]
 name = "tess-keyring"
-description = "KeyringBackend over the freedesktop Secret Service API. (skeleton)"
+description = "KeyringBackend over the freedesktop Secret Service API (GNOME reference impl)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,10 +8,23 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[features]
+# Spins up a real `gnome-keyring-daemon` on a private session bus and exercises the rekey/unlock
+# round-trip end to end. Off by default so `cargo test --workspace` stays green and daemon-free on
+# dev hosts and minimal CI; the keyring CI job runs `cargo test -p tess-keyring --features
+# daemon-tests` with gnome-keyring + dbus-x11 installed. Pulls in `secret-service` as the high-level
+# client that writes/reads the items whose survival the round-trip asserts.
+daemon-tests = ["dep:secret-service"]
+
 [dependencies]
 tess-core.workspace = true
-thiserror.workspace = true
-# Phase 2 adds: zbus = "5", secret-service = "5".
+zbus.workspace = true
+zeroize.workspace = true
+serde = { workspace = true }
+secret-service = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

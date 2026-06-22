@@ -212,10 +212,10 @@ returning `PAM_SUCCESS`, **and a stall-injection test proves it times out and fa
 seconds with the helper reaped**.
 
 **Deliverables:**
-- [ ] `tess-keyring`: `KeyringBackend` trait over `org.freedesktop.secrets` (`Unlock`/`Lock`/`Prompt`)
-- [ ] `tess-keyring`: `rekey(old, new)` (enroll) + `unlock(secret)`; GNOME reference impl; unstable private calls isolated behind the trait with a stable fallback
-- [ ] `tess-keyring`: KWallet notes (`apiEnabled`), native-`pam_kwallet` path explicitly out of scope
-- [ ] `tess-keyring`: tests vs a real daemon on the session bus
+- [x] `tess-keyring`: `KeyringBackend` trait over `org.freedesktop.secrets` (`Unlock`/`Lock`/`Prompt`)
+- [x] `tess-keyring`: `rekey(old, new)` (enroll) + `unlock(secret)`; GNOME reference impl; unstable private calls isolated behind the trait with a stable fallback
+- [x] `tess-keyring`: KWallet notes (`apiEnabled`), native-`pam_kwallet` path explicitly out of scope
+- [x] `tess-keyring`: tests vs a real daemon on the session bus
 - [ ] `tess-fprint`: `FprintClient` (`Claim`/`VerifyStart`/`VerifyStatus`/`Release`), consumed unmodified
 - [ ] `tess-fprint`: `testing/fprint-mock/` virtual-driver socket scripting + `python-dbusmock` template
 - [ ] `tess-fprint`: deterministic verify(match/no-match) tests, headless

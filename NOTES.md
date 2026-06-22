@@ -190,3 +190,39 @@ Gotchas worth remembering:
   is intentional and silenced with explicit `# shellcheck disable=SC2029`; docker shellcheck clean
   (exit 0). Runs no `az`, provisions/tears down nothing. Wraps cargo in `sudo --preserve-env` only
   when the login user can't r+w `/dev/tpmrm0`.
+
+## 2026-06-21 — KeyringBackend over Secret Service: in-place rekey + unlock (issue #20)
+**Resolution:** `SecretServiceBackend` (`crates/tess-keyring/src/backend.rs:1`) impls
+`tess_core::KeyringBackend` via `zbus` 5: `is_locked()` reads the collection `Locked` property with
+an uncached `Properties.Get`; `unlock`/`rekey` go through GNOME's private
+`org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface` (`UnlockWithMasterPassword` /
+`ChangeWithMasterPassword`), all isolated behind the trait. Daemon-gated E2E suite proves the
+keyring-preservation invariant against a real `gnome-keyring-daemon`. PR for #20.
+
+Gotchas worth remembering:
+- **The stable Secret Service `Unlock` raises an interactive `Prompt`** — there is no headless way in
+  the spec to prove possession of a collection password. The private GuiltRidden interface is the
+  only programmatic path; `ChangeWithMasterPassword(o, (oayays) original, (oayays) master)` re-wraps
+  the master credential **in place** (items untouched — it only swaps the collection credential, see
+  gnome-keyring `gkd_secret_change_with_secrets`). Verified signatures from the GNOME
+  `org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface.xml`, not training knowledge.
+- **The `Secret` struct is `(oayays)`** = `(session: o, parameters: ay, value: ay, content_type: s)`.
+  For a `plain` session (`OpenSession("plain", v"")`) parameters are empty and value is the raw
+  password. zvariant `#[derive(Type)]` on a 4-field struct yields exactly `(oayays)` — unit-tested via
+  `DbusSecret::SIGNATURE.to_string()`.
+- **`gnome-keyring-daemon --unlock` reads the login password from stdin until EOF — newlines are part
+  of the password** (`read_login_password` in `gkd-main.c`). The harness writes the raw bytes and
+  closes the pipe; **never** append `\n`. `--unlock` (unlike `--login`) does the full startup and
+  *creates* the login keyring if absent, so a throwaway `XDG_DATA_HOME` + private bus gives an
+  isolated, real keyring with no host contact.
+- **`secret-service`'s client reads `DBUS_SESSION_BUS_ADDRESS` (process-global)** so the two daemon
+  tests serialize on a `static Mutex` and set the env inside the lock; the backend itself takes an
+  explicit address (`connect_to`) and never touches the env, so it's race-free.
+- **`#[zbus::proxy(gen_async = false)]` names the blocking proxy `<Trait>Proxy`** (no `Blocking`
+  suffix) — only the async variant gets suffixed. Wrong password on `UnlockWithMasterPassword`
+  surfaces as `zbus::Error::MethodError` → `tess_core::Error::Keyring`; the test asserts err-or-still-
+  locked to be robust to either daemon behavior.
+- `zbus`/`secret-service` both pinned to the **async-io** runtime (zbus default + `secret-service`
+  `rt-async-io-crypto-rust`) so the blocking wrappers share one executor; mixing tokio + async-io
+  panics at runtime. `cargo deny check` clean; `pgrep -af gnome-keyring-daemon` clean after every run
+  (host daemon at `/run/user/1000` untouched).

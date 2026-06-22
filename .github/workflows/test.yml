@@ -57,6 +57,9 @@ jobs:
       - name: Test (swtpm substrate)
         run: cargo test -p tess-tpm --features sim
 
+      - name: Test (Secret Service daemon)
+        run: cargo test -p tess-keyring --features daemon-tests
+
       - name: cargo-audit + cargo-deny
         uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
         with:
