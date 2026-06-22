@@ -150,9 +150,15 @@ fn wait_within(child: &mut Child, budget: Duration, poll: Duration) -> io::Resul
 }
 
 fn reap_in_background(mut child: Child) {
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
+    // `Builder::spawn` returns a `Result` instead of panicking on thread-creation failure, so the
+    // failure cannot unwind across the `extern "C"` PAM boundary. If the reaper thread cannot be
+    // created (resource exhaustion), the child handle is dropped without blocking the caller; the OS
+    // reaps the orphan when this process exits.
+    let _ = std::thread::Builder::new()
+        .name("tess-pam-reaper".to_string())
+        .spawn(move || {
+            let _ = child.wait();
+        });
 }
 
 fn send_signal(pid: u32, signal: Signal) -> io::Result<()> {

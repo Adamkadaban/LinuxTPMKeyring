@@ -147,11 +147,15 @@ impl HelperSpec {
     }
 }
 
-/// Extract a `helper=PATH` PAM module argument, if present.
+/// Extract an absolute `helper=PATH` PAM module argument, if present. A relative path is rejected so
+/// the resolved executable never depends on the caller's working directory in the privileged PAM
+/// context; resolution then falls back to the compiled install path.
 fn helper_arg(pam_args: &[&str]) -> Option<PathBuf> {
-    pam_args
-        .iter()
-        .find_map(|arg| arg.strip_prefix("helper=").map(PathBuf::from))
+    pam_args.iter().find_map(|arg| {
+        arg.strip_prefix("helper=")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    })
 }
 
 #[cfg(test)]
@@ -282,6 +286,16 @@ mod tests {
         std::env::remove_var(HELPER_PATH_ENV);
         assert_eq!(
             HelperSpec::resolve(&[]).program,
+            PathBuf::from(DEFAULT_HELPER_PATH)
+        );
+
+        // A relative (or empty) helper path is rejected; resolution falls back to the default.
+        assert_eq!(
+            HelperSpec::resolve(&["helper=relative/helper"]).program,
+            PathBuf::from(DEFAULT_HELPER_PATH)
+        );
+        assert_eq!(
+            HelperSpec::resolve(&["helper="]).program,
             PathBuf::from(DEFAULT_HELPER_PATH)
         );
     }
