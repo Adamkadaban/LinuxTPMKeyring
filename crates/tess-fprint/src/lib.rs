@@ -129,11 +129,11 @@ impl FprintClient {
     /// fprintd failure, and [`Error::Timeout`] if `deadline_ms` elapses before a terminal result. The
     /// device is always released (best effort) before returning.
     pub fn verify(&self, deadline_ms: u64) -> Result<()> {
-        let deadline = Instant::now() + Duration::from_millis(deadline_ms);
-        async_io::block_on(self.verify_async(deadline, deadline_ms))
+        async_io::block_on(self.verify_async(deadline_ms))
     }
 
-    async fn verify_async(&self, deadline: Instant, deadline_ms: u64) -> Result<()> {
+    async fn verify_async(&self, deadline_ms: u64) -> Result<()> {
+        let start = Instant::now();
         let manager = ManagerProxy::new(&self.connection)
             .await
             .map_err(|e| Error::Auth(format!("fprintd Manager proxy: {e}")))?;
@@ -153,7 +153,7 @@ impl FprintClient {
             .await
             .map_err(|e| Error::Auth(format!("fprintd Claim: {e}")))?;
 
-        let outcome = self.verify_claimed(&device, deadline, deadline_ms).await;
+        let outcome = self.verify_claimed(&device, start, deadline_ms).await;
 
         let _ = device.release().await;
         outcome
@@ -162,7 +162,7 @@ impl FprintClient {
     async fn verify_claimed(
         &self,
         device: &DeviceProxy<'_>,
-        deadline: Instant,
+        start: Instant,
         deadline_ms: u64,
     ) -> Result<()> {
         // Subscribe before VerifyStart so a fast mock/reader can't emit VerifyStatus into a gap.
@@ -175,25 +175,27 @@ impl FprintClient {
             return Err(Error::Auth(format!("fprintd VerifyStart: {e}")));
         }
 
-        let result = wait_for_outcome(&mut status, deadline, deadline_ms).await;
+        let result = wait_for_outcome(&mut status, start, deadline_ms).await;
         let _ = device.verify_stop().await;
         result
     }
 }
 
 /// Wait for a terminal [`VerifyOutcome`], racing each signal against the remaining time so the call is
-/// always bounded by `deadline`.
+/// always bounded by `deadline_ms` measured from `start`. Timing is elapsed-based (no absolute
+/// `Instant + Duration`), so even a `u64::MAX` deadline can never overflow or panic.
 async fn wait_for_outcome(
     status: &mut VerifyStatusStream,
-    deadline: Instant,
+    start: Instant,
     deadline_ms: u64,
 ) -> Result<()> {
+    let total = Duration::from_millis(deadline_ms);
     loop {
-        let now = Instant::now();
-        if now >= deadline {
+        let elapsed = start.elapsed();
+        if elapsed >= total {
             return Err(Error::Timeout(deadline_ms));
         }
-        let timer = Timer::after(deadline - now);
+        let timer = Timer::after(total - elapsed);
         match select(status.next(), timer).await {
             Either::Left((Some(signal), _)) => {
                 let args = signal

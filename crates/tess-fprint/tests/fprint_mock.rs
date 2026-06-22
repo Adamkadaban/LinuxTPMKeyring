@@ -28,7 +28,9 @@ fn harness_script() -> String {
     )
 }
 
-/// True when `python3`, `dbus-run-session`, and the `dbusmock` module are all usable.
+/// True when `dbus-run-session` and every Python module the harness imports (`dbus`, `dbusmock`,
+/// `gi.repository.GLib`) are usable. Checking all of them keeps the "skip cleanly" promise: if any is
+/// missing the tests skip instead of spawning a harness that would panic at the address-read timeout.
 fn harness_available() -> bool {
     let dbus_run = Command::new("dbus-run-session")
         .arg("--version")
@@ -37,14 +39,17 @@ fn harness_available() -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
-    let dbusmock = Command::new("python3")
-        .args(["-c", "import dbusmock"])
+    let python_imports = Command::new("python3")
+        .args([
+            "-c",
+            "import dbus, dbusmock; from gi.repository import GLib",
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
-    dbus_run && dbusmock
+    dbus_run && python_imports
 }
 
 /// A scripted fprintd mock on a private bus. Dropping it reaps the whole process group (the
@@ -87,15 +92,15 @@ impl Drop for MockHarness {
     fn drop(&mut self) {
         let pgid = Pid::from_raw(self.child.id() as i32);
         let _ = killpg(pgid, Signal::SIGTERM);
-        // Give the group a moment to exit gracefully, then force-kill if it lingers.
+        // Give the group a moment to exit gracefully on SIGTERM.
         let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            match self.child.try_wait() {
-                Ok(Some(_)) => return,
-                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
-                _ => break,
-            }
+        while Instant::now() < deadline && matches!(self.child.try_wait(), Ok(None)) {
+            thread::sleep(Duration::from_millis(20));
         }
+        // Unconditionally SIGKILL the whole group, even if the leader already exited: children
+        // (`dbus-daemon`, the `dbusmock` server) can outlive the `dbus-run-session` leader, and a
+        // member that ignored SIGTERM must still be reaped. SIGKILL to an already-dead group is a
+        // harmless ESRCH.
         let _ = killpg(pgid, Signal::SIGKILL);
         let _ = self.child.wait();
     }
