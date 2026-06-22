@@ -7,6 +7,12 @@ edition = "2021"
 [package.metadata]
 cargo-fuzz = true
 
+# The harnesses stay unsafe-free even though this crate is outside the workspace (so it doesn't
+# inherit the workspace `unsafe_code = "forbid"`). The libFuzzer C-ABI shim's unsafe lives in
+# libfuzzer-sys, not here.
+[lints.rust]
+unsafe_code = "forbid"
+
 # This crate is intentionally excluded from the parent workspace: cargo-fuzz drives it with the
 # nightly `-Z sanitizer` instrumentation libFuzzer needs, which must not perturb the workspace's
 # stable build/lint/test gates.
