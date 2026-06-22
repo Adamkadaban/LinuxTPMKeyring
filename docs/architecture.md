@@ -207,10 +207,13 @@ releases key material — it only reports whether the local fprintd matched a fi
 `Device.Claim` → subscribe to the `VerifyStatus` signal → `Device.VerifyStart("any")` → wait for a
 terminal `VerifyStatus(result, done)` → `VerifyStop` → `Release` (the device is always released, best
 effort, before returning on the graceful paths). The `verify(deadline_ms)` method (also exposed
-through the `tess_core::AuthGate` trait) maps results precisely and is **always bounded** — the
-**entire** operation (every D-Bus call as well as the signal wait) is raced against a single hard
-wall-clock deadline, so it can never block the caller past `deadline_ms` even on a wedged bus or
-unresponsive service:
+through the `tess_core::AuthGate` trait) maps results precisely and is **always bounded**: the
+`VerifyStatus` wait is bounded by `deadline_ms` and runs `VerifyStop`/`Release` cleanup on the way
+out, while an outer `deadline_ms + CLEANUP_GRACE` wall-clock backstop additionally caps the D-Bus
+setup calls (`GetDefaultDevice`, `Claim`, …) so the call can never block past that ceiling even on a
+wedged bus or unresponsive service. The grace (1s) exists so the graceful timeout path can finish its
+cleanup; only a genuinely wedged bus reaches the backstop, where the future is cancelled and fprintd
+releases the claim when this client's connection drops. The reported `Timeout` carries `deadline_ms`:
 
 - `verify-match` → `Ok(())`
 - `verify-no-match` → `tess_core::Error::Auth` ("fingerprint did not match")
