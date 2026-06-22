@@ -17,6 +17,7 @@ pub mod config;
 
 use std::fs;
 use std::io;
+use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
@@ -224,18 +225,28 @@ fn remove_if_exists(path: &Path) -> io::Result<bool> {
 /// Write `content` to `path` atomically (temp file in the same directory, then rename), preserving
 /// the existing file's permission bits. The rename is atomic on the same filesystem, so a crash
 /// mid-write never leaves a truncated PAM stack — readers see either the old or the new file whole.
+///
+/// The temp file is created with an unpredictable suffix and `O_CREAT|O_EXCL` (`create_new`), so a
+/// pre-planted symlink at the temp path can't be followed: running as root against a `--service` in
+/// an attacker-writable directory can't be turned into a symlink-clobber primitive.
 fn atomic_write_preserving_mode(path: &Path, content: &str) -> Result<()> {
     // Guard against a path with no parent (e.g. a bare root); the temp sibling below relies on one.
     path.parent()
         .ok_or_else(|| anyhow!("{} has no parent directory", path.display()))?;
     let mode = fs::metadata(path).map(|m| m.permissions().mode()).ok();
 
-    let mut tmp = path.as_os_str().to_os_string();
-    tmp.push(format!(".tess-tmp.{}", std::process::id()));
-    let tmp = PathBuf::from(tmp);
+    let tmp = unpredictable_temp_path(path)?;
 
     let write_result = (|| -> Result<()> {
-        fs::write(&tmp, content)?;
+        // create_new refuses to follow or overwrite an existing path (incl. a symlink) at `tmp`.
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .with_context(|| format!("create temp file {}", tmp.display()))?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
         if let Some(mode) = mode {
             fs::set_permissions(&tmp, fs::Permissions::from_mode(mode))?;
         }
@@ -247,6 +258,17 @@ fn atomic_write_preserving_mode(path: &Path, content: &str) -> Result<()> {
         let _ = fs::remove_file(&tmp);
     }
     write_result
+}
+
+/// A sibling temp path of `path` with an unpredictable hex suffix drawn from the OS CSPRNG, so an
+/// attacker can't pre-create a symlink at a guessable temp name for the atomic write to follow.
+fn unpredictable_temp_path(path: &Path) -> Result<PathBuf> {
+    let mut bytes = [0u8; 12];
+    getrandom::fill(&mut bytes).map_err(|e| anyhow!("draw temp-file suffix: {e}"))?;
+    let suffix: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let mut name = path.as_os_str().to_os_string();
+    name.push(format!(".tess-tmp.{suffix}"));
+    Ok(PathBuf::from(name))
 }
 
 /// Detect the system PAM module directory by locating a stock module (`pam_permit.so`) under the

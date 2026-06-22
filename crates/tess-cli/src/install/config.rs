@@ -24,10 +24,13 @@ pub const MODULE_FILE: &str = "pam_tess.so";
 /// unseal) ignored, so login proceeds with the keyring left locked — it can never lock a user out.
 pub const SNIPPET_LINE: &str = "session optional pam_tess.so";
 
-/// Comment lines carried inside the managed block, explaining the fail-open guarantee in place.
-const BLOCK_COMMENT: &str =
-    "# Managed by `tess install` — remove with `tess install --uninstall`. `optional` means a tess\n\
-     # failure is ignored and login proceeds with the keyring left locked; it can never lock you out.";
+/// Comment lines carried inside the managed block, explaining the fail-open guarantee in place. Kept
+/// as separate column-0 lines (not a `\`-continued literal) so the on-disk block provably matches the
+/// snippet shown in the README and `deploy/pam/` docs.
+const BLOCK_COMMENT_LINES: [&str; 2] = [
+    "# Managed by `tess install` — remove with `tess install --uninstall`. `optional` means a tess",
+    "# failure is ignored and login proceeds with the keyring left locked; it can never lock you out.",
+];
 
 /// PAM line types tess understands. A leading `-` (silently skip a missing module) is tolerated by
 /// the parser but not emitted by tess.
@@ -36,7 +39,10 @@ const PAM_TYPES: [&str; 4] = ["auth", "account", "password", "session"];
 /// The exact text of the tess-managed block, terminated by a trailing newline so it appends cleanly
 /// after a newline-terminated stack.
 pub fn block_text() -> String {
-    format!("{BEGIN_MARKER}\n{BLOCK_COMMENT}\n{SNIPPET_LINE}\n{END_MARKER}\n")
+    format!(
+        "{BEGIN_MARKER}\n{}\n{SNIPPET_LINE}\n{END_MARKER}\n",
+        BLOCK_COMMENT_LINES.join("\n")
+    )
 }
 
 /// Whether `content` already contains a tess-managed block.
@@ -294,6 +300,18 @@ session optional     pam_gnome_keyring.so auto_start
         assert!(block.contains(SNIPPET_LINE));
         assert!(block.trim_end().ends_with(END_MARKER));
         assert!(block.ends_with('\n'));
+    }
+
+    #[test]
+    fn block_lines_have_no_leading_whitespace() {
+        // The on-disk block must match the column-0 snippet shown in README/deploy docs.
+        for line in block_text().lines() {
+            assert_eq!(
+                line.trim_start(),
+                line,
+                "block line must start at column 0: {line:?}"
+            );
+        }
     }
 
     #[test]
