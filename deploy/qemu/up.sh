@@ -72,9 +72,9 @@ if [ ! -f "${BASE_IMG}" ]; then
   sums_url="${IMAGE_URL%/*}/SHA512SUMS"
   img_name="${IMAGE_URL##*/}"
   expected="$(wget -qO- "${sums_url}" | awk -v f="${img_name}" '$2 == f {print $1}')"
-  [ -n "${expected}" ] || die "could not find ${img_name} in ${sums_url}"
+  [ -n "${expected}" ] || { rm -f "${BASE_IMG}.tmp"; die "could not find ${img_name} in ${sums_url}"; }
   actual="$(sha512sum "${BASE_IMG}.tmp" | awk '{print $1}')"
-  [ "${expected}" = "${actual}" ] || die "checksum mismatch for ${img_name} (expected ${expected}, got ${actual})"
+  [ "${expected}" = "${actual}" ] || { rm -f "${BASE_IMG}.tmp"; die "checksum mismatch for ${img_name} (expected ${expected}, got ${actual})"; }
   mv "${BASE_IMG}.tmp" "${BASE_IMG}"
 fi
 
@@ -120,10 +120,29 @@ cleanup_on_error() {
 }
 trap cleanup_on_error EXIT
 
-if [ -f "${SWTPM_PIDFILE}" ] && kill -0 "$(cat "${SWTPM_PIDFILE}")" 2>/dev/null; then
+swtpm_is_running() {
+  [ -f "${SWTPM_PIDFILE}" ] || return 1
+  local pid comm
+  pid="$(cat "${SWTPM_PIDFILE}" 2>/dev/null || true)"
+  [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null || return 1
+  # The PID is alive — confirm it is actually swtpm (not an unrelated process that reused the PID)
+  # before treating it as a running vTPM. If /proc/<pid>/comm can't be read (e.g. hardened /proc),
+  # identity is unverifiable: fail fast rather than fall through to the fresh-start path, which would
+  # unlink ${SWTPM_SOCK} and could clobber a still-live swtpm.
+  if [ ! -r "/proc/${pid}/comm" ]; then
+    die "swtpm pidfile points at live PID ${pid} but /proc/${pid}/comm is unreadable; cannot verify identity — stop that process or remove ${SWTPM_PIDFILE}, then retry"
+  fi
+  comm="$(cat "/proc/${pid}/comm" 2>/dev/null || true)"
+  [[ "${comm}" == *swtpm* ]]
+}
+
+if swtpm_is_running; then
   log "swtpm already running"
 else
   log "starting swtpm vTPM"
+  # A leftover socket or pidfile from a crashed/previous swtpm would make the launch below fail
+  # (unixio bind on the stale socket; swtpm refuses to overwrite an existing --pid file).
+  rm -f "${SWTPM_SOCK}" "${SWTPM_PIDFILE}"
   swtpm socket \
     --tpm2 \
     --tpmstate "dir=${SWTPM_DIR}" \
