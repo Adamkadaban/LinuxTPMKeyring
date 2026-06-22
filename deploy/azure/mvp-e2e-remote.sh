@@ -163,19 +163,31 @@ install_deps() {
   done
 }
 
+# Print the absolute path of an EXTERNAL command (never a shell function/alias/builtin), or fail.
+# These binaries are run under sudo, so — like hw-exit-test.sh's tpm_run — resolve with `type -P` and
+# require an absolute path so the privileged invocation can't depend on the cwd or a relative PATH
+# entry. (`command -v` would happily return a function name or a relative path.)
+resolve_external() {
+  local resolved
+  resolved="$(type -P "$1" 2>/dev/null)" || return 1
+  [[ "${resolved}" == /* ]] || return 1
+  printf '%s' "${resolved}"
+}
+
 # Resolve the tess + helper binaries: prefer an installed .deb (production install path), else the
 # debug build from the uploaded source. The debug build additionally honours the scripted fprint mock
 # bus (a release .deb ignores it and the front gate degrades to the PIN — the keyring still unlocks).
 resolve_binaries() {
-  local deb
+  local deb installed_tess installed_helper
   deb="$(find "${WORK}/deploy/debian" "${WORK}/target/debian" -maxdepth 1 -name '*.deb' 2>/dev/null | head -n1 || true)"
   if [[ -n "${deb}" ]]; then
     log "Installing packaged tess from ${deb} ..."
     sudo dpkg -i "${deb}" || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -f
   fi
-  if command -v tess >/dev/null 2>&1 && command -v tess-pam-helper >/dev/null 2>&1; then
-    TESS_BIN="$(command -v tess)"
-    HELPER_BIN="$(command -v tess-pam-helper)"
+  if installed_tess="$(resolve_external tess)" \
+    && installed_helper="$(resolve_external tess-pam-helper)"; then
+    TESS_BIN="${installed_tess}"
+    HELPER_BIN="${installed_helper}"
     log "Using installed binaries: ${TESS_BIN}, ${HELPER_BIN}"
     return
   fi
