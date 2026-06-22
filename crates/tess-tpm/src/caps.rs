@@ -27,21 +27,20 @@ pub fn read_tpm_version(context: &mut Context) -> Result<TpmVersion> {
 }
 
 /// The family indicator packs up to four ASCII bytes (big-endian), NUL-padded — `"2.0\0"` on a
-/// TPM 2.0. Decode the printable, non-NUL bytes into a string; fall back to the raw hex if the
-/// value is not printable ASCII so an odd TPM never yields an empty or misleading family.
+/// TPM 2.0. Decode it to the printable, non-NUL bytes; if *any* non-NUL byte is non-printable, fall
+/// back to the raw hex so a malformed value never yields a misleading partial string.
 fn decode_family_indicator(value: u32) -> String {
-    let bytes = value.to_be_bytes();
-    let printable: String = bytes
-        .iter()
-        .copied()
+    let non_nul: Vec<u8> = value
+        .to_be_bytes()
+        .into_iter()
         .filter(|&b| b != 0)
-        .take_while(|&b| b.is_ascii_graphic() || b == b' ')
-        .map(char::from)
         .collect();
-    if printable.trim().is_empty() {
-        format!("{value:#010x}")
+    let all_printable =
+        !non_nul.is_empty() && non_nul.iter().all(|&b| b.is_ascii_graphic() || b == b' ');
+    if all_printable {
+        non_nul.into_iter().map(char::from).collect()
     } else {
-        printable
+        format!("{value:#010x}")
     }
 }
 
@@ -65,6 +64,13 @@ mod tests {
     #[test]
     fn falls_back_to_hex_for_nonprintable_family() {
         assert_eq!(decode_family_indicator(0x0000_0001), "0x00000001");
+    }
+
+    #[test]
+    fn falls_back_to_hex_for_mixed_printable_and_nonprintable() {
+        // A printable prefix followed by a control byte must NOT render as the truncated prefix.
+        let raw = u32::from_be_bytes([b'2', 0x01, b'.', 0]);
+        assert_eq!(decode_family_indicator(raw), "0x32012e00");
     }
 
     #[test]

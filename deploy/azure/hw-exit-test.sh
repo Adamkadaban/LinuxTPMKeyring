@@ -32,6 +32,12 @@ if [[ ! -f "${SSH_KEY}" ]]; then
   echo "error: SSH private key not found at '${SSH_KEY}'. Set TESS_SSH_KEY." >&2
   exit 2
 fi
+# REMOTE_DIR is interpolated into remote shell command strings, so restrict it to a safe charset
+# (no quotes, whitespace, or shell metacharacters) to keep that interpolation injection-free.
+if [[ ! "${REMOTE_DIR}" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+  echo "error: TESS_HW_DIR must match ^[A-Za-z0-9._/-]+\$ (got: '${REMOTE_DIR}')." >&2
+  exit 2
+fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"

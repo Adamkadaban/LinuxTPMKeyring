@@ -66,6 +66,16 @@ fn hw_seal_unseal_roundtrip_wrong_pin_and_lockout() {
         "expected a TPM 2.0 family indicator, got {version:?}"
     );
 
+    // Fail fast and legibly if the TPM is already hard-locked from a prior run: otherwise the
+    // correct-PIN unseal below would surface an opaque `Error::Lockout` and look like a seal/unseal
+    // correctness bug rather than a stale-lockout environment problem.
+    let initial_lockout = read_lockout_state(&mut context).expect("read lockout state");
+    assert!(
+        !initial_lockout.is_locked_out(),
+        "TPM is already in DA lockout ({initial_lockout:?}) before the test began — reprovision the \
+         VM, wait out the lockout interval, or reset the lockout, then re-run"
+    );
+
     let primary = create_primary(&mut context).expect("create ECC storage primary");
 
     let key = generate_sealing_key(&mut context).expect("generate sealing key");
