@@ -1239,6 +1239,7 @@ dependencies = [
  "clap",
  "getrandom 0.4.3",
  "hkdf",
+ "libc",
  "rpassword",
  "secret-service",
  "serde",

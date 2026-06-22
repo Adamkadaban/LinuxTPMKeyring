@@ -17,7 +17,9 @@ pub mod config;
 
 use std::fs;
 use std::io;
+use std::io::Read as _;
 use std::io::Write as _;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
@@ -86,18 +88,22 @@ pub struct UninstallReport {
 /// stack last can never leave a half-applied install that affects login. Re-running is a no-op edit
 /// (the block is refreshed in place, never duplicated) and refreshes the module.
 pub fn install(plan: &InstallPlan) -> Result<InstallReport> {
-    if !ensure_regular_if_present(&plan.service_file)? {
-        bail!(
+    // Open the service file with O_NOFOLLOW and read its bytes + mode from that FD, closing the
+    // TOCTOU window: a symlink swapped in after a separate metadata check can't redirect the read.
+    let (original, mode) = match open_regular_nofollow(&plan.service_file)? {
+        Some(mut file) => {
+            let mode = file.metadata().ok().map(|m| m.permissions().mode());
+            let mut original = String::new();
+            file.read_to_string(&mut original).with_context(|| {
+                format!("read PAM service file {}", plan.service_file.display())
+            })?;
+            (original, mode)
+        }
+        None => bail!(
             "PAM service file {} does not exist (run as root?)",
             plan.service_file.display()
-        );
-    }
-    let original = fs::read_to_string(&plan.service_file).with_context(|| {
-        format!(
-            "read PAM service file {} (does it exist? run as root)",
-            plan.service_file.display()
-        )
-    })?;
+        ),
+    };
 
     let already_wired = config::has_block(&original);
 
@@ -154,7 +160,7 @@ pub fn install(plan: &InstallPlan) -> Result<InstallReport> {
         }
     }
 
-    atomic_write_preserving_mode(&plan.service_file, &edited)
+    atomic_write_preserving_mode(&plan.service_file, &edited, mode)
         .with_context(|| format!("write edited PAM stack to {}", plan.service_file.display()))?;
 
     Ok(InstallReport {
@@ -174,11 +180,14 @@ pub fn install(plan: &InstallPlan) -> Result<InstallReport> {
 /// module removal is skipped but the lockout-relevant stack edit still happens.
 pub fn uninstall(plan: &InstallPlan) -> Result<UninstallReport> {
     let mut removed_block = false;
-    // A missing service file is a no-op; a symlink or other non-regular file is refused so an
-    // atomic write can't replace an unexpected path.
-    if ensure_regular_if_present(&plan.service_file)? {
-        let original = fs::read_to_string(&plan.service_file)
+    // A missing service file is a no-op; a symlink or other non-regular file is refused. The
+    // O_NOFOLLOW open + FD-based read closes the TOCTOU window (no separate metadata pre-check).
+    if let Some(mut file) = open_regular_nofollow(&plan.service_file)? {
+        let mode = file.metadata().ok().map(|m| m.permissions().mode());
+        let mut original = String::new();
+        file.read_to_string(&mut original)
             .with_context(|| format!("read PAM service file {}", plan.service_file.display()))?;
+        drop(file);
         if config::has_block(&original) {
             let restored = config::remove_block(&original);
             config::validate_stack(&restored).with_context(|| {
@@ -187,7 +196,7 @@ pub fn uninstall(plan: &InstallPlan) -> Result<UninstallReport> {
                     plan.service_file.display()
                 )
             })?;
-            atomic_write_preserving_mode(&plan.service_file, &restored)
+            atomic_write_preserving_mode(&plan.service_file, &restored, mode)
                 .with_context(|| format!("restore PAM stack in {}", plan.service_file.display()))?;
             removed_block = true;
         }
@@ -291,18 +300,18 @@ fn remove_if_exists(path: &Path) -> io::Result<bool> {
     }
 }
 
-/// Write `content` to `path` atomically (temp file in the same directory, then rename), preserving
-/// the existing file's permission bits. The rename is atomic on the same filesystem, so a crash
-/// mid-write never leaves a truncated PAM stack — readers see either the old or the new file whole.
+/// Write `content` to `path` atomically (temp file in the same directory, then rename), applying
+/// `mode` (the original file's permission bits, read race-free from the open FD by the caller). The
+/// rename is atomic on the same filesystem, so a crash mid-write never leaves a truncated PAM stack —
+/// readers see either the old or the new file whole.
 ///
 /// The temp file is created with an unpredictable suffix and `O_CREAT|O_EXCL` (`create_new`), so a
 /// pre-planted symlink at the temp path can't be followed: running as root against a `--service` in
 /// an attacker-writable directory can't be turned into a symlink-clobber primitive.
-fn atomic_write_preserving_mode(path: &Path, content: &str) -> Result<()> {
+fn atomic_write_preserving_mode(path: &Path, content: &str, mode: Option<u32>) -> Result<()> {
     // Guard against a path with no parent (e.g. a bare root); the temp sibling below relies on one.
     path.parent()
         .ok_or_else(|| anyhow!("{} has no parent directory", path.display()))?;
-    let mode = fs::metadata(path).map(|m| m.permissions().mode()).ok();
 
     let tmp = unpredictable_temp_path(path)?;
 
@@ -332,20 +341,32 @@ fn atomic_write_preserving_mode(path: &Path, content: &str) -> Result<()> {
     write_result
 }
 
-/// Refuse to operate on a service path that exists but isn't a regular file (notably a symlink): an
-/// atomic rename would replace the link entry itself rather than edit the intended target. Returns
-/// whether the file exists; a missing file is left for the caller to handle (an error for install, a
-/// no-op for uninstall).
-fn ensure_regular_if_present(path: &Path) -> Result<bool> {
-    match fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_file() => Ok(true),
-        Ok(meta) if meta.file_type().is_symlink() => bail!(
+/// Open a service path for reading with `O_NOFOLLOW` and confirm the opened descriptor is a regular
+/// file. Returns `None` if the path doesn't exist (a missing file is an install error / uninstall
+/// no-op). Refuses a symlink (`O_NOFOLLOW` → `ELOOP`) or any non-regular file. Opening and then
+/// reading/stat-ing the *same* descriptor closes the TOCTOU window a separate metadata pre-check
+/// would leave: a symlink swapped in after the check can't redirect the read or the mode.
+fn open_regular_nofollow(path: &Path) -> Result<Option<fs::File>> {
+    match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+    {
+        Ok(file) => {
+            let meta = file
+                .metadata()
+                .with_context(|| format!("stat PAM service file {}", path.display()))?;
+            if !meta.file_type().is_file() {
+                bail!("PAM service file {} is not a regular file", path.display());
+            }
+            Ok(Some(file))
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => bail!(
             "refusing to edit symlinked PAM service file {} (expected a regular file)",
             path.display()
         ),
-        Ok(_) => bail!("PAM service file {} is not a regular file", path.display()),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e).with_context(|| format!("inspect PAM service file {}", path.display())),
+        Err(e) => Err(e).with_context(|| format!("open PAM service file {}", path.display())),
     }
 }
 
