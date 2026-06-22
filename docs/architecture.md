@@ -369,6 +369,26 @@ the PIN path; `unenroll` returns the keyring to a password with all three pre-ex
 and the blobs removed; and `status` reports the real enrollment / keyring-lock / TPM state. Throwaway
 keyrings only; every swtpm/dbus/keyring process is reaped on drop.
 
+## Phase 3 exit gate (`tess-cli`)
+
+`crates/tess-cli/tests/phase3_e2e.rs` (`full_phase3_cycle_preserves_all_items`, gated `sim` +
+`daemon-tests`) is the single cross-cutting Phase 3 exit test. On one throwaway login keyring seeded
+with **five** pre-existing secrets it runs the whole lifecycle in order — `enroll` (seal + in-place
+rekey) → a simulated fresh login session driving the **real `tess-pam-helper` binary** (PIN on stdin,
+the contract the PAM module uses) → `recover` after a simulated TPM clear → `reseal` under a new PIN
+(re-proving the session path with the helper) → `unenroll` back to a password — and asserts the
+project's #1 safety property after **every** transition: all five secrets present, unlocked, and
+decrypting to their original values, with the group count unchanged (no loss or duplication). The
+swtpm + private-bus keyring harness from `tests/common` is reused; every spawned process (swtpm,
+dbus-daemon, keyring, helper) is reaped under bounded waits.
+
+```sh
+cargo test -p tess-cli --features sim,daemon-tests
+```
+
+This is the **CI/swtpm leg** of the Phase 3 exit test; the real-TPM (Azure vTPM) leg is exercised in
+Phase 4.
+
 ## Deploy targets
 
 | Path | Purpose |
