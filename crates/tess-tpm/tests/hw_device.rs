@@ -28,7 +28,14 @@ struct TempDir(std::path::PathBuf);
 
 impl TempDir {
     fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!("tess-hw-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "tess-hw-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         Self(dir)
     }
