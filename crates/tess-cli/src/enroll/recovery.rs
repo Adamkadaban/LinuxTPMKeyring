@@ -191,6 +191,9 @@ pub fn save_blob(blob: &RecoveryBlob, path: &Path) -> Result<()> {
         let _ = std::fs::remove_file(&tmp);
         anyhow!("rename {} -> {}: {e}", tmp.display(), path.display())
     })?;
+    // fsync the parent directory so the renamed entry itself is durable; without this a crash after
+    // rename can lose the recovery blob even though its data was synced.
+    sync_parent_dir(path).with_context(|| format!("sync parent dir of {}", path.display()))?;
     Ok(())
 }
 
@@ -240,6 +243,22 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .open(path)?;
     file.write_all(bytes)?;
     file.sync_all()
+}
+
+/// fsync the directory containing `path` so a freshly renamed entry survives a crash. On Unix a
+/// directory is fsync'd by opening it read-only and calling `sync_all` on the handle.
+#[cfg(unix)]
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    std::fs::File::open(parent)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]

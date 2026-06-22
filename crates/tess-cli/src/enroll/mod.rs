@@ -5,19 +5,22 @@
 //! half-rekeyed keyring the user can no longer open. The transaction enforces a strict order so the
 //! keyring is always either fully-old or fully-enrolled, and rolls back on any failure:
 //!
-//! 1. generate the random key `K`;
-//! 2. **back up a recovery secret first** — wrap `K` under a user-saved recovery secret and verify
+//! 1. refuse to clobber an existing enrollment, and prove the supplied old credential opens the
+//!    keyring — both *before* writing anything to disk;
+//! 2. generate the random key `K`;
+//! 3. **back up a recovery secret first** — wrap `K` under a user-saved recovery secret and verify
 //!    the wrap round-trips before persisting it (so a TPM-independent way back in exists *before*
 //!    anything destructive);
-//! 3. seal `K` under the PIN, verify it unseals, and persist the sealed blobs + metadata;
-//! 4. verify the supplied old credential opens the keyring, then rekey it in place old → `K`;
-//! 5. verify the keyring unlocks with `K` and a pre-existing item still decrypts;
-//! 6. commit.
+//! 4. seal `K` under the PIN, verify it unseals, and persist the sealed blobs + metadata;
+//! 5. rekey the keyring in place old → `K`;
+//! 6. verify the keyring unlocks with `K` and a pre-existing item still decrypts;
+//! 7. commit.
 //!
-//! On any failure after step 2 the keyring credential is restored and the just-written blobs are
-//! removed, leaving the system exactly as before. The one path that deliberately preserves the blobs
-//! is a failure to restore the keyring credential during rollback: then the sealed/recovery blobs are
-//! the only way back in, so they are kept and the error tells the user to run `tess recover`.
+//! On any failure after a blob is written the keyring credential is restored and the just-written
+//! blobs are removed, leaving the system exactly as before. The one path that deliberately preserves
+//! the blobs is a failure to restore the keyring credential during rollback: then the sealed/recovery
+//! blobs are the only way back in, so they are kept and the recovery secret is printed for
+//! `tess recover`.
 
 pub mod cli;
 pub mod recovery;
@@ -124,6 +127,22 @@ pub fn enroll<S: KeySealer>(
 ) -> Result<EnrollOutcome> {
     ensure!(!pin.is_empty(), "PIN must not be empty");
 
+    // Refuse to clobber an existing enrollment: its blobs are the only way to unseal/recover the
+    // current keyring key, and overwriting them here (then deleting them on rollback) could strand
+    // the user. Re-keying an existing enrollment is `tess unenroll` + enroll, or `tess recover`.
+    ensure!(
+        !paths.metadata.exists() && !paths.recovery.exists(),
+        "already enrolled (found {} or {}); run `tess unenroll` or `tess recover` first",
+        paths.metadata.display(),
+        paths.recovery.display()
+    );
+
+    // Prove the supplied credential opens the keyring *before* writing anything to disk, so a wrong
+    // credential fails with no on-disk side effects and nothing to roll back.
+    keyring
+        .unlock(old)
+        .context("verify the current keyring credential before enrolling")?;
+
     let key = sealer
         .generate_key()
         .context("generate the random keyring key")?;
@@ -147,11 +166,24 @@ pub fn enroll<S: KeySealer>(
             recovery_secret_display: display,
         }),
         Err(err) => match tx.rollback(keyring, paths, old) {
-            Ok(()) => Err(err.context("enrollment failed and was rolled back to the original keyring")),
-            Err(rollback_err) => Err(err.context(format!(
-                "enrollment failed and rollback could not fully restore the keyring ({rollback_err:#}); \
-                 save this recovery secret and run `tess recover`: {display}"
-            ))),
+            Ok(()) => {
+                Err(err.context("enrollment failed and was rolled back to the original keyring"))
+            }
+            Err(rollback_err) => {
+                // Catastrophe: the keyring is left on the new key and could not be restored, so the
+                // sealed + recovery blobs were kept. The user needs the recovery secret to get back
+                // in — print it directly to the terminal (one-time, like the success path) rather
+                // than embedding it in the error chain, which could be logged/telemetried repeatedly.
+                eprintln!(
+                    "CRITICAL: enrollment failed and the original keyring credential could not be \
+                     restored. Save this recovery secret and run `tess recover`:\n\n    {display}\n"
+                );
+                Err(err.context(format!(
+                    "enrollment failed and rollback could not fully restore the keyring \
+                     ({rollback_err:#}); the recovery secret was printed to stderr — run \
+                     `tess recover`"
+                )))
+            }
         },
     }
 }
@@ -170,7 +202,7 @@ fn commit<S: KeySealer>(
     recovery_secret: &SecretBytes,
     verify_item: &dyn Fn() -> Result<()>,
 ) -> Result<()> {
-    // Step 2: recovery backup FIRST, created and verified before anything destructive.
+    // Step 3: recovery backup FIRST, created and verified before anything destructive.
     let blob =
         recovery::wrap_key(key, recovery_secret).context("wrap the keyring key for recovery")?;
     let round_trip = recovery::unwrap_key(&blob, recovery_secret)
@@ -182,7 +214,7 @@ fn commit<S: KeySealer>(
     recovery::save_blob(&blob, &paths.recovery).context("persist the recovery blob")?;
     tx.recovery_written = true;
 
-    // Step 3: seal under the PIN, prove it unseals, then persist. Verifying the unseal before the
+    // Step 4: seal under the PIN, prove it unseals, then persist. Verifying the unseal before the
     // destructive rekey means a broken TPM path can never strand the keyring on a key we can't
     // recover via the PIN.
     let sealed = sealer
@@ -199,16 +231,14 @@ fn commit<S: KeySealer>(
     tess_tpm::persist::save(&metadata, &paths.metadata).context("persist the sealed metadata")?;
     tx.metadata_written = true;
 
-    // Step 4: confirm the old credential opens the keyring, then rekey in place (destructive).
-    keyring
-        .unlock(old)
-        .context("verify the current keyring credential before rekeying")?;
+    // Step 5: rekey in place (destructive). The old credential was already proven to open the
+    // keyring in `enroll` before any blob was written.
     keyring
         .rekey(old, key)
         .context("rekey the login keyring to the TPM-sealed key")?;
     tx.new_key = Some(key.clone());
 
-    // Step 5: verify the keyring opens with the new key and a known item still decrypts.
+    // Step 6: verify the keyring opens with the new key and a known item still decrypts.
     keyring
         .unlock(key)
         .context("verify the keyring unlocks with the new TPM-sealed key")?;

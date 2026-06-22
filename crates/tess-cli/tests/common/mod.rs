@@ -44,6 +44,10 @@ pub struct Swtpm {
 impl Swtpm {
     /// Start an isolated swtpm, returning the guard and its transport config, or `None` when swtpm
     /// is not installed (so the suite skips cleanly on hardware-free hosts).
+    ///
+    /// Reserved ports are released before swtpm binds them, so another process can win the race in
+    /// that window. Rather than fail sporadically, retry the whole spawn with fresh ports a few
+    /// times: a lost race makes swtpm exit early, which `wait_for_port` reports, and we re-roll.
     pub fn start() -> Option<(Self, TctiConfig)> {
         match Command::new("swtpm").arg("--version").output() {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -59,6 +63,21 @@ impl Swtpm {
             Ok(_) => {}
         }
 
+        const ATTEMPTS: u32 = 5;
+        let mut last_err = String::new();
+        for _ in 0..ATTEMPTS {
+            match Self::start_once() {
+                Ok(pair) => return Some(pair),
+                Err(e) => last_err = e,
+            }
+        }
+        panic!("swtpm did not start after {ATTEMPTS} attempts (last error: {last_err})");
+    }
+
+    /// One spawn attempt: reserve a fresh consecutive port pair, launch swtpm, and wait for both
+    /// ports. On early exit (a lost port race) the guard is dropped — reaping swtpm and wiping its
+    /// state — and the error is returned so the caller can retry with new ports.
+    fn start_once() -> Result<(Self, TctiConfig), String> {
         let (cmd_port, ctrl_port) = reserve_consecutive_ports();
         let state_dir =
             std::env::temp_dir().join(format!("tess-cli-sim-{}-{}", std::process::id(), cmd_port));
@@ -84,14 +103,16 @@ impl Swtpm {
 
         let cmd_addr: std::net::SocketAddr = format!("127.0.0.1:{cmd_port}").parse().unwrap();
         let ctrl_addr: std::net::SocketAddr = format!("127.0.0.1:{ctrl_port}").parse().unwrap();
-        wait_for_port(cmd_addr, &mut guard.child).expect("swtpm command port");
-        wait_for_port(ctrl_addr, &mut guard.child).expect("swtpm control port");
+        // On early exit (a lost port race) `guard` drops here — reaping swtpm and wiping its state —
+        // and the error propagates so the caller retries with fresh ports.
+        wait_for_port(cmd_addr, &mut guard.child)
+            .and_then(|()| wait_for_port(ctrl_addr, &mut guard.child))?;
 
         let cfg = TctiConfig::Swtpm {
             host: "127.0.0.1".to_string(),
             port: cmd_port,
         };
-        Some((guard, cfg))
+        Ok((guard, cfg))
     }
 }
 
