@@ -248,6 +248,38 @@ mod tests {
     }
 
     #[test]
+    fn helper_spec_resolve_prefers_absolute_pam_arg() {
+        // An absolute PAM argument short-circuits before any env/default lookup, so this holds in
+        // every build mode.
+        assert_eq!(
+            HelperSpec::resolve(&["debug", "helper=/etc/tess/helper"]).program,
+            PathBuf::from("/etc/tess/helper")
+        );
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn helper_spec_release_ignores_env_override() {
+        // In release builds resolution never consults the environment. (HELPER_PATH_ENV only exists
+        // under debug_assertions, so reference the variable name by literal here.)
+        let prev = std::env::var_os("TESS_PAM_HELPER");
+        std::env::set_var("TESS_PAM_HELPER", "/env/should/be/ignored");
+        assert_eq!(
+            HelperSpec::resolve(&[]).program,
+            PathBuf::from(DEFAULT_HELPER_PATH)
+        );
+        assert_eq!(
+            HelperSpec::resolve(&["helper=relative/helper"]).program,
+            PathBuf::from(DEFAULT_HELPER_PATH)
+        );
+        match prev {
+            Some(value) => std::env::set_var("TESS_PAM_HELPER", value),
+            None => std::env::remove_var("TESS_PAM_HELPER"),
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
     fn helper_spec_resolution_precedence() {
         // Restore any pre-existing value on the way out, even if an assertion panics, so this test
         // neither leaks global state into others nor breaks when CI pre-sets the variable. This is
