@@ -15,6 +15,28 @@ use crate::doctor::{lockout_summary, read_caps};
 use crate::enroll::sealer::KeySealer;
 use crate::enroll::{recovery, Paths};
 
+/// Fail fast when there is no sealed enrollment to act on. Called by the CLI *before* prompting for
+/// a PIN or opening the TPM so a not-enrolled user gets the right message with no wasted prompt.
+pub fn ensure_enrolled(paths: &Paths) -> Result<()> {
+    ensure!(
+        paths.metadata.exists(),
+        "not enrolled: {} does not exist (run `tess enroll` first)",
+        paths.metadata.display()
+    );
+    Ok(())
+}
+
+/// Fail fast when there is no recovery blob to recover from. Called by the CLI *before* prompting for
+/// the recovery secret.
+pub fn ensure_recoverable(paths: &Paths) -> Result<()> {
+    ensure!(
+        paths.recovery.exists(),
+        "no recovery blob at {} (nothing to recover)",
+        paths.recovery.display()
+    );
+    Ok(())
+}
+
 /// Reconstruct the sealed object from `paths.metadata` and unseal it with `pin`, recovering the
 /// keyring key. Errors if the enrollment metadata is absent or unreadable, so the caller never
 /// proceeds against a missing enrollment.
@@ -23,11 +45,7 @@ fn unseal_with_pin<S: KeySealer>(
     paths: &Paths,
     pin: &SecretBytes,
 ) -> Result<SecretBytes> {
-    ensure!(
-        paths.metadata.exists(),
-        "not enrolled: {} does not exist (run `tess enroll` first)",
-        paths.metadata.display()
-    );
+    ensure_enrolled(paths)?;
     let metadata = persist::load(&paths.metadata)
         .with_context(|| format!("load sealed metadata {}", paths.metadata.display()))?;
     let sealed =
@@ -40,11 +58,7 @@ fn unseal_with_pin<S: KeySealer>(
 /// Recover the keyring key from the TPM-independent recovery blob (`paths.recovery`) using
 /// `recovery_secret`. Works with no TPM at all — the whole point of the recovery path.
 fn recovered_key(paths: &Paths, recovery_secret: &SecretBytes) -> Result<SecretBytes> {
-    ensure!(
-        paths.recovery.exists(),
-        "no recovery blob at {} (nothing to recover)",
-        paths.recovery.display()
-    );
+    ensure_recoverable(paths)?;
     let blob = recovery::load_blob(&paths.recovery).context("load the recovery blob")?;
     recovery::unwrap_key(&blob, recovery_secret)
         .context("unwrap the keyring key with the recovery secret")

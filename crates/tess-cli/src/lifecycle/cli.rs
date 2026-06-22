@@ -38,8 +38,9 @@ fn keyring_lock_state() -> Option<std::result::Result<bool, String>> {
 
 /// `tess unlock`.
 pub fn run_unlock(pin: Option<String>) -> Result<()> {
-    let pin = pin_or_prompt(pin, "PIN to unseal the keyring key: ")?;
     let paths = Paths::for_user().context("resolve tess data directory")?;
+    super::ensure_enrolled(&paths)?;
+    let pin = pin_or_prompt(pin, "PIN to unseal the keyring key: ")?;
     let mut sealer = TpmSealer::open(&tcti::from_env()).context("open the TPM")?;
     let keyring = SecretServiceBackend::connect().context("connect to the Secret Service")?;
     unlock(&mut sealer, &keyring, &paths, &pin)?;
@@ -49,13 +50,14 @@ pub fn run_unlock(pin: Option<String>) -> Result<()> {
 
 /// `tess recover` — restore access via the recovery secret, optionally re-sealing under a new PIN.
 pub fn run_recover(reseal_flag: bool, pin: Option<String>) -> Result<()> {
+    let paths = Paths::for_user().context("resolve tess data directory")?;
+    super::ensure_recoverable(&paths)?;
     let recovery_secret = {
         let entered = Zeroizing::new(
             rpassword::prompt_password("Recovery secret: ").context("read recovery secret")?,
         );
         recovery::decode(&entered).context("parse the recovery secret")?
     };
-    let paths = Paths::for_user().context("resolve tess data directory")?;
     let keyring = SecretServiceBackend::connect().context("connect to the Secret Service")?;
     recover(&keyring, &paths, &recovery_secret)?;
     println!("Keyring access restored via the recovery secret.");
@@ -73,9 +75,10 @@ pub fn run_recover(reseal_flag: bool, pin: Option<String>) -> Result<()> {
 
 /// `tess unenroll`.
 pub fn run_unenroll(pin: Option<String>) -> Result<()> {
+    let paths = Paths::for_user().context("resolve tess data directory")?;
+    super::ensure_enrolled(&paths)?;
     let pin = pin_or_prompt(pin, "PIN to unseal the keyring key: ")?;
     let new_password = prompt_new_password()?;
-    let paths = Paths::for_user().context("resolve tess data directory")?;
     let mut sealer = TpmSealer::open(&tcti::from_env()).context("open the TPM")?;
     let keyring = SecretServiceBackend::connect().context("connect to the Secret Service")?;
     unenroll(&mut sealer, &keyring, &paths, &pin, &new_password)?;
