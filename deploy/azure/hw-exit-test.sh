@@ -138,7 +138,14 @@ tpm_run() {
       return 1
     fi
     shift
-    sudo --preserve-env=HOME,CARGO_HOME,RUSTUP_HOME env "PATH=${PATH}" "${bin}" "$@"
+    # Running as root: forward only absolute PATH entries so cargo's sub-tools (rustc, cc, ld,
+    # pkg-config, build scripts) can't be resolved from the cwd or other relative locations under
+    # root. Drops empty/relative components (`::`, `.`, `./bin`).
+    local safe_path="" part
+    while IFS= read -r -d ':' part || [[ -n "${part}" ]]; do
+      [[ "${part}" == /* ]] && safe_path="${safe_path:+${safe_path}:}${part}"
+    done <<< "${PATH}:"
+    sudo --preserve-env=HOME,CARGO_HOME,RUSTUP_HOME env "PATH=${safe_path}" "${bin}" "$@"
   fi
 }
 
