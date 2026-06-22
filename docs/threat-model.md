@@ -92,6 +92,33 @@ to fprintd or libfprint. A true "swipe instead of type" scheme (where a fingerpr
 stored PIN) would require that PIN to be itself TPM/recovery-protected and would need its own ADR; it
 is deliberately out of scope for this MVP.
 
+## The face leg (Mug) is host-trusted convenience with real anti-spoofing
+
+The post-MVP face factor (`mug`) is the same shape as the fingerprint leg — a bounded front gate
+layered *on* the PIN, never in its place — but unlike Howdy it ships a real anti-spoof: **active IR
+reflectance liveness**. It captures a pair of IR frames with the camera's IR emitter OFF then ON and
+keys on the per-pixel differential. A live 3-D skin face returns a strong, spatially-structured
+response (reflectance gradient following facial geometry, high-frequency skin texture, localized
+speculars); a printed photo returns a weak and/or uniform response; a curved/glossy photo can fake
+the mean and variance but not the high-frequency relief; a self-emitting screen shows a bright
+baseline even with the emitter off and barely changes when it switches on. Hard gates on mean,
+spatial standard deviation, gradient energy, screen-emission baseline, and saturation reject each
+class; the boundary is deterministic and unit-tested against procedural live/photo/screen fixtures.
+
+Honest limitations, by construction:
+
+- **Face is never the sole gate.** As with the fingerprint, the keyring key is sealed under the PIN
+  authValue, so a liveness pass and face match together still cannot unseal it — the PIN is always
+  required. A face-stack bypass alone releases nothing.
+- **Liveness raises the bar, it is not a guarantee.** It defeats the photo/screen replays that fool
+  Howdy (which has no liveness at all), but it does not claim to stop a determined attacker with a
+  fabricated 3-D mask matched to the enrolled face — that is out of scope, as is any root adversary
+  on a live machine (who can forge a match or read the released key from memory).
+- **No model ships.** The IR matcher is pluggable (an ArcFace/SFace ONNX network loaded from
+  configuration); with no model the face factor is simply unavailable and the stack degrades to the
+  PIN. No raw face image is ever persisted — only the embedding and liveness calibration, 0600 under
+  the user's data dir.
+
 ## Recovery: a TPM-independent escape hatch
 
 The TPM unseal path dies if the TPM is cleared, the motherboard is replaced, or the PIN is forgotten.
@@ -205,7 +232,7 @@ avoid.
 | Weak keygen / RNG (ROCA) | Seal a **self-generated** random blob (not a TPM-born RSA key); ECC P-256; `getrandom` XOR-mixed with TPM `GetRandom` |
 | Timing side channel (TPM-FAIL, Hertzbleed) | Constant-time PIN handling; rely on the TPM **DA-lockout**, not comparison-timing secrecy |
 | Online PIN brute force / lockout abuse | Wrong PINs trip the hardware DA-lockout; the privileged reset is gated by the **recovery secret** (a sub-key never equal to `K`), so an attacker who trips the lockout cannot clear it ([ADR-0011](adr/0011-privileged-da-lockout-reset.md)) |
-| Biometric spoof (Windows Hello IR replay, CVE-2021-34466) | Biometric is **host-trusted, never the sole gate**; the PIN authValue is the real gate; IR-reflectance liveness deferred to the Phase 5 face daemon (Mug) |
+| Biometric spoof (Windows Hello IR replay, CVE-2021-34466) | Biometric is **host-trusted, never the sole gate**; the PIN authValue is the real gate; the Phase 5 face daemon (Mug) adds active IR-reflectance liveness that rejects photo/screen spoofs (not 3-D masks) |
 | TOCTOU / confused deputy in PAM | Unseal is bound to the authenticated PAM session and gated by TPM policy; no replayable out-of-band "verify-match" |
 | Memory disclosure (cold boot, swap, ptrace, core dump) | `zeroize`-on-drop + minimal key lifetime today; `mlock` and core-dump disabling (`PR_SET_DUMPABLE`/`RLIMIT_CORE`) are planned hardening, available now as an operator-level recommendation |
 | Dependency FFI UAF (RUSTSEC-2023-0044) | Pin `tss-esapi ≥ 7.1.0`; `cargo audit` + `cargo deny` gate every PR |

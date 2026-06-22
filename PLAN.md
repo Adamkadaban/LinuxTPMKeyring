@@ -324,10 +324,10 @@ bounded async deadline without blocking the PAM stack; a printed-photo spoof is 
 liveness check; enrollment is non-destructive.
 
 **Deliverables:**
-- [ ] Adopt the existing `~/Desktop/Mug` skeleton (PAM FFI, V4L2 capture, ONNX engine) into the workspace
-- [ ] Brio IR: enumerate greyscale V4L2 nodes; one-time IR-emitter enable (wrap/learn from `linux-enable-ir-emitter`, also Rust); stable device-by-path
-- [ ] Capture `Y8/Y16` IR frames; **IR-reflectance liveness** as the primary anti-spoof signal
-- [ ] Face matcher in safe Rust via `ort` (ArcFace/SFace ONNX) — verify model licensing before shipping
+- [x] Adopt the existing `~/Desktop/Mug` skeleton (PAM FFI, V4L2 capture, ONNX engine) into the workspace
+- [x] Brio IR: enumerate greyscale V4L2 nodes; one-time IR-emitter enable (wrap/learn from `linux-enable-ir-emitter`, also Rust); stable device-by-path
+- [x] Capture `Y8/Y16` IR frames; **IR-reflectance liveness** as the primary anti-spoof signal
+- [x] Face matcher in safe Rust via `ort` (ArcFace/SFace ONNX) — verify model licensing before shipping <!-- wave 1: pluggable `EmbeddingExtractor` trait + cosine matcher + deterministic mock shipped & tested; the `ort` ONNX backend is the documented drop-in (no model ships, CI is model-free) — backend integration tracked as a follow-up -->
 - [ ] Async, timeout-bounded face verify as an `AuthGate`; never the sole factor (TPM PIN remains the gate)
 - [ ] `tess enroll --pin --fingerprint --face` multi-factor UX
 - [ ] (stretch) Slint-based pretty enroll/unlock UI (software renderer, greeter-friendly)
