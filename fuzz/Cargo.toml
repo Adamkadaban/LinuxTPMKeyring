@@ -15,8 +15,10 @@ unsafe_code = "forbid"
 
 # This crate is intentionally excluded from the parent workspace: cargo-fuzz drives it with the
 # nightly `-Z sanitizer` instrumentation libFuzzer needs, which must not perturb the workspace's
-# stable build/lint/test gates.
+# stable build/lint/test gates. Pin resolver v2 to match the parent workspace so dependency feature
+# unification is identical between `cargo test` and `cargo fuzz` builds.
 [workspace]
+resolver = "2"
 
 [dependencies]
 libfuzzer-sys = "0.4"
