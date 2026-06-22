@@ -158,7 +158,7 @@ install_deps() {
     source "${HOME}/.cargo/env"
   fi
 
-  for bin in dbus-daemon dbus-run-session dbus-send gnome-keyring-daemon secret-tool python3 script; do
+  for bin in dbus-daemon dbus-run-session dbus-send gnome-keyring-daemon secret-tool python3 script setsid; do
     require_bin "${bin}"
   done
 }
