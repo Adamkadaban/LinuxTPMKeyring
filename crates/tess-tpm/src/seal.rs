@@ -267,6 +267,9 @@ fn sealed_object_template(policy_digest: Digest) -> Result<Public> {
 /// Convert a PIN into a TPM `Auth` value, rejecting PINs longer than the object's SHA-256 name hash
 /// (the TPM caps an object's authValue at its name-algorithm digest size).
 fn pin_to_auth(pin: &SecretBytes) -> Result<Auth> {
+    if pin.is_empty() {
+        return Err(Error::PinEmpty);
+    }
     if pin.len() > MAX_PIN_LEN {
         return Err(Error::PinTooLong {
             len: pin.len(),
@@ -314,6 +317,13 @@ mod tests {
     fn pin_too_long_is_rejected() {
         let pin = SecretBytes::new(vec![0u8; MAX_PIN_LEN + 1]);
         assert!(matches!(pin_to_auth(&pin), Err(Error::PinTooLong { .. })));
+    }
+
+    #[test]
+    fn empty_pin_is_rejected() {
+        // Security invariant: an empty PIN would be a zero-length authValue (no gate at all).
+        let pin = SecretBytes::new(Vec::new());
+        assert!(matches!(pin_to_auth(&pin), Err(Error::PinEmpty)));
     }
 
     #[test]

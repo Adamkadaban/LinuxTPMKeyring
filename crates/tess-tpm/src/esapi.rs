@@ -47,6 +47,9 @@ pub enum Error {
     #[error("PIN is {len} bytes, exceeds the {max}-byte authValue limit")]
     PinTooLong { len: usize, max: usize },
 
+    #[error("PIN must not be empty")]
+    PinEmpty,
+
     #[error("failed to seal the key: {0}")]
     Seal(String),
 
@@ -72,7 +75,9 @@ impl From<Error> for tess_core::Error {
             // the enrollment/recovery layers can react (retry, count toward lockout) rather than
             // treating it as a hardware error. PinTooLong is likewise local input validation, not a
             // TPM fault.
-            Error::WrongPin | Error::PinTooLong { .. } => tess_core::Error::Auth(e.to_string()),
+            Error::WrongPin | Error::PinTooLong { .. } | Error::PinEmpty => {
+                tess_core::Error::Auth(e.to_string())
+            }
             other => tess_core::Error::Tpm(other.to_string()),
         }
     }
