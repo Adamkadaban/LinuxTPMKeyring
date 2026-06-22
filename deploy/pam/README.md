@@ -8,14 +8,19 @@ tess was installed.
 
 ## The snippet
 
-`tess-session.pam` holds the line `tess install` inserts, delimited by re-runnable markers:
+`tess-session.pam` is the exact block `tess install` inserts, delimited by re-runnable markers:
 
 ```pam
+# >>> tess >>>
+# Managed by `tess install` — remove with `tess install --uninstall`. `optional` means a tess
+# failure is ignored and login proceeds with the keyring left locked; it can never lock you out.
 session optional pam_tess.so
+# <<< tess <<<
 ```
 
-`optional` means a tess failure is ignored. The MVP wires **only** the session phase; there is no
-auth gate yet. When an auth factor is added later it must use an equally fail-open control flag:
+The salient line is `session optional pam_tess.so`. `optional` means a tess failure is ignored. The
+MVP wires **only** the session phase; there is no auth gate yet. When an auth factor is added later
+it must use an equally fail-open control flag:
 
 ```pam
 auth [success=done default=ignore] pam_tess.so
