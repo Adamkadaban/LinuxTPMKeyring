@@ -8,9 +8,9 @@ mod common;
 
 use common::Swtpm;
 use tess_core::SecretBytes;
+use tess_tpm::persist::{from_metadata, load, save, to_metadata};
 use tess_tpm::{
-    create_primary, from_metadata, generate_sealing_key, load, read_lockout_state, reset_lockout,
-    save, seal, to_metadata, unseal, Error,
+    create_primary, generate_sealing_key, read_lockout_state, reset_lockout, seal, unseal, Error,
 };
 
 /// A unique temp directory for one test's metadata file, removed when the returned guard drops.

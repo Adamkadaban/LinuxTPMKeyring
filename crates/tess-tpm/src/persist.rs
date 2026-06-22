@@ -3,6 +3,12 @@
 //! JSON. Only public material and a policy descriptor ever reach disk — never the sealed key, a PIN,
 //! or any hash of either; the blobs are useless without the TPM that created the primary and the PIN
 //! that gates the object.
+//!
+//! These functions return [`tess_core::Result`] (not `tess_tpm::Result`): their currency is the
+//! `tess_core` metadata schema and on-disk files, and a version mismatch surfaces as
+//! [`tess_core::Error::MetadataVersion`] untranslated. They live in this dedicated `persist` module
+//! rather than re-exported at the crate root so that differing error type is explicit at the call
+//! site (`tess_tpm::persist::save`).
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
