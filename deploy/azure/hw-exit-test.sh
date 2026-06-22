@@ -128,8 +128,8 @@ tpm_run() {
     "$@"
   else
     local bin
-    bin="$(command -v "$1")" || {
-      echo "error: '$1' not found on PATH." >&2
+    bin="$(type -P "$1")" || {
+      echo "error: '$1' is not an external command on PATH." >&2
       return 1
     }
     shift
