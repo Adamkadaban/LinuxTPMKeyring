@@ -57,8 +57,10 @@ isolation, which doesn't exist on commodity hardware. This is the same boundary 
 
 ## Install
 
-> Pre-MVP. tess targets **Debian 13 (trixie)** on a machine with a TPM 2.0. The one-command path
-> builds and installs a `.deb`, then wires the fail-open PAM module.
+> Pre-MVP. tess targets **Debian 13 (trixie) on amd64 (x86_64)** with a TPM 2.0. The packaged
+> artifact (`tess_<ver>_amd64.deb`) and PAM module path (`/usr/lib/x86_64-linux-gnu/security/`) are
+> amd64-specific; `deploy/install.sh` fails early on other architectures. The one-command path builds
+> and installs the `.deb`, then wires the fail-open PAM module.
 
 ```sh
 # on Debian 13 with a TPM 2.0, from a checkout of this repo

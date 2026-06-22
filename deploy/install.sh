@@ -16,6 +16,12 @@ set -euo pipefail
 # the packaged module explicitly. Matches the `assets` dest in crates/tess-cli/Cargo.toml.
 readonly pam_module="/usr/lib/x86_64-linux-gnu/security/pam_tess.so"
 
+# Resolve paths from the script's own location so it works regardless of the caller's CWD: the build
+# needs the workspace root, while a caller-supplied `--deb` is relative to where they invoked us.
+orig_pwd=$PWD
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(cd -- "$script_dir/.." && pwd)
+
 usage() {
 	cat <<'EOF'
 Usage: deploy/install.sh [options]
@@ -93,6 +99,13 @@ run_root() {
 }
 
 require_debian_13() {
+	local arch
+	arch=$(dpkg --print-architecture 2>/dev/null || echo unknown)
+	if [ "$arch" != "amd64" ]; then
+		echo "error: tess packaging targets Debian 13 amd64; detected architecture: $arch." >&2
+		echo "       The .deb and the PAM module path ($pam_module) are amd64-specific." >&2
+		exit 1
+	fi
 	if [ ! -r /etc/os-release ]; then
 		echo "error: /etc/os-release not found; this installer targets Debian 13 (trixie)." >&2
 		exit 1
@@ -132,21 +145,26 @@ build_deb() {
 
 install_deb() {
 	local path=$1
+	# Resolve a caller-relative path against the directory the script was invoked from, since the
+	# build path cd's into the repo root. An absolute path also satisfies apt's requirement that a
+	# local-file argument contain a slash.
+	case "$path" in
+	/*) ;;
+	*) path="$orig_pwd/$path" ;;
+	esac
 	[ -f "$path" ] || {
 		echo "error: .deb not found: $path" >&2
 		exit 1
 	}
-	# apt needs a path containing a slash to treat the argument as a local file, not a package name.
-	case "$path" in
-	*/*) ;;
-	*) path="./$path" ;;
-	esac
 	echo "==> installing $path with its runtime dependencies"
 	run_root apt-get update
 	run_root apt-get install "${apt_args[@]}" "$path"
 }
 
 require_debian_13
+
+# The build runs cargo against the workspace, so operate from the repo root regardless of CWD.
+cd -- "$repo_root"
 
 if [ -n "$deb" ]; then
 	echo "==> using prebuilt .deb: $deb"
