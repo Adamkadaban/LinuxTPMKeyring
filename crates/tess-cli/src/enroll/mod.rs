@@ -156,10 +156,12 @@ pub fn enroll<S: KeySealer>(
 
     // Refuse to clobber an existing enrollment: its blobs are the only way to unseal/recover the
     // current keyring key, and overwriting them here (then deleting them on rollback) could strand
-    // the user. Re-keying an existing enrollment is `tess unenroll` + enroll, or `tess recover`.
+    // the user. Until `tess unenroll`/`tess recover` land, the actionable step is removing the stale
+    // blob(s) manually (named in the message) to re-enroll from scratch.
     ensure!(
         !paths.metadata.exists() && !paths.recovery.exists(),
-        "already enrolled (found {} or {}); run `tess unenroll` or `tess recover` first",
+        "already enrolled: {} or {} already exists. Remove the stale blob(s) to re-enroll from \
+         scratch (a future `tess unenroll`/`tess recover` will automate this).",
         paths.metadata.display(),
         paths.recovery.display()
     );

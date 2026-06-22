@@ -18,6 +18,7 @@
 //! weakens the at-rest guarantee.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{anyhow, ensure, Context, Result};
 use base64::engine::general_purpose::STANDARD;
@@ -34,10 +35,18 @@ const RECOVERY_SECRET_LEN: usize = 32;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
 const KEK_LEN: usize = 32;
+/// The keyring key tess wraps is a fixed 32-byte TPM sealing key; XChaCha20-Poly1305 appends a
+/// 16-byte Poly1305 tag, so a well-formed recovery ciphertext is always exactly this length.
+const WRAPPED_KEY_LEN: usize = 32;
+const AEAD_TAG_LEN: usize = 16;
+const WRAPPED_CIPHERTEXT_LEN: usize = WRAPPED_KEY_LEN + AEAD_TAG_LEN;
 const HKDF_INFO: &[u8] = b"tess recovery key-encryption key v1";
 
 /// Schema version of the on-disk recovery blob, independent of the TPM metadata schema.
 pub const RECOVERY_BLOB_VERSION: u32 = 1;
+
+/// Process-local sequence so back-to-back `save_blob` calls get distinct temp names.
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// The persisted recovery artifact: the AEAD-sealed keyring key plus the public parameters needed to
 /// re-derive the key-encryption key. Holds no secret in the clear — useless without the recovery
@@ -154,6 +163,11 @@ pub fn unwrap_key(blob: &RecoveryBlob, recovery: &SecretBytes) -> Result<SecretB
     let salt = STANDARD
         .decode(&blob.salt)
         .map_err(|e| anyhow!("decode recovery salt: {e}"))?;
+    ensure!(
+        salt.len() == SALT_LEN,
+        "recovery salt must be {SALT_LEN} bytes, got {}",
+        salt.len()
+    );
     let nonce = STANDARD
         .decode(&blob.nonce)
         .map_err(|e| anyhow!("decode recovery nonce: {e}"))?;
@@ -165,6 +179,11 @@ pub fn unwrap_key(blob: &RecoveryBlob, recovery: &SecretBytes) -> Result<SecretB
     let ciphertext = STANDARD
         .decode(&blob.ciphertext)
         .map_err(|e| anyhow!("decode recovery ciphertext: {e}"))?;
+    ensure!(
+        ciphertext.len() == WRAPPED_CIPHERTEXT_LEN,
+        "recovery ciphertext must be {WRAPPED_CIPHERTEXT_LEN} bytes, got {}",
+        ciphertext.len()
+    );
 
     let kek = derive_kek(recovery, &salt)?;
     let cipher = XChaCha20Poly1305::new_from_slice(&*kek)
@@ -212,12 +231,15 @@ pub fn load_blob(path: &Path) -> Result<RecoveryBlob> {
 }
 
 fn temp_sibling(path: &Path) -> std::path::PathBuf {
+    // A process-local monotonic sequence guarantees distinct temp names for back-to-back calls even
+    // when the clock resolution is coarser than a nanosecond (mirrors `tess_tpm::persist`).
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(format!(".tmp.{}.{nanos}", std::process::id()));
+    name.push(format!(".tmp.{}.{seq}.{nanos}", std::process::id()));
     path.with_file_name(name)
 }
 
@@ -311,6 +333,27 @@ mod tests {
         ct[0] ^= 0xff;
         blob.ciphertext = STANDARD.encode(ct);
         assert!(unwrap_key(&blob, &r).is_err());
+    }
+
+    #[test]
+    fn unwrap_rejects_malformed_blob_sizes() {
+        let k = key();
+        let r = generate_recovery_secret().unwrap();
+
+        let mut short_salt = wrap_key(&k, &r).unwrap();
+        short_salt.salt = STANDARD.encode([0u8; SALT_LEN - 1]);
+        let err = unwrap_key(&short_salt, &r).unwrap_err();
+        assert!(format!("{err:#}").contains("salt"));
+
+        let mut short_ct = wrap_key(&k, &r).unwrap();
+        short_ct.ciphertext = STANDARD.encode([0u8; WRAPPED_CIPHERTEXT_LEN - 1]);
+        let err = unwrap_key(&short_ct, &r).unwrap_err();
+        assert!(format!("{err:#}").contains("ciphertext"));
+
+        let mut short_nonce = wrap_key(&k, &r).unwrap();
+        short_nonce.nonce = STANDARD.encode([0u8; NONCE_LEN - 1]);
+        let err = unwrap_key(&short_nonce, &r).unwrap_err();
+        assert!(format!("{err:#}").contains("nonce"));
     }
 
     #[test]
