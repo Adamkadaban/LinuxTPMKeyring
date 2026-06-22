@@ -54,8 +54,8 @@ enum Command {
     Test,
     /// Check TPM / keyring / fprintd / enrollment readiness. Exits non-zero when not ready.
     Doctor {
-        /// Post-install verification: also require a Secret Service daemon and a completed
-        /// `tess enroll` (sealed metadata present and parseable), not just the TPM.
+        /// Post-install verification: also require a Secret Service provider binary on PATH and a
+        /// completed `tess enroll` (sealed metadata present and parseable), not just the TPM.
         #[arg(long)]
         post_install: bool,
     },

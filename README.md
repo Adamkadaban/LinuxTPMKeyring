@@ -104,7 +104,7 @@ tess test          # dry-run the session unlock path (no changes)
 tess recover       # re-unlock using the recovery secret (add --reseal to re-seal under a new PIN)
 tess unenroll      # restore the password-based keyring (items preserved)
 tess doctor        # check TPM / keyring / fprintd / enrollment readiness (non-zero exit when not ready)
-tess doctor --post-install   # stricter check: also require a keyring daemon + a completed enrollment
+tess doctor --post-install   # stricter check: also require a keyring provider binary on PATH + a completed enrollment
 tess install       # wire pam_tess.so into the session stack (idempotent, fail-open)
 tess install --uninstall   # remove the tess block + module (best-effort), un-wiring the stack
 ```
@@ -222,9 +222,11 @@ verdict: READY — 1 optional component(s) missing.
 By default only the TPM resource manager is required for the core sealing guarantee; the keyring
 daemon, fprintd, and enrollment state are reported but never fail the verdict. Run
 `tess doctor --post-install` after installing and enrolling to additionally **require** a Secret
-Service daemon and a completed, parseable enrollment — this is the post-install verification the
-Azure acceptance harness asserts. When a required probe is missing the verdict appends a one-line
-remediation hint (e.g. `→ tess enrollment: run \`tess enroll\``).
+Service provider binary on PATH and a completed, parseable enrollment — this is the post-install
+verification the Azure acceptance harness asserts. (The keyring check looks for a provider binary,
+not a running daemon / active session bus — see the `not contacted` note in the table.) When a
+required probe is missing the verdict appends a one-line remediation hint (e.g.
+`→ tess enrollment: run \`tess enroll\``).
 
 ## License
 
