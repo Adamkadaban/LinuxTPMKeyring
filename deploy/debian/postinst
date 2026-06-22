@@ -7,9 +7,10 @@ set -e
 
 case "$1" in
 configure)
-	# The `tss` group gates access to /dev/tpmrm0 (via the packaged udev rule's MODE 0660 + GROUP tss);
-	# a login user needs to be a member to run `tess enroll`/`unlock`/`status`. tpm2-tss packages
-	# usually create this group, but create it defensively so the udev rule's GROUP="tss" always resolves.
+	# TPM device access for `tess enroll`/`unlock`/`status`: the packaged udev rule tags the device
+	# with uaccess (the active seat user gets an ACL automatically on login — no group needed) and
+	# falls back to MODE 0660 + GROUP tss for headless/SSH/service users. Create the `tss` group
+	# defensively so the rule's GROUP="tss" always resolves (tpm2-tss usually creates it already).
 	getent group tss >/dev/null 2>&1 || groupadd --system tss
 
 	# Apply the packaged udev rule to the already-present TPM device without a reboot. Skip in a
@@ -29,14 +30,15 @@ configure)
 tess installed. PAM wiring is NOT applied automatically, so installing the package can never
 lock you out of login. To finish setup:
 
-  As root — grant your login user TPM device access (the tess commands need it), then
-  have that user log out and back in so the new group membership takes effect:
+  Grant TPM device access. On a normal graphical/console login, the active seat user already
+  has access automatically (udev uaccess) — nothing to do. For a headless/SSH or multi-user
+  setup, add that user to the `tss` group and have them re-login so it takes effect:
     sudo usermod -aG tss <your-login-user>
 
   As root — wire pam_tess.so into the session stack (idempotent, fail-open):
     sudo tess install --module /usr/lib/x86_64-linux-gnu/security/pam_tess.so
 
-  As your login user (in a fresh session) — set a PIN, seal a random key, rekey your keyring:
+  As your login user — set a PIN, seal a random key, rekey your keyring:
     tess enroll
 
 Undo the PAM wiring at any time with:  sudo tess install --uninstall

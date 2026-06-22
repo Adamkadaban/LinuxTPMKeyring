@@ -31,6 +31,7 @@ check "rule grants tss group on /dev/tpmrm*" \
 check "rule grants tss group on /dev/tpm*" \
 	grep -Eq 'KERNEL=="tpm\[0-9\]\*".*GROUP="tss"' "$rule"
 check "rule sets MODE 0660" grep -q 'MODE="0660"' "$rule"
+check "rule tags devices uaccess (seat-user access)" grep -q 'TAG+="uaccess"' "$rule"
 
 check "install.sh selects SUDO_USER" grep -q 'SUDO_USER' "$install_sh"
 check "install.sh never grants root" grep -qF '= "root" ]' "$install_sh"

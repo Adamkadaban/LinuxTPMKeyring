@@ -119,7 +119,15 @@ jobs:
           grep -Eq ' \./usr/lib/udev/rules\.d/70-tess-tpm\.rules$' /tmp/tess-deb-contents.txt
 
       - name: TPM-access install wiring (static assertions)
-        run: deploy/tests/install-tpm-access.test.sh
+        run: |
+          set -euo pipefail
+          # Ensure shellcheck is present so the test's shellcheck assertions actually run (they
+          # self-skip if it's missing). GitHub-hosted runners ship it; install defensively otherwise.
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq shellcheck
+          fi
+          deploy/tests/install-tpm-access.test.sh
 
       - name: cargo-audit + cargo-deny
         uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2

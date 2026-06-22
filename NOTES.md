@@ -633,8 +633,9 @@ Gotchas worth remembering:
 ## 2026-06-22 — qemu/swtpm helper polish (deferred #5 review items)
 **Resolution:** `wait_for_port` uses `bash -c '…' _ "$host" "$port"` ($1/$2 + SC2016 disable); `up.sh` gates swtpm reuse on `/proc/<pid>/comm` (failing fast when a live PID's comm is unreadable rather than clobbering its socket) and clears a stale `"${SWTPM_SOCK}"` + `"${SWTPM_PIDFILE}"` before relaunch; checksum-fail paths `rm -f "${BASE_IMG}.tmp"` before `die`. testing/swtpm/run.sh:60 · deploy/qemu/up.sh:75 · #7
 ## 2026-06-22 — production install must grant the enrolling user TPM access (tss group / udev)
-**Resolution:** `.deb` ships a udev rule gating `/dev/tpm*`+`/dev/tpmrm*` at MODE 0660 + GROUP tss
-(ownership left to root — tess provisions the group, not a `tss` user); postinst creates the `tss`
-group + reloads udev + prints the manual `usermod` step (a package can't know the seat user);
-`install.sh` adds `$SUDO_USER`/current user to `tss` and warns that a fresh login is required.
-`deploy/udev/70-tess-tpm.rules:8` · `deploy/install.sh:184` · `deploy/debian/postinst:13` · #46
+**Resolution:** `.deb` ships a udev rule tagging `/dev/tpm*`+`/dev/tpmrm*` `uaccess` (active seat user
+gets an ACL automatically — no group step on a normal login) with MODE 0660 + GROUP tss as a
+headless/SSH fallback (ownership left to root — tess provisions the group, not a `tss` user); the
+`70-` prefix runs before systemd's 73-seat-late.rules so uaccess is honored. postinst creates the
+`tss` group + reloads udev + prints the headless `usermod` step; `install.sh` adds `$SUDO_USER`/current
+user to `tss`. `deploy/udev/70-tess-tpm.rules:10` · `deploy/install.sh:185` · `deploy/debian/postinst:13` · #46
