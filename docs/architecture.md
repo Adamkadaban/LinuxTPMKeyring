@@ -307,7 +307,7 @@ child promptly (uninterruptible I/O), the call still returns within that bound, 
 linger and its reap is deferred to a detached thread — so the PAM thread is never blocked and the
 child is still reaped once the kernel can deliver the kill. Only in the extreme corner where even
 that reaper thread cannot be created (resource exhaustion) is the orphan left for the OS to reap at
-host-process exit; the caller is never blocked in any path. A run yields a `Reaped { pid, termination }` that
+host-process exit; the caller is never blocked in any path. A run yields a `RunOutcome { pid, termination }` that
 `gate::classify` maps to `Authorized` / `Declined` / `Unavailable` (a spawn or syscall error is
 `Unavailable` — fail open, never authorization).
 

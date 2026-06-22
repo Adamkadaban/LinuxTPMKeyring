@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::helper::{Reaped, Termination};
+use crate::helper::{RunOutcome, Termination};
 use crate::ret;
 
 /// Which PAM phase is running the gate. Auth may fail open to the password factor; a session open
@@ -29,7 +29,7 @@ pub enum GateResult {
 
 /// Map a supervised helper run to a [`GateResult`]. A spawn/syscall error is treated as
 /// `Unavailable` (fail open), never as authorization.
-pub fn classify(result: &std::io::Result<Reaped>) -> GateResult {
+pub fn classify(result: &std::io::Result<RunOutcome>) -> GateResult {
     match result {
         Ok(reaped) => match reaped.termination {
             Termination::Exited(status) if status.success() => GateResult::Authorized,
@@ -58,7 +58,7 @@ pub fn decide(phase: GatePhase, result: GateResult) -> i32 {
 
 /// Whether tess should abort cleanly with no gesture available — an SSH/remote session, or no TPM
 /// device present. Returns `PAM_IGNORE` to abort, `PAM_SUCCESS` to proceed with the gate.
-pub fn should_abort_remote_session(is_remote: bool, tpm_present: bool) -> i32 {
+pub fn should_abort(is_remote: bool, tpm_present: bool) -> i32 {
     if is_remote || !tpm_present {
         ret::PAM_IGNORE
     } else {
@@ -84,7 +84,7 @@ impl GateEnv {
 
     /// Whether the gate must abort (`PAM_IGNORE`) before doing any work.
     pub fn aborts(&self) -> bool {
-        should_abort_remote_session(self.is_remote, self.tpm_present) == ret::PAM_IGNORE
+        should_abort(self.is_remote, self.tpm_present) == ret::PAM_IGNORE
     }
 }
 
@@ -161,8 +161,8 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
     use std::process::ExitStatus;
 
-    fn reaped(termination: Termination) -> std::io::Result<Reaped> {
-        Ok(Reaped {
+    fn reaped(termination: Termination) -> std::io::Result<RunOutcome> {
+        Ok(RunOutcome {
             pid: 1,
             termination,
         })
@@ -180,7 +180,7 @@ mod tests {
         let timed_out = reaped(Termination::TimedOut {
             escalated_to_sigkill: true,
         });
-        let spawn_failed: std::io::Result<Reaped> =
+        let spawn_failed: std::io::Result<RunOutcome> =
             Err(std::io::Error::from_raw_os_error(libc::ENOENT));
 
         for outcome in [&declined, &timed_out, &spawn_failed] {
@@ -197,7 +197,7 @@ mod tests {
             escalated_to_sigkill: false,
         });
         let declined = reaped(Termination::Exited(ExitStatus::from_raw(3 << 8)));
-        let spawn_failed: std::io::Result<Reaped> =
+        let spawn_failed: std::io::Result<RunOutcome> =
             Err(std::io::Error::from_raw_os_error(libc::ENOENT));
 
         for outcome in [&timed_out, &declined, &spawn_failed] {
@@ -210,9 +210,9 @@ mod tests {
 
     #[test]
     fn aborts_in_remote_session_and_without_tpm() {
-        assert_eq!(should_abort_remote_session(true, true), ret::PAM_IGNORE);
-        assert_eq!(should_abort_remote_session(false, false), ret::PAM_IGNORE);
-        assert_eq!(should_abort_remote_session(false, true), ret::PAM_SUCCESS);
+        assert_eq!(should_abort(true, true), ret::PAM_IGNORE);
+        assert_eq!(should_abort(false, false), ret::PAM_IGNORE);
+        assert_eq!(should_abort(false, true), ret::PAM_SUCCESS);
     }
 
     #[test]

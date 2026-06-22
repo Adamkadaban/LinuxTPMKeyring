@@ -14,9 +14,7 @@ pub mod ffi;
 pub mod gate;
 pub mod helper;
 
-pub use gate::{
-    classify, decide, should_abort_remote_session, GateEnv, GatePhase, GateResult, HelperSpec,
-};
+pub use gate::{classify, decide, should_abort, GateEnv, GatePhase, GateResult, HelperSpec};
 pub use helper::Watchdog;
 
 /// PAM return codes used by this module (subset).

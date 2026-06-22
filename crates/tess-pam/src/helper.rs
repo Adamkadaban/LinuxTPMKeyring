@@ -64,21 +64,21 @@ pub enum Termination {
 /// be created (resource exhaustion), the orphan is left for the OS to reap when the host process
 /// exits — a best-effort corner that never blocks the caller.
 #[derive(Debug, Clone)]
-pub struct Reaped {
+pub struct RunOutcome {
     pub pid: u32,
     pub termination: Termination,
 }
 
 /// Spawn `command`, supervise it under `watchdog`, and reap it. Returns an error only if the child
 /// could not be spawned or a syscall failed — never blocks past `deadline + 2 * term_grace`.
-pub fn run(command: &mut Command, watchdog: &Watchdog) -> io::Result<Reaped> {
+pub fn run(command: &mut Command, watchdog: &Watchdog) -> io::Result<RunOutcome> {
     let mut child = command.spawn()?;
     let pid = child.id();
     let started = Instant::now();
 
     loop {
         if let Some(status) = child.try_wait()? {
-            return Ok(Reaped {
+            return Ok(RunOutcome {
                 pid,
                 termination: Termination::Exited(status),
             });
@@ -93,7 +93,7 @@ pub fn run(command: &mut Command, watchdog: &Watchdog) -> io::Result<Reaped> {
     match escalate_termination(&mut child, pid, watchdog)? {
         Kill::Reaped {
             escalated_to_sigkill,
-        } => Ok(Reaped {
+        } => Ok(RunOutcome {
             pid,
             termination: Termination::TimedOut {
                 escalated_to_sigkill,
@@ -105,7 +105,7 @@ pub fn run(command: &mut Command, watchdog: &Watchdog) -> io::Result<Reaped> {
             // background thread (best-effort — see reap_in_background for the resource-exhaustion
             // corner where the OS reaps the orphan at host-process exit instead).
             reap_in_background(child);
-            Ok(Reaped {
+            Ok(RunOutcome {
                 pid,
                 termination: Termination::TimedOut {
                     escalated_to_sigkill: true,
