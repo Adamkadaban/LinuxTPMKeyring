@@ -509,9 +509,11 @@ dependencies = [
 name = "tess-tpm"
 version = "0.0.0"
 dependencies = [
+ "getrandom",
  "tess-core",
  "thiserror",
  "tss-esapi",
+ "zeroize",
 ]
 
 [[package]]

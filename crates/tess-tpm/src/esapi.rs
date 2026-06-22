@@ -16,8 +16,9 @@ use tss_esapi::structures::{
 use tss_esapi::Context;
 
 /// Errors from the `tess-tpm` ESAPI layer. Wrap the underlying `tss-esapi` error as a string so the
-/// detail is preserved without leaking the crate's types across the public boundary. Maps into
-/// [`tess_core::Error::Tpm`] at the crate edge.
+/// detail is preserved without leaking the crate's types across the public boundary. At the crate
+/// edge the auth-related variants (`WrongPin`/`PinTooLong`/`PinEmpty`) map to
+/// [`tess_core::Error::Auth`]; everything else maps to [`tess_core::Error::Tpm`].
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("invalid TCTI configuration: {0}")]
@@ -37,13 +38,49 @@ pub enum Error {
 
     #[error("TPM returned no session handle")]
     NoSession,
+
+    #[error("failed to compute or run the PIN policy: {0}")]
+    Policy(String),
+
+    #[error("failed to generate the sealing key: {0}")]
+    Rng(String),
+
+    #[error("PIN is {len} bytes, exceeds the {max}-byte authValue limit")]
+    PinTooLong { len: usize, max: usize },
+
+    #[error("PIN must not be empty")]
+    PinEmpty,
+
+    #[error("failed to seal the key: {0}")]
+    Seal(String),
+
+    #[error("failed to load the sealed object: {0}")]
+    Load(String),
+
+    #[error("failed to unseal the key: {0}")]
+    Unseal(String),
+
+    #[error("failed to flush a transient TPM handle: {0}")]
+    Flush(String),
+
+    #[error("wrong PIN")]
+    WrongPin,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl From<Error> for tess_core::Error {
     fn from(e: Error) -> Self {
-        tess_core::Error::Tpm(e.to_string())
+        match e {
+            // A wrong PIN is an authentication failure, not a TPM fault — keep it distinguishable so
+            // the enrollment/recovery layers can react (retry, count toward lockout) rather than
+            // treating it as a hardware error. PinTooLong is likewise local input validation, not a
+            // TPM fault.
+            Error::WrongPin | Error::PinTooLong { .. } | Error::PinEmpty => {
+                tess_core::Error::Auth(e.to_string())
+            }
+            other => tess_core::Error::Tpm(other.to_string()),
+        }
     }
 }
 

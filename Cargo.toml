@@ -31,7 +31,7 @@ anyhow = "1"
 # Secret hygiene
 zeroize = { version = "1.9", features = ["derive"] }
 secrecy = "0.10"
-getrandom = "0.2"
+getrandom = "0.4"
 
 # Serde / config
 serde = { version = "1", features = ["derive"] }

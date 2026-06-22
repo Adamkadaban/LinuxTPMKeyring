@@ -1,6 +1,6 @@
 //! TPM2 seal/unseal of a random key, gated by a PIN `PolicyAuthValue`, with mandatory HMAC +
-//! parameter-encryption sessions. Phase 1 plumbing: an ESAPI context, the ECC storage primary, and
-//! the salted encrypted session that later seal/unseal builds on (seal/unseal itself is not here).
+//! parameter-encryption sessions. Provides an ESAPI context, the ECC storage primary, the salted
+//! encrypted session, and `seal`/`unseal` of a random key under a PIN over that session.
 
 use std::str::FromStr;
 
@@ -8,10 +8,12 @@ use tss_esapi::tcti_ldr::{DeviceConfig, NetworkTPMConfig, TctiNameConf};
 use tss_esapi::Context;
 
 mod esapi;
+mod seal;
 
 pub use esapi::{
     create_primary, ecc_storage_primary_template, start_salted_hmac_session, Error, Result,
 };
+pub use seal::{generate_sealing_key, seal, unseal, SealedObject};
 
 /// Selects the TPM transport: a software TPM (swtpm) for dev and CI, or the kernel resource
 /// manager (`/dev/tpmrm0`) for a real / virtual hardware TPM.
