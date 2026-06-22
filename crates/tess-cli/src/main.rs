@@ -17,7 +17,8 @@ struct Cli {
 enum Command {
     /// Enroll: seal a random key under a PIN and rekey the keyring in place (transactional).
     Enroll {
-        /// PIN that gates the TPM-sealed key. Prompted without echo when omitted.
+        /// PIN that gates the TPM-sealed key. Prompted without echo when omitted; prefer that —
+        /// a PIN passed here is visible in the process list and may land in shell history.
         #[arg(long)]
         pin: Option<String>,
     },

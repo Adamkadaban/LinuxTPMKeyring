@@ -86,31 +86,58 @@ struct Tx {
     new_key: Option<SecretBytes>,
 }
 
+/// The outcome of a rollback, distinguishing the two failure modes so the caller reacts correctly.
+enum Rollback {
+    /// The keyring is back on the original credential (or was never changed) and the blobs are gone.
+    Restored,
+    /// The keyring is back on the original credential but removing the now-orphaned blobs failed.
+    /// The keyring is safe and the recovery secret is **not** needed — only stale files remain.
+    CleanupFailed(anyhow::Error),
+    /// The original credential could **not** be restored: the keyring is stranded on the new key and
+    /// the blobs were deliberately kept as the only way back in. The recovery secret is needed.
+    RestoreFailed(anyhow::Error),
+}
+
 impl Tx {
     /// Undo, in reverse order, whatever was committed. Restores the keyring credential first; only
-    /// once it is safely back on `old` are the on-disk blobs removed. If the credential cannot be
-    /// restored, the blobs are deliberately **kept** (they are the only way back in) and the error
-    /// says so.
-    fn rollback(
-        &self,
-        keyring: &dyn KeyringBackend,
-        paths: &Paths,
-        old: &SecretBytes,
-    ) -> Result<()> {
+    /// once it is safely back on `old` are the on-disk blobs removed. The three outcomes
+    /// ([`Rollback`]) let the caller tell a true lockout risk ([`Rollback::RestoreFailed`]) apart
+    /// from a benign leftover-file error ([`Rollback::CleanupFailed`]).
+    fn rollback(&self, keyring: &dyn KeyringBackend, paths: &Paths, old: &SecretBytes) -> Rollback {
         if let Some(new_key) = &self.new_key {
-            keyring.rekey(new_key, old).context(
-                "CRITICAL: could not restore the original keyring credential after a failed \
-                 enrollment; the sealed and recovery blobs were left in place — run `tess recover` \
-                 with the saved recovery secret",
-            )?;
+            if let Err(e) = keyring.rekey(new_key, old) {
+                return Rollback::RestoreFailed(anyhow::Error::new(e).context(
+                    "could not restore the original keyring credential after a failed enrollment",
+                ));
+            }
         }
+        // The keyring is safe (on `old`, or never changed). Removing the orphaned blobs is
+        // best-effort cleanup; a failure here leaves only stale files, never a lockout.
+        let mut cleanup: Result<()> = Ok(());
         if self.metadata_written {
-            remove_file(&paths.metadata).context("remove sealed metadata during rollback")?;
+            if let Err(e) = remove_file(&paths.metadata) {
+                cleanup = Err(anyhow::Error::new(e).context(format!(
+                    "remove sealed metadata {} during rollback",
+                    paths.metadata.display()
+                )));
+            }
         }
         if self.recovery_written {
-            remove_file(&paths.recovery).context("remove recovery blob during rollback")?;
+            if let Err(e) = remove_file(&paths.recovery) {
+                let err = anyhow::Error::new(e).context(format!(
+                    "remove recovery blob {} during rollback",
+                    paths.recovery.display()
+                ));
+                cleanup = Err(match cleanup {
+                    Ok(()) => err,
+                    Err(prev) => prev.context(err.to_string()),
+                });
+            }
         }
-        Ok(())
+        match cleanup {
+            Ok(()) => Rollback::Restored,
+            Err(e) => Rollback::CleanupFailed(e),
+        }
     }
 }
 
@@ -166,21 +193,26 @@ pub fn enroll<S: KeySealer>(
             recovery_secret_display: display,
         }),
         Err(err) => match tx.rollback(keyring, paths, old) {
-            Ok(()) => {
+            Rollback::Restored => {
                 Err(err.context("enrollment failed and was rolled back to the original keyring"))
             }
-            Err(rollback_err) => {
-                // Catastrophe: the keyring is left on the new key and could not be restored, so the
-                // sealed + recovery blobs were kept. The user needs the recovery secret to get back
-                // in — print it directly to the terminal (one-time, like the success path) rather
-                // than embedding it in the error chain, which could be logged/telemetried repeatedly.
+            // The keyring is safe (restored to the original credential); only orphaned blobs remain.
+            // Do not print or expose the recovery secret — it isn't needed.
+            Rollback::CleanupFailed(cleanup_err) => Err(err.context(format!(
+                "enrollment failed and was rolled back to the original keyring, but removing the \
+                 orphaned enrollment blobs failed ({cleanup_err:#}); delete them manually"
+            ))),
+            // Genuine lockout risk: the keyring is stranded on the new key and the blobs were kept.
+            // The user needs the recovery secret — print it once to the terminal (like the success
+            // path) rather than embedding it in the error chain, which could be logged repeatedly.
+            Rollback::RestoreFailed(restore_err) => {
                 eprintln!(
                     "CRITICAL: enrollment failed and the original keyring credential could not be \
                      restored. Save this recovery secret and run `tess recover`:\n\n    {display}\n"
                 );
                 Err(err.context(format!(
-                    "enrollment failed and rollback could not fully restore the keyring \
-                     ({rollback_err:#}); the recovery secret was printed to stderr — run \
+                    "enrollment failed and the original keyring credential could not be restored \
+                     ({restore_err:#}); the recovery secret was printed to stderr — run \
                      `tess recover`"
                 )))
             }
@@ -328,8 +360,10 @@ mod tests {
             metadata_written: true,
             new_key: None,
         };
-        tx.rollback(&keyring, &p, &SecretBytes::new(b"old".to_vec()))
-            .unwrap();
+        assert!(matches!(
+            tx.rollback(&keyring, &p, &SecretBytes::new(b"old".to_vec())),
+            Rollback::Restored
+        ));
 
         assert!(!p.metadata.exists(), "metadata must be removed");
         assert!(!p.recovery.exists(), "recovery blob must be removed");
@@ -353,8 +387,10 @@ mod tests {
             metadata_written: true,
             new_key: Some(SecretBytes::new(b"new".to_vec())),
         };
-        tx.rollback(&keyring, &p, &SecretBytes::new(b"old".to_vec()))
-            .unwrap();
+        assert!(matches!(
+            tx.rollback(&keyring, &p, &SecretBytes::new(b"old".to_vec())),
+            Rollback::Restored
+        ));
 
         assert_eq!(
             *keyring.credential.borrow(),
@@ -384,15 +420,48 @@ mod tests {
             metadata_written: true,
             new_key: Some(SecretBytes::new(b"new".to_vec())),
         };
-        let err = tx
-            .rollback(&keyring, &p, &SecretBytes::new(b"old".to_vec()))
-            .expect_err("must surface the restore failure");
+        let outcome = tx.rollback(&keyring, &p, &SecretBytes::new(b"old".to_vec()));
 
-        assert!(format!("{err:#}").contains("tess recover"));
+        let Rollback::RestoreFailed(err) = outcome else {
+            panic!("expected RestoreFailed");
+        };
+        assert!(format!("{err:#}").contains("restore the original keyring credential"));
         assert!(p.metadata.exists(), "blobs kept as the only way back in");
         assert!(
             p.recovery.exists(),
             "recovery blob kept as the only way back in"
+        );
+    }
+
+    #[test]
+    fn rollback_after_restore_reports_cleanup_failure_without_keeping_lockout_risk() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(dir.path());
+        // A directory at the metadata path makes `remove_file` fail, simulating a cleanup IO error
+        // *after* the credential was restored — the keyring is safe, only a stale entry remains.
+        std::fs::create_dir(&p.metadata).unwrap();
+        write(&p.recovery);
+        let keyring = MockKeyring::new(b"new");
+
+        let tx = Tx {
+            recovery_written: true,
+            metadata_written: true,
+            new_key: Some(SecretBytes::new(b"new".to_vec())),
+        };
+        let outcome = tx.rollback(&keyring, &p, &SecretBytes::new(b"old".to_vec()));
+
+        let Rollback::CleanupFailed(err) = outcome else {
+            panic!("expected CleanupFailed");
+        };
+        assert!(format!("{err:#}").contains("metadata"));
+        assert_eq!(
+            *keyring.credential.borrow(),
+            b"old",
+            "credential was restored despite the cleanup failure"
+        );
+        assert!(
+            !p.recovery.exists(),
+            "the removable blob was still cleaned up"
         );
     }
 }

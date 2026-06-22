@@ -10,6 +10,7 @@ mod common;
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -35,6 +36,30 @@ const ITEMS: [(&str, &[u8]); 3] = [
 // `secret-service`'s client reads the bus address from `DBUS_SESSION_BUS_ADDRESS`, a process-global.
 // Serialize the suite so each test owns the env for its whole body.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// Sets a process-global env var for the duration of a test and restores its prior value (or unsets
+/// it) on drop, so the private-bus address never leaks into other tests in the same process.
+struct EnvGuard {
+    key: &'static str,
+    prev: Option<OsString>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let prev = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, prev }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.prev {
+            Some(v) => std::env::set_var(self.key, v),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
 
 /// A keyring backend wrapper that (a) records whether the recovery blob already existed the first
 /// time a rekey is attempted — to prove ordering — and (b) can inject a rekey failure.
@@ -137,7 +162,7 @@ fn with_fixture(body: impl FnOnce(&SecretService<'_>, &str, &str, &TctiConfig)) 
     let Some(keyring) = GnomeKeyring::start(OLD_PASSWORD) else {
         return;
     };
-    std::env::set_var("DBUS_SESSION_BUS_ADDRESS", keyring.address());
+    let _env = EnvGuard::set("DBUS_SESSION_BUS_ADDRESS", keyring.address());
     let service = SecretService::connect(EncryptionType::Dh).expect("connect Secret Service");
     let collection_path = login_collection_path(&service);
     seed_items(&service, &collection_path);
