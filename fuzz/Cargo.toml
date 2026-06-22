@@ -1,0 +1,59 @@
+[package]
+name = "tess-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+# The harnesses stay unsafe-free even though this crate is outside the workspace (so it doesn't
+# inherit the workspace `unsafe_code = "forbid"`). The libFuzzer C-ABI shim's unsafe lives in
+# libfuzzer-sys, not here.
+[lints.rust]
+unsafe_code = "forbid"
+
+# This crate is intentionally excluded from the parent workspace: cargo-fuzz drives it with the
+# nightly `-Z sanitizer` instrumentation libFuzzer needs, which must not perturb the workspace's
+# stable build/lint/test gates. Pin resolver v2 to match the parent workspace so dependency feature
+# unification is identical between `cargo test` and `cargo fuzz` builds.
+[workspace]
+resolver = "2"
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+# The crates whose untrusted-input parsers these harnesses exercise, by path.
+tess-core = { path = "../crates/tess-core" }
+tess-tpm = { path = "../crates/tess-tpm" }
+tess-cli = { path = "../crates/tess-cli" }
+
+# Replicates the exact pre-FFI TPM2B unmarshalling `tess_tpm::persist::from_metadata` performs,
+# pinned to the same version the workspace links against.
+tss-esapi = "7.7"
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "fuzz_metadata"
+path = "fuzz_targets/fuzz_metadata.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_tpm_blob"
+path = "fuzz_targets/fuzz_tpm_blob.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_dbus_reply"
+path = "fuzz_targets/fuzz_dbus_reply.rs"
+test = false
+doc = false
+bench = false

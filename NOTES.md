@@ -639,3 +639,30 @@ headless/SSH fallback (ownership left to root — tess provisions the group, not
 `70-` prefix runs before systemd's 73-seat-late.rules so uaccess is honored. postinst creates the
 `tss` group + reloads udev + prints the headless `usermod` step; `install.sh` adds `$SUDO_USER`/current
 user to `tss`. `deploy/udev/70-tess-tpm.rules:10` · `deploy/install.sh:185` · `deploy/debian/postinst:13` · #46
+
+## 2026-06-22 — Phase 6 wave 1: three cargo-fuzz harnesses + seeded corpora + CI (issue #51)
+**Resolution:** `cargo fuzz init` scaffolds `fuzz/` (own `[workspace]`, excluded from the stable
+workspace so nightly sanitizer flags don't perturb the build/lint/test gates). Three libFuzzer
+targets, all panic-free by design (they discard the parser `Result`): `fuzz_metadata` →
+`serde_json::from_slice::<tess_core::Metadata>` then `tess_tpm::persist::from_metadata`;
+`fuzz_tpm_blob` → replicates the pre-FFI `Public::unmarshall` + `Private::try_from` calls (u16-LE
+length prefix splits the two slices); `fuzz_dbus_reply` → strongest untrusted-input parser
+(recovery-blob `unwrap_key` JSON+base64+AEAD and grouped-hex `recovery::decode`). No `tess-*` crate
+touched — every entry point was already `pub`, so no wrapper and no `unsafe`. `.github/workflows/fuzz.yml`
+runs a short PR smoke (`-max_total_time=30`, 20-min job cap) and a nightly cron/dispatch long run
+(`-max_total_time=300`, 40-min cap). `fuzz/fuzz_targets/fuzz_dbus_reply.rs:1` · #51
+
+Gotchas worth remembering:
+- **The genuine D-Bus reply surfaces are too thin to fuzz.** `tess_fprint`'s fprintd `VerifyStatus`
+  interpretation (`classify_verify_result`) is a fixed four-arm string match; `tess_keyring`'s only
+  reply decode is a single `Locked` bool. Neither parses variable-length attacker bytes nor can
+  panic, so per the deliverable's fallback `fuzz_dbus_reply` targets the recovery-blob reload path
+  (`recovery.json` is on-disk and attacker-tamperable; `unwrap_key` runs serde + length-bounded
+  base64 + XChaCha20-Poly1305 open — the most parsing logic available). Documented in the harness.
+- **Corpus seeds are minimal/hand-built, not real TPM artifacts.** Real sealed blobs need a TPM
+  (never run on this host), so `fuzz_metadata`/`fuzz_tpm_blob` seeds are structurally-valid but
+  TPM-invalid (parse + reject deep), and the `fuzz_dbus_reply` recovery-blob seed has correct field
+  lengths/valid base64 (parses + AEAD-rejects under the harness's fixed key). The fuzzer-generated
+  corpus entries are deleted before commit; only the curated named seeds are tracked.
+- **`fuzz/.gitignore` keeps `corpus` tracked** (drops the cargo-fuzz default `corpus` ignore) so the
+  seeds ship; `target`/`artifacts`/`coverage` stay ignored.

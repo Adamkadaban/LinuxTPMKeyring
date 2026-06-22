@@ -1,0 +1,119 @@
+name: fuzz
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    # Nightly longer bounded fuzz run (03:17 UTC) to catch regressions the short PR smoke can't.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: fuzz smoke (PR)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          # libtss2-dev + the C/bindgen toolchain: the fuzz crate links the same tss-esapi FFI the
+          # tess-tpm TPM2B unmarshalling sits in front of.
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libclang-dev libtss2-dev
+
+      - name: Set up Rust nightly toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          toolchain: nightly
+          target: x86_64-unknown-linux-gnu
+          cache: true
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Install supply-chain tools
+        uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
+        with:
+          tool: cargo-audit,cargo-deny
+      - name: Audit + deny fuzz-only dependencies
+        run: |
+          set -euxo pipefail
+          # fuzz/ is a separate workspace with its own lockfile, so the main test.yml audit/deny gate
+          # doesn't cover it. Audit fuzz/Cargo.lock, and run cargo deny from the repo root against the
+          # fuzz manifest so fuzz-only deps are held to the same root deny.toml license/bans/sources.
+          # Run both from within fuzz/ so they use fuzz/Cargo.lock and fuzz/deny.toml (the latter
+          # mirrors the root policy but additionally allows NCSA for libfuzzer-sys's LLVM libFuzzer).
+          cd fuzz
+          cargo audit
+          cargo deny check
+
+      - name: Smoke each target (seed + short bounded run)
+        run: |
+          set -euxo pipefail
+          # `cargo fuzz run` builds the target before executing it — no separate build step needed.
+          for target in fuzz_metadata fuzz_tpm_blob fuzz_dbus_reply; do
+            cargo +nightly fuzz run "$target" --target x86_64-unknown-linux-gnu -- -runs=20000 -max_total_time=30
+          done
+
+  nightly:
+    name: fuzz nightly (long)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libclang-dev libtss2-dev
+
+      - name: Set up Rust nightly toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          toolchain: nightly
+          target: x86_64-unknown-linux-gnu
+          cache: true
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Install supply-chain tools
+        uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
+        with:
+          tool: cargo-audit,cargo-deny
+      - name: Audit + deny fuzz-only dependencies
+        run: |
+          set -euxo pipefail
+          # fuzz/ is a separate workspace with its own lockfile, so the main test.yml audit/deny gate
+          # doesn't cover it. Audit fuzz/Cargo.lock, and run cargo deny from the repo root against the
+          # fuzz manifest so fuzz-only deps are held to the same root deny.toml license/bans/sources.
+          # Run both from within fuzz/ so they use fuzz/Cargo.lock and fuzz/deny.toml (the latter
+          # mirrors the root policy but additionally allows NCSA for libfuzzer-sys's LLVM libFuzzer).
+          cd fuzz
+          cargo audit
+          cargo deny check
+
+      - name: Fuzz each target (longer bounded run)
+        run: |
+          set -euxo pipefail
+          # `cargo fuzz run` builds the target before executing it — no separate build step needed.
+          for target in fuzz_metadata fuzz_tpm_blob fuzz_dbus_reply; do
+            cargo +nightly fuzz run "$target" --target x86_64-unknown-linux-gnu -- -max_total_time=300
+          done

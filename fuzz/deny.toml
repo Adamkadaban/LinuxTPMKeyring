@@ -1,0 +1,38 @@
+# cargo-deny configuration for the (separate) fuzz workspace. Mirrors the root deny.toml policy but
+# additionally allows NCSA: libfuzzer-sys is licensed `(MIT OR Apache-2.0) AND NCSA` because it wraps
+# LLVM's libFuzzer (the NCSA / University of Illinois license is the LLVM license — OSI-approved and
+# FSF-Free). NCSA is intentionally NOT in the production root allowlist; it only ever reaches the
+# fuzzing tooling, never a shipped tess binary.
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "NCSA",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+deny = [
+    { name = "pamsm" },      # GPL-3.0
+    { name = "libbpf-rs" },  # LGPL-2.1
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
