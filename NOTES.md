@@ -633,7 +633,8 @@ Gotchas worth remembering:
 ## 2026-06-22 — qemu/swtpm helper polish (deferred #5 review items)
 **Resolution:** `wait_for_port` uses `bash -c '…' _ "$host" "$port"` ($1/$2 + SC2016 disable); `up.sh` gates swtpm reuse on `/proc/<pid>/comm` (failing fast when a live PID's comm is unreadable rather than clobbering its socket) and clears a stale `"${SWTPM_SOCK}"` + `"${SWTPM_PIDFILE}"` before relaunch; checksum-fail paths `rm -f "${BASE_IMG}.tmp"` before `die`. testing/swtpm/run.sh:60 · deploy/qemu/up.sh:75 · #7
 ## 2026-06-22 — production install must grant the enrolling user TPM access (tss group / udev)
-**Resolution:** `.deb` ships a udev rule keeping `/dev/tpm*`+`/dev/tpmrm*` at `tss:tss 0660`; postinst
-creates the `tss` group + reloads udev + prints the manual `usermod` step (a package can't know the
-seat user); `install.sh` adds `$SUDO_USER`/current user to `tss` and warns that a fresh login is
-required. `deploy/udev/70-tess-tpm.rules:6` · `deploy/install.sh:184` · `deploy/debian/postinst:13` · #46
+**Resolution:** `.deb` ships a udev rule gating `/dev/tpm*`+`/dev/tpmrm*` at MODE 0660 + GROUP tss
+(ownership left to root — tess provisions the group, not a `tss` user); postinst creates the `tss`
+group + reloads udev + prints the manual `usermod` step (a package can't know the seat user);
+`install.sh` adds `$SUDO_USER`/current user to `tss` and warns that a fresh login is required.
+`deploy/udev/70-tess-tpm.rules:8` · `deploy/install.sh:184` · `deploy/debian/postinst:13` · #46

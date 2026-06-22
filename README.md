@@ -47,7 +47,7 @@ isolation, which doesn't exist on commodity hardware. This is the same boundary 
 | Component | Supported | Notes |
 |---|---|---|
 | OS | **Debian 13** (trixie) | The reference target. Other systemd + PAM distros are likely workable but untested. |
-| TPM | **TPM 2.0** — discrete/firmware, or an **Azure Gen2 Trusted-Launch vTPM** | Operations go through the kernel TPM **resource manager** `/dev/tpmrm0` (required by enroll/unlock and `tess doctor`'s verdict). Debian 13 exposes it by default for a TPM 2.0; it is owned `tss:tss 0660`, so the enrolling user must be in the **`tss` group** (the installer arranges this — see [Install](#install)). The MVP policy binds the PIN authValue only (no PCR binding), so Azure's differing vTPM PCRs are fine. |
+| TPM | **TPM 2.0** — discrete/firmware, or an **Azure Gen2 Trusted-Launch vTPM** | Operations go through the kernel TPM **resource manager** `/dev/tpmrm0` (required by enroll/unlock and `tess doctor`'s verdict). Debian 13 exposes it by default for a TPM 2.0; it is group-accessible at mode `0660`, group `tss`, so the enrolling user must be in the **`tss` group** (the installer arranges this — see [Install](#install)). The MVP policy binds the PIN authValue only (no PCR binding), so Azure's differing vTPM PCRs are fine. |
 | Keyring | **GNOME** login keyring (freedesktop **Secret Service**, `org.freedesktop.secrets`) | Reference daemon. KWallet/KeePassXC expose the same API, so lock-state works, but headless rekey/unlock on non-GNOME daemons is future work. |
 | Login stack | **PAM** session phase (`pam_tess.so`, fail-open `optional`) | Wired by `tess install`; never blocks or fails a login. |
 | Fingerprint | **fprintd** (`net.reactivated.Fprint`), consumed unmodified | Optional front gate (opt-in); convenience only. |
@@ -78,16 +78,16 @@ non-interactively (`-y` plus `DEBIAN_FRONTEND=noninteractive`).
 ### TPM device access (the `tss` group)
 
 `tess enroll`/`unlock`/`status` run **as your login user** (they need your D-Bus session bus to reach
-the keyring) and talk to the TPM resource manager at `/dev/tpmrm0`, which is owned `tss:tss` mode
-`0660`. So your login user must be in the **`tss` group** — running the commands under `sudo` does
-*not* work, because a session bus authorizes only its owner UID, so root is refused.
+the keyring) and talk to the TPM resource manager at `/dev/tpmrm0`, which is group-accessible at
+mode `0660`, group `tss`. So your login user must be in the **`tss` group** — running the commands
+under `sudo` does *not* work, because a session bus authorizes only its owner UID, so root is refused.
 
 The installer handles this for you: the `.deb` ships a udev rule
-(`/usr/lib/udev/rules.d/70-tess-tpm.rules`) that keeps `/dev/tpm*` and `/dev/tpmrm*` at `tss:tss
-0660` and reloads udev, and `deploy/install.sh` adds the user who ran it (its `$SUDO_USER`, or the
-current user) to the `tss` group. **Group membership only applies to a new login session** — log out
-and back in (or reboot) before running `tess enroll`. When you install the `.deb` directly (not via
-`deploy/install.sh`), the package can't know which user to add, so add yourself manually:
+(`/usr/lib/udev/rules.d/70-tess-tpm.rules`) that keeps `/dev/tpm*` and `/dev/tpmrm*` at mode `0660`
+with group `tss` and reloads udev, and `deploy/install.sh` adds the user who ran it (its `$SUDO_USER`,
+or the current user) to the `tss` group. **Group membership only applies to a new login session** —
+log out and back in (or reboot) before running `tess enroll`. When you install the `.deb` directly
+(not via `deploy/install.sh`), the package can't know which user to add, so add yourself manually:
 
 ```sh
 sudo usermod -aG tss "$USER"   # then log out and back in

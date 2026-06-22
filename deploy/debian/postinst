@@ -7,9 +7,9 @@ set -e
 
 case "$1" in
 configure)
-	# The `tss` group owns /dev/tpmrm0 (see the packaged udev rule); a login user needs to be a
-	# member to run `tess enroll`/`unlock`/`status`. tpm2-tss packages usually create this group,
-	# but create it defensively so the udev rule's GROUP="tss" always resolves.
+	# The `tss` group gates access to /dev/tpmrm0 (via the packaged udev rule's MODE 0660 + GROUP tss);
+	# a login user needs to be a member to run `tess enroll`/`unlock`/`status`. tpm2-tss packages
+	# usually create this group, but create it defensively so the udev rule's GROUP="tss" always resolves.
 	getent group tss >/dev/null 2>&1 || groupadd --system tss
 
 	# Apply the packaged udev rule to the already-present TPM device without a reboot. Skip in a

@@ -2,6 +2,8 @@
 # login user (added to `tss`) can run `tess enroll`/`unlock`/`status`, which talk to
 # the kernel resource manager at /dev/tpmrm0. Mirrors the tpm2-tss upstream rule and is
 # shipped by tess in case Debian 13's default rule set does not guarantee it. The high
-# number runs late so this assertion wins over an earlier, weaker rule. See udev(7).
-KERNEL=="tpm[0-9]*", TAG+="systemd", MODE="0660", OWNER="tss", GROUP="tss"
-KERNEL=="tpmrm[0-9]*", TAG+="systemd", MODE="0660", OWNER="tss", GROUP="tss"
+# number runs late so this assertion wins over an earlier, weaker rule. Access is gated
+# by GROUP + MODE only — ownership is left to the default (root) because tess provisions
+# the `tss` group but not a `tss` user. See udev(7).
+KERNEL=="tpm[0-9]*", TAG+="systemd", MODE="0660", GROUP="tss"
+KERNEL=="tpmrm[0-9]*", TAG+="systemd", MODE="0660", GROUP="tss"

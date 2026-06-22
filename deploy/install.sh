@@ -177,10 +177,10 @@ build_deb() {
 }
 
 # Add the human running this installer to the `tss` group so they can read/write /dev/tpmrm0 and run
-# `tess enroll`/`unlock`/`status`. The packaged udev rule keeps the device at `tss:tss 0660`, so group
-# membership is the access gate. The group change only takes effect in a NEW login session — surface
-# that loudly. Pick the real user, not root: $SUDO_USER when invoked via sudo, else the current user
-# when the script is run unprivileged (it sudo's only the individual root operations).
+# `tess enroll`/`unlock`/`status`. The packaged udev rule gates the device at MODE 0660 + GROUP tss,
+# so group membership is the access gate. The group change only takes effect in a NEW login session —
+# surface that loudly. Pick the real user, not root: $SUDO_USER when invoked via sudo, else the
+# current user when the script is run unprivileged (it sudo's only the individual root operations).
 grant_tpm_access() {
 	local user
 	user=${SUDO_USER:-}
