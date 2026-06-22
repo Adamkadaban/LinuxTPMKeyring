@@ -367,6 +367,22 @@ session optional     pam_gnome_keyring.so auto_start
     }
 
     #[test]
+    fn block_without_trailing_newline_end_marker_is_detected_and_removed() {
+        // A hand-edited file whose END marker is the final line with no trailing newline: has_block
+        // and remove_block must agree (split_inclusive still yields that final line), so uninstall
+        // can't claim removal while leaving the block, and add_block can't duplicate it.
+        let no_nl = format!("session required pam_unix.so\n{}", block_text().trim_end());
+        assert!(!no_nl.ends_with('\n'));
+        assert!(has_block(&no_nl));
+        let removed = remove_block(&no_nl);
+        assert!(!has_block(&removed));
+        assert!(!removed.contains(SNIPPET_LINE));
+        assert_eq!(removed, "session required pam_unix.so\n");
+        // add_block stays idempotent on such a file (strip-then-append, single block).
+        assert_eq!(add_block(&no_nl).matches(BEGIN_MARKER).count(), 1);
+    }
+
+    #[test]
     fn add_to_non_newline_terminated_still_round_trips_to_terminated() {
         let no_nl = "session required pam_unix.so";
         let added = add_block(no_nl);
