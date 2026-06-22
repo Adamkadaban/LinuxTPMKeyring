@@ -251,7 +251,7 @@ fn probe_enrollment(required: bool) -> Probe {
     } else {
         "no recovery blob"
     };
-    Probe::new(NAME, ProbeStatus::Ok, &format!("enrolled; {recovery}"))
+    Probe::new(NAME, ProbeStatus::Ok, &format!("enrolled; {recovery}")).required_if(required)
 }
 
 fn probe_fprintd() -> Probe {
