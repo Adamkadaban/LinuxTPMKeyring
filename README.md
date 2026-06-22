@@ -72,8 +72,8 @@ tess enroll              # set a PIN, seal a random key, rekey your keyring (tra
 installs it with its runtime dependencies, then runs `tess install` to wire the fail-open PAM session
 module. It is idempotent. Flags: `--deb PATH` installs a prebuilt package instead of building;
 `--no-pam` skips the PAM wiring — wire it later with
-`sudo tess install --module /usr/lib/x86_64-linux-gnu/security/pam_tess.so`; `--yes` makes apt
-non-interactive.
+`sudo tess install --module /usr/lib/x86_64-linux-gnu/security/pam_tess.so`; `--yes` runs apt
+non-interactively (`-y` plus `DEBIAN_FRONTEND=noninteractive`).
 
 To build the package by hand:
 

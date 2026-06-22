@@ -31,7 +31,8 @@ Options:
   --no-pam         Install the package but skip `tess install` (no PAM wiring).
   --no-recommends  Pass --no-install-recommends to apt, so the optional fprintd
                    fingerprint stack (a Recommends) is not pulled in.
-  --yes            Pass -y to apt for non-interactive installs.
+  --yes            Assume yes and run apt non-interactively (adds -y and sets
+                   DEBIAN_FRONTEND=noninteractive so it never blocks on a prompt).
   -h, --help       Show this help and exit.
 
 With no --deb, the script builds the workspace in release mode and runs `cargo deb` to produce the
@@ -44,6 +45,7 @@ EOF
 
 deb=""
 run_pam=1
+noninteractive=""
 apt_args=()
 
 while [ "$#" -gt 0 ]; do
@@ -70,6 +72,7 @@ while [ "$#" -gt 0 ]; do
 		;;
 	--yes)
 		apt_args+=("-y")
+		noninteractive=1
 		shift
 		;;
 	-h | --help)
@@ -102,6 +105,17 @@ run_root() {
 		"$@"
 	else
 		sudo "$@"
+	fi
+}
+
+# Run apt-get with root privileges. With --yes, also set DEBIAN_FRONTEND=noninteractive so apt never
+# blocks on a prompt (e.g. a conffile decision) in automation. `env` carries the variable across the
+# sudo boundary, which resets the environment by default.
+apt_get() {
+	if [ -n "$noninteractive" ]; then
+		run_root env DEBIAN_FRONTEND=noninteractive apt-get "$@"
+	else
+		run_root apt-get "$@"
 	fi
 }
 
@@ -139,8 +153,8 @@ build_deb() {
 	# Build prerequisites for linking + bindgen (tss-esapi FFI, the PAM module). Idempotent: apt is a
 	# no-op for already-installed packages. Mirrors the build deps in .github/workflows/test.yml.
 	echo "==> installing build prerequisites"
-	run_root apt-get update
-	run_root apt-get install "${apt_args[@]}" \
+	apt_get update
+	apt_get install "${apt_args[@]}" \
 		build-essential pkg-config libclang-dev libtss2-dev libpam0g-dev
 	if ! command -v cargo-deb >/dev/null 2>&1; then
 		echo "==> installing cargo-deb"
@@ -170,8 +184,8 @@ install_deb() {
 		exit 1
 	}
 	echo "==> installing $path with its runtime dependencies"
-	run_root apt-get update
-	run_root apt-get install "${apt_args[@]}" "$path"
+	apt_get update
+	apt_get install "${apt_args[@]}" "$path"
 }
 
 require_debian_13
