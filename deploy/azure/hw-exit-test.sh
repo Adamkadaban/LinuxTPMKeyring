@@ -91,6 +91,18 @@ set -euo pipefail
 
 cd -- "${REMOTE_DIR}"
 
+# TPM access runs cargo under sudo, which leaves root-owned build artifacts (target/) that would
+# break a non-sudo `rm -rf` cleanup on the next run. If (and only if) a sudo build actually ran,
+# chown the tree back to the login user on exit (even on failure) so the harness stays idempotent.
+# `sudo -n` so the trap never blocks in a non-interactive run.
+used_sudo=0
+restore_owner() {
+  if [[ "${used_sudo}" -eq 1 ]]; then
+    sudo -n chown -R "$(id -u):$(id -g)" . 2>/dev/null || true
+  fi
+}
+trap restore_owner EXIT
+
 if [[ ! -e /dev/tpmrm0 ]]; then
   echo "error: /dev/tpmrm0 is not present on the VM — this is not a vTPM-enabled guest." >&2
   exit 1
@@ -120,11 +132,33 @@ fi
 
 # Wrap a command with sudo only when the login user can't read+write the TPM device directly,
 # preserving the toolchain PATH and build cache (HOME) so root reuses the user's target/ + registry.
+# sudo resolves the command via secure_path (not the inherited PATH), so a rustup-installed cargo in
+# ~/.cargo/bin is invisible to `sudo cargo`. Resolve the binary with `type -P` (external commands
+# only — never a function/alias), require it to be absolute so the sudo invocation can't depend on
+# the cwd, then run it under `env` with the caller's PATH so sub-tools (rustc, the linker) are found.
 tpm_run() {
   if [[ -r /dev/tpmrm0 && -w /dev/tpmrm0 ]]; then
     "$@"
   else
-    sudo --preserve-env=HOME,PATH,CARGO_HOME,RUSTUP_HOME "$@"
+    local bin
+    bin="$(type -P "$1")" || {
+      echo "error: '$1' is not an external command on PATH." >&2
+      return 1
+    }
+    if [[ "${bin}" != /* ]]; then
+      echo "error: '$1' resolved to a non-absolute path ('${bin}'); fix PATH." >&2
+      return 1
+    fi
+    shift
+    # Running as root: forward only absolute PATH entries so cargo's sub-tools (rustc, cc, ld,
+    # pkg-config, build scripts) can't be resolved from the cwd or other relative locations under
+    # root. Drops empty/relative components (`::`, `.`, `./bin`).
+    local safe_path="" part
+    while IFS= read -r -d ':' part || [[ -n "${part}" ]]; do
+      [[ "${part}" == /* ]] && safe_path="${safe_path:+${safe_path}:}${part}"
+    done <<< "${PATH}:"
+    used_sudo=1
+    sudo --preserve-env=HOME,CARGO_HOME,RUSTUP_HOME env "PATH=${safe_path}" "${bin}" "$@"
   fi
 }
 
