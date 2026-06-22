@@ -226,3 +226,36 @@ Gotchas worth remembering:
   `rt-async-io-crypto-rust`) so the blocking wrappers share one executor; mixing tokio + async-io
   panics at runtime. `cargo deny check` clean; `pgrep -af gnome-keyring-daemon` clean after every run
   (host daemon at `/run/user/1000` untouched).
+## 2026-06-21 — fprintd client over net.reactivated.Fprint + deterministic mock (issue #21)
+**Resolution:** `FprintClient` drives `Manager.GetDefaultDevice`→`Device.Claim`→subscribe
+`VerifyStatus`→`VerifyStart("any")`→wait→`VerifyStop`/`Release` via zbus 5 `#[proxy]`; bounded by an
+`async-io` `Timer` raced against each signal; `verify(deadline_ms)` (and `tess_core::AuthGate`) maps
+match→Ok, no-match/other-terminal→`Error::Auth`, deadline→`Error::Timeout`. Headless tests run a
+`python-dbusmock` mock under `dbus-run-session`. `crates/tess-fprint/src/lib.rs:1` ·
+`testing/fprint-mock/fprintd_mock.py:1` · PR for #21.
+
+Gotchas worth remembering:
+- **`AuthGate::authorize` is sync but zbus 5 is async-first.** Bridge with `async_io::block_on` on an
+  internal `async fn`; `async-io` auto-starts a global reactor thread, so its `Timer` fires under any
+  `block_on` (no tokio, no manual runtime). zbus's `Connection` drives its own socket I/O on a
+  separate thread, so `block_on` only awaits channels — works without an external executor.
+- **Subscribe to `VerifyStatus` BEFORE `VerifyStart`** or a fast mock/reader can emit into the gap and
+  the verify hangs to its deadline. zbus `receive_verify_status()` installs the match rule on await.
+- **Bound the wait with `futures_util::future::select(stream.next(), Timer::after(remaining))`.**
+  `Timer`'s `Future::Output` is `Instant` (not `()`), so the timeout arm is `Either::Right((_, _))`.
+  Recompute `remaining` each loop so retry tokens (`verify-retry-*`) can't extend past the deadline.
+- **Connect tests by explicit bus address (`connection::Builder::address`), not `Connection::session`**
+  — passing the private bus address to `connect_address` avoids mutating the global
+  `DBUS_SESSION_BUS_ADDRESS`, so the integration tests stay parallel-safe.
+- **dbusmock can emit a signal from an `AddMethod` body**: the code string runs with `self` bound to
+  the mock object, so `self.EmitSignal('net.reactivated.Fprint.Device','VerifyStatus','sb',[tok,True])`
+  works. The `stall` scenario just leaves `VerifyStart`'s body empty → client times out.
+- **Reap the whole group, not just the child.** Spawn `dbus-run-session` with `process_group(0)` and
+  `nix::sys::signal::killpg(SIGTERM→SIGKILL)` in `Drop`; killing only the `dbus-run-session` PID
+  orphans its `dbus-daemon` + the `dbusmock` server. `pgrep -af fprintd_mock|dbus-run-session` clean
+  after every run. `nix` is a dev-dependency (safe `killpg`, no `unsafe`).
+- Tests **skip-clean** if `python3`/`dbus-run-session`/`dbusmock` are missing, so default
+  `cargo test --workspace` is green anywhere; CI (`dbus-x11` + `python3-dbusmock` already installed in
+  `test.yml`) runs them for real. No `libfprint`/fprintd needed — only the D-Bus surface is mocked.
+- `clippy::doc-lazy-continuation` fires on a doc line that starts after a wrapped `(... + ...)` list-
+  looking fragment; reflowed the test module docstring to avoid the false list.

@@ -195,6 +195,53 @@ It asserts the keyring-preservation invariant (store N items → `rekey(old → 
 all N still decrypt), the lock/unlock state transitions, and that a wrong secret never unlocks. The
 suite uses throwaway keyrings only and skips cleanly when the daemons are absent, so the default
 `cargo test --workspace` stays green and daemon-free.
+## Fingerprint verify (`tess-fprint`)
+
+`tess-fprint` is a thin client over fprintd's `net.reactivated.Fprint` D-Bus API, consumed
+**unmodified** — exactly as `pam_fprintd` does, with no patches to fprintd or libfprint. A successful
+fingerprint match is **host-trusted convenience layered on top of the PIN authValue, never the sole
+gate**: the PIN sealed in the TPM is the real authorization, and this client never holds, derives, or
+releases key material — it only reports whether the local fprintd matched a finger.
+
+`FprintClient` follows the same call sequence `pam_fprintd` uses: `Manager.GetDefaultDevice` →
+`Device.Claim` → subscribe to the `VerifyStatus` signal → `Device.VerifyStart("any")` → wait for a
+terminal `VerifyStatus(result, done)` → `VerifyStop` → `Release` (the device is always released, best
+effort, before returning). The `verify(deadline_ms)` method (also exposed through the
+`tess_core::AuthGate` trait) maps results precisely and is **always bounded** — it races each signal
+against the remaining deadline via an async timer, so it can never block the caller indefinitely:
+
+- `verify-match` → `Ok(())`
+- `verify-no-match` → `tess_core::Error::Auth` ("fingerprint did not match")
+- any other terminal token (`verify-disconnected`, `verify-unknown-error`, …) → `Error::Auth` carrying
+  the token; transient tokens (`verify-retry-*`, `verify-swipe-too-short`) are waited through
+- deadline elapsed → `tess_core::Error::Timeout`
+
+Result classification (`classify_verify_result`) is a pure function unit-tested without a bus, so the
+match/no-match/retry/terminal-failure decision logic is covered in the default `cargo test`.
+`FprintClient::system` connects to fprintd on the system bus (production); `connect_address` connects
+to an explicit private bus address (tests), which keeps the suite parallel-safe with no global
+`DBUS_SESSION_BUS_ADDRESS` mutation.
+
+### Mock harness (`testing/fprint-mock/`)
+
+`testing/fprint-mock/fprintd_mock.py` is a deterministic `python-dbusmock` mock of just the slice of
+`net.reactivated.Fprint` the client consumes. It is launched under a private session bus so nothing
+touches the developer's real bus, real fprintd, or any reader:
+
+```sh
+dbus-run-session -- python3 testing/fprint-mock/fprintd_mock.py {match|no-match|stall}
+```
+
+It prints the private bus address on its first stdout line, then scripts `VerifyStart` per scenario:
+`match` emits `VerifyStatus("verify-match", true)`, `no-match` emits `verify-no-match`, and `stall`
+returns from `VerifyStart` but never emits — so a bounded client must time out. The integration tests
+(`crates/tess-fprint/tests/fprint_mock.rs`) spawn one harness per scenario in its own process group,
+read the address, run `verify`, and assert `Ok` / no-match `Auth` / bounded `Timeout`; a `Drop` guard
+SIGTERM-then-SIGKILLs the whole process group (the `dbus-run-session`, its `dbus-daemon`, and the
+`dbusmock` server) so no harness process leaks. When the tooling (`python3`, `dbus-run-session`,
+`python3-dbusmock`) is absent the tests skip cleanly, so plain `cargo test --workspace` stays green on
+any machine; CI installs the tooling and runs them for real. No real fingerprint hardware is ever
+touched.
 
 ## Deploy targets
 

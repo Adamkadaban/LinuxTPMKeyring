@@ -216,9 +216,9 @@ seconds with the helper reaped**.
 - [x] `tess-keyring`: `rekey(old, new)` (enroll) + `unlock(secret)`; GNOME reference impl; unstable private calls isolated behind the trait with a stable fallback
 - [x] `tess-keyring`: KWallet notes (`apiEnabled`), native-`pam_kwallet` path explicitly out of scope
 - [x] `tess-keyring`: tests vs a real daemon on the session bus
-- [ ] `tess-fprint`: `FprintClient` (`Claim`/`VerifyStart`/`VerifyStatus`/`Release`), consumed unmodified
-- [ ] `tess-fprint`: `testing/fprint-mock/` virtual-driver socket scripting + `python-dbusmock` template
-- [ ] `tess-fprint`: deterministic verify(match/no-match) tests, headless
+- [x] `tess-fprint`: `FprintClient` (`Claim`/`VerifyStart`/`VerifyStatus`/`Release`), consumed unmodified
+- [x] `tess-fprint`: `testing/fprint-mock/` virtual-driver socket scripting + `python-dbusmock` template
+- [x] `tess-fprint`: deterministic verify(match/no-match) tests, headless
 - [ ] `tess-pam`: minimal `libc` FFI in isolated `ffi` module; session entrypoints
 - [ ] `tess-pam`: **watchdog'd helper process + hard timeout + fail-open**; SSH/remote + no-TPM abort
 - [ ] `tess-pam`: **stall-injection "login never freezes" test** (bounded, helper reaped)
