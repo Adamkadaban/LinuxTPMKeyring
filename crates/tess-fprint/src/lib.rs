@@ -28,6 +28,11 @@ pub const VIRTUAL_DEVICE_ENV: &str = "FP_VIRTUAL_DEVICE";
 /// finger, matching `pam_fprintd`'s default.
 const VERIFY_ANY_FINGER: &str = "any";
 
+/// Extra time the hard wall-clock backstop allows beyond `deadline_ms` so the graceful inner-deadline
+/// path can finish its `VerifyStop`/`Release` cleanup. The backstop only cancels mid-flight when the
+/// bus is genuinely wedged — and fprintd releases a claim automatically when the client disconnects.
+const CLEANUP_GRACE: Duration = Duration::from_millis(1000);
+
 #[proxy(
     interface = "net.reactivated.Fprint.Manager",
     default_service = "net.reactivated.Fprint",
@@ -126,15 +131,17 @@ impl FprintClient {
     /// Run one bounded fingerprint verification.
     ///
     /// Returns `Ok(())` on `verify-match`, [`Error::Auth`] on `verify-no-match` or any other terminal
-    /// fprintd failure, and [`Error::Timeout`] if `deadline_ms` elapses first. The **entire**
-    /// operation — every D-Bus call (`GetDefaultDevice`, `Claim`, `VerifyStart`, …) as well as the
-    /// `VerifyStatus` wait — is raced against a single hard wall-clock deadline, so it can never block
-    /// past `deadline_ms` even on a wedged bus or unresponsive service. The device is released (best
-    /// effort) before returning on the graceful paths.
+    /// fprintd failure, and [`Error::Timeout`] if `deadline_ms` elapses first. The signal wait is
+    /// bounded by `deadline_ms` and runs `VerifyStop`/`Release` cleanup on the way out; an outer
+    /// `deadline_ms + CLEANUP_GRACE` wall-clock backstop additionally bounds the D-Bus setup calls
+    /// (`GetDefaultDevice`, `Claim`, …) so the call can never block past that ceiling even on a wedged
+    /// bus. The grace lets the graceful path finish cleanup; only a genuinely wedged bus hits the
+    /// backstop, and fprintd releases the claim when this client's connection drops.
     pub fn verify(&self, deadline_ms: u64) -> Result<()> {
         async_io::block_on(async move {
             let op = std::pin::pin!(self.verify_async(deadline_ms));
-            let timer = Timer::after(Duration::from_millis(deadline_ms));
+            let hard_cap = Duration::from_millis(deadline_ms).saturating_add(CLEANUP_GRACE);
+            let timer = Timer::after(hard_cap);
             match select(op, timer).await {
                 Either::Left((result, _)) => result,
                 Either::Right((_, _)) => Err(Error::Timeout(deadline_ms)),

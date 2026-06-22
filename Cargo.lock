@@ -1187,7 +1187,6 @@ dependencies = [
  "futures-util",
  "nix",
  "tess-core",
- "thiserror",
  "zbus",
 ]
 
