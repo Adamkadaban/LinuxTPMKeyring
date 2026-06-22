@@ -156,7 +156,9 @@ jobs:
       - name: Install cargo-vet
         uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
         with:
-          tool: cargo-vet
+          # Pinned: cargo-vet version bumps can reformat/migrate the supply-chain store and make
+          # --locked fail on unrelated PRs. Bump deliberately in a dedicated store-update PR.
+          tool: cargo-vet@0.10.2
 
       # The vet store is self-contained (exemptions only, no external [imports]), so there is no
       # upstream audit set to fetch and the gate is reproducible. --locked forbids cargo vet from
