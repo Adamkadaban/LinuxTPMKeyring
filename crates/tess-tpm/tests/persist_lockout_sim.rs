@@ -114,19 +114,30 @@ fn wrong_pin_increments_counter_and_pin_holder_recovers() {
             before.counter.saturating_add(1),
             "a wrong PIN must increment the DA lockout counter"
         );
-        assert!(
-            !after.is_locked_out(),
-            "one wrong PIN must not hard-lock a TPM whose max_auth_fail > 1"
-        );
+        // Only a TPM with room for more than one failure stays unlocked after a single wrong PIN;
+        // with max_auth_fail == 1 a single miss legitimately hard-locks.
+        if before.max_auth_fail > 1 {
+            assert!(
+                !after.is_locked_out(),
+                "one wrong PIN must not hard-lock a TPM whose max_auth_fail > 1"
+            );
+        }
     }
 
     // Below hard lockout the legitimate PIN holder still authorizes (and the object still yields the
-    // original key on a normal unseal).
-    pin_holder_recover(&mut context, primary.key_handle, &sealed, &pin)
-        .expect("PIN holder authorizes below hard lockout");
-    let recovered =
-        unseal(&mut context, primary.key_handle, &sealed, &pin).expect("correct PIN still unseals");
-    assert_eq!(recovered.as_slice(), key.as_slice());
+    // original key on a normal unseal). Skip when max_auth_fail == 1, where the single wrong PIN
+    // above already hard-locked the TPM.
+    if before.max_auth_fail == 1 {
+        eprintln!(
+            "max_auth_fail == 1: a single wrong PIN hard-locks; skipping PIN-holder recovery"
+        );
+    } else {
+        pin_holder_recover(&mut context, primary.key_handle, &sealed, &pin)
+            .expect("PIN holder authorizes below hard lockout");
+        let recovered = unseal(&mut context, primary.key_handle, &sealed, &pin)
+            .expect("correct PIN still unseals");
+        assert_eq!(recovered.as_slice(), key.as_slice());
+    }
 
     context
         .flush_context(primary.key_handle.into())
