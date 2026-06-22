@@ -106,14 +106,29 @@ pub fn install(plan: &InstallPlan) -> Result<InstallReport> {
     install_module(plan)?;
 
     let backup = plan.backup_file();
-    if !backup.exists() {
-        fs::copy(&plan.service_file, &backup).with_context(|| {
-            format!(
-                "back up {} to {} before editing",
-                plan.service_file.display(),
-                backup.display()
-            )
-        })?;
+    // Create the one-time backup only if absent, and only ever trust a regular file as the rollback
+    // artifact. A pre-existing directory or symlink at the backup path (possible in an
+    // attacker-writable --service directory) must abort rather than let the stack be edited without
+    // a valid backup.
+    match fs::symlink_metadata(&backup) {
+        Ok(meta) if meta.file_type().is_file() => {}
+        Ok(_) => bail!(
+            "backup path {} exists but is not a regular file; refusing to edit the PAM stack \
+             without a valid rollback backup",
+            backup.display()
+        ),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            fs::copy(&plan.service_file, &backup).with_context(|| {
+                format!(
+                    "back up {} to {} before editing",
+                    plan.service_file.display(),
+                    backup.display()
+                )
+            })?;
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("inspect backup path {}", backup.display()));
+        }
     }
 
     atomic_write_preserving_mode(&plan.service_file, &edited)
@@ -215,9 +230,10 @@ fn install_module(plan: &InstallPlan) -> Result<()> {
             .open(&tmp)
             .with_context(|| format!("create temp module file {}", tmp.display()))?;
         file.write_all(&bytes)?;
+        // Set the mode before the final fsync so contents + permission bits are committed together.
+        file.set_permissions(fs::Permissions::from_mode(0o644))?;
         file.sync_all()?;
         drop(file);
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o644))?;
         fs::rename(&tmp, &dst).with_context(|| {
             format!(
                 "install module {} -> {}",
@@ -273,11 +289,13 @@ fn atomic_write_preserving_mode(path: &Path, content: &str) -> Result<()> {
             .open(&tmp)
             .with_context(|| format!("create temp file {}", tmp.display()))?;
         file.write_all(content.as_bytes())?;
+        // Set the mode before the final fsync so contents + permission bits are committed together;
+        // otherwise a crash after rename could surface the file with default permissions.
+        if let Some(mode) = mode {
+            file.set_permissions(fs::Permissions::from_mode(mode))?;
+        }
         file.sync_all()?;
         drop(file);
-        if let Some(mode) = mode {
-            fs::set_permissions(&tmp, fs::Permissions::from_mode(mode))?;
-        }
         fs::rename(&tmp, path)?;
         sync_parent_dir(path)?;
         Ok(())
@@ -495,6 +513,19 @@ session optional     pam_gnome_keyring.so auto_start
         );
         assert!(!plan.installed_module().exists());
         assert!(!plan.backup_file().exists());
+    }
+
+    #[test]
+    fn install_aborts_when_backup_path_is_not_a_regular_file() {
+        let root = tempdir();
+        let plan = plan_in(root.path(), FIXTURE);
+        // A directory squatting at the backup path means there is no valid rollback artifact.
+        fs::create_dir(plan.backup_file()).unwrap();
+
+        let err = install(&plan).unwrap_err();
+        assert!(err.to_string().contains("not a regular file"));
+        // The PAM stack must be left untouched when a valid backup can't be written.
+        assert_eq!(fs::read_to_string(&plan.service_file).unwrap(), FIXTURE);
     }
 
     #[test]

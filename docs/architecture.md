@@ -445,7 +445,9 @@ filesystem layer (`install`/`uninstall`) backs up the original service file once
 edit, never overwriting the true original on re-run), runs `validate_stack` on the candidate **before
 writing**, and commits via a temp-file-plus-rename atomic write that preserves the file's mode — a
 crash mid-write can never leave a truncated PAM stack. Uninstall removes the block (validated),
-deletes the installed module, and removes the backup; it is a no-op when nothing is installed.
+deletes the installed module on a best-effort basis, and removes the backup; when module-dir
+detection fails it still un-wires the stack (the lockout-relevant part) and leaves the module in
+place rather than aborting. It is a no-op when nothing is installed.
 
 ### Module-directory detection
 

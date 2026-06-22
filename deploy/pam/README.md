@@ -60,6 +60,8 @@ directory — so it works across the multiarch layouts Debian and other distros 
 
 ## Removal
 
-`tess install --uninstall` removes the marked block from `common-session` (restoring the original
-stack), deletes the installed `pam_tess.so`, and removes the backup tess wrote before editing. It is
-idempotent and safe to run when tess is not installed.
+`tess install --uninstall` removes the marked block from `common-session` (restoring the stack to
+its pre-tess state while preserving any admin edits made outside the block), deletes the installed
+`pam_tess.so` on a best-effort basis, and removes the backup tess wrote before editing. If module-dir
+auto-detection fails it still un-wires the stack (the lockout-relevant part) and warns that the module
+was left in place rather than aborting. It is idempotent and safe to run when tess is not installed.
