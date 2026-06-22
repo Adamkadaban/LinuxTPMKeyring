@@ -26,6 +26,7 @@ pub mod cli;
 pub mod recovery;
 pub mod sealer;
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, ensure, Context, Result};
@@ -45,18 +46,27 @@ pub struct Paths {
 impl Paths {
     /// Per-user data locations under `$XDG_DATA_HOME/tess` (falling back to `$HOME/.local/share`).
     pub fn for_user() -> Result<Self> {
-        let base = if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-            PathBuf::from(xdg)
-        } else {
-            let home = std::env::var_os("HOME")
-                .ok_or_else(|| anyhow!("neither XDG_DATA_HOME nor HOME is set"))?;
-            PathBuf::from(home).join(".local/share")
-        };
+        let base = Self::resolve_base(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))?;
         let dir = base.join("tess");
         Ok(Self {
             metadata: dir.join("metadata.json"),
             recovery: dir.join("recovery.json"),
         })
+    }
+
+    /// Pure env-resolution logic, separated from the process-global `std::env` read so it is
+    /// deterministically testable. Per the XDG spec a relative (including empty) `XDG_DATA_HOME` is
+    /// ignored, so blobs never land in an unexpected relative/CWD location; an empty `HOME` is
+    /// likewise treated as unset.
+    fn resolve_base(xdg: Option<OsString>, home: Option<OsString>) -> Result<PathBuf> {
+        if let Some(dir) = xdg.map(PathBuf::from).filter(|p| p.is_absolute()) {
+            return Ok(dir);
+        }
+        let home = home
+            .map(PathBuf::from)
+            .filter(|p| !p.as_os_str().is_empty())
+            .ok_or_else(|| anyhow!("neither XDG_DATA_HOME nor HOME is set to a usable path"))?;
+        Ok(home.join(".local/share"))
     }
 }
 
@@ -347,6 +357,36 @@ mod tests {
             metadata: dir.join("metadata.json"),
             recovery: dir.join("recovery.json"),
         }
+    }
+
+    #[test]
+    fn resolve_base_prefers_absolute_xdg() {
+        let base = Paths::resolve_base(
+            Some(OsString::from("/data/xdg")),
+            Some(OsString::from("/home/u")),
+        )
+        .unwrap();
+        assert_eq!(base, PathBuf::from("/data/xdg"));
+    }
+
+    #[test]
+    fn resolve_base_ignores_empty_or_relative_xdg() {
+        let from_empty =
+            Paths::resolve_base(Some(OsString::from("")), Some(OsString::from("/home/u"))).unwrap();
+        assert_eq!(from_empty, PathBuf::from("/home/u/.local/share"));
+
+        let from_relative = Paths::resolve_base(
+            Some(OsString::from("relative/dir")),
+            Some(OsString::from("/home/u")),
+        )
+        .unwrap();
+        assert_eq!(from_relative, PathBuf::from("/home/u/.local/share"));
+    }
+
+    #[test]
+    fn resolve_base_rejects_missing_and_empty_home() {
+        assert!(Paths::resolve_base(None, None).is_err());
+        assert!(Paths::resolve_base(Some(OsString::from("")), Some(OsString::from(""))).is_err());
     }
 
     #[test]

@@ -62,6 +62,9 @@ jobs:
       - name: Test (Secret Service daemon)
         run: cargo test -p tess-keyring --features daemon-tests
 
+      - name: Test (enroll transaction — swtpm + keyring)
+        run: cargo test -p tess-cli --features sim,daemon-tests
+
       - name: PAM module load smoke test (pamtester)
         env:
           # Keep resolution deterministic regardless of the runner environment (the debug build
