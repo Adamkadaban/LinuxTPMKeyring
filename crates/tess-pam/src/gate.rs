@@ -247,11 +247,26 @@ mod tests {
 
     #[test]
     fn helper_spec_resolution_precedence() {
-        // This is the only test that touches HELPER_PATH_ENV, so the sequential set/remove here
-        // cannot race another test's read of it.
-        std::env::set_var(HELPER_PATH_ENV, "/env/helper");
+        // Restore any pre-existing value on the way out, even if an assertion panics, so this test
+        // neither leaks global state into others nor breaks when CI pre-sets the variable. This is
+        // the only test that touches HELPER_PATH_ENV, so no concurrent reader observes the mutation.
+        struct EnvGuard {
+            prev: Option<OsString>,
+        }
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.prev {
+                    Some(value) => std::env::set_var(HELPER_PATH_ENV, value),
+                    None => std::env::remove_var(HELPER_PATH_ENV),
+                }
+            }
+        }
+        let _guard = EnvGuard {
+            prev: std::env::var_os(HELPER_PATH_ENV),
+        };
 
         // A root-controlled PAM argument wins over the environment and the default.
+        std::env::set_var(HELPER_PATH_ENV, "/env/helper");
         assert_eq!(
             HelperSpec::resolve(&["helper=/etc/tess/helper", "debug"]).program,
             PathBuf::from("/etc/tess/helper")
