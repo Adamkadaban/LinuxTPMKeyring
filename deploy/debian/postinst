@@ -11,7 +11,8 @@ configure)
 tess installed. PAM wiring is NOT applied automatically, so installing the package can never
 lock you out of login. To finish setup, run as root on the target machine:
 
-  tess install      # wire pam_tess.so into the session stack (idempotent, fail-open)
+  tess install --module /usr/lib/x86_64-linux-gnu/security/pam_tess.so
+                    # wire pam_tess.so into the session stack (idempotent, fail-open)
   tess enroll       # set a PIN, seal a random key, rekey your keyring (transactional)
 
 Undo the PAM wiring at any time with:  tess install --uninstall

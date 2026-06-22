@@ -11,6 +11,11 @@
 
 set -euo pipefail
 
+# Where the .deb installs the PAM module. `tess install` looks for the module next to the `tess`
+# binary by default, and a packaged `/usr/bin/tess` has none beside it, so point `tess install` at
+# the packaged module explicitly. Matches the `assets` dest in crates/tess-cli/Cargo.toml.
+readonly pam_module="/usr/lib/x86_64-linux-gnu/security/pam_tess.so"
+
 usage() {
 	cat <<'EOF'
 Usage: deploy/install.sh [options]
@@ -149,16 +154,16 @@ install_deb "$deb"
 
 if [ "$run_pam" -eq 1 ]; then
 	echo "==> wiring the fail-open PAM session module via tess install"
-	run_root tess install
+	run_root tess install --module "$pam_module"
 	cat <<'EOF'
 ==> done. Next, on this machine:
   tess enroll                 # set a PIN, seal a random key, rekey your keyring (transactional)
 Undo the PAM wiring at any time with:  tess install --uninstall
 EOF
 else
-	cat <<'EOF'
+	cat <<EOF
 ==> package installed; PAM wiring skipped (--no-pam).
-  sudo tess install           # wire the fail-open PAM session module when ready
-  tess enroll                 # then enroll
+  sudo tess install --module $pam_module   # wire the fail-open PAM session module when ready
+  tess enroll                                                       # then enroll
 EOF
 fi

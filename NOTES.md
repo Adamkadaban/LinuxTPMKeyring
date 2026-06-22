@@ -564,3 +564,12 @@ Gotchas worth remembering:
 - **CI build host is Ubuntu, not Debian 13**, so `$auto` resolves Ubuntu package names — fine,
   because the CI step asserts only the three artifact *paths* via `dpkg -c`, not the depends line. A
   real Debian 13 `.deb` is produced by `install.sh` on the target.
+
+## 2026-06-22 — Copilot review #42: packaged `tess install` needs `--module` (issue #38)
+**Resolution:** After a `.deb` install `tess install` fails — `default_module_src()`
+(`crates/tess-cli/src/install/cli.rs:126`) looks for the module *next to the `tess` binary*, and a
+packaged `/usr/bin/tess` has none beside it. Fix is the documented override: point `tess install` at
+the packaged module with `--module /usr/lib/x86_64-linux-gnu/security/pam_tess.so`. `deploy/install.sh`
+passes it automatically; README + `postinst` show the explicit form for the manual/`--no-pam` path.
+The redundant re-copy (dpkg already placed the module there) is an idempotent no-op. `deploy/install.sh:157`
+· `deploy/debian/postinst:15` · `README.md` · PR #42.
