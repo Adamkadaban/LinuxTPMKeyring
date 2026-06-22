@@ -124,9 +124,10 @@ fn send_signal(pid: u32, signal: Signal) -> io::Result<()> {
 }
 
 /// Whether `pid` currently refers to a live (or zombie-but-unreaped) process. Used by tests to prove
-/// the watchdog left nothing behind.
+/// the watchdog left nothing behind. Only `ESRCH` means definitely gone; `EPERM` (exists but not
+/// signalable) still counts as alive.
 pub fn process_alive(pid: u32) -> bool {
-    matches!(kill(Pid::from_raw(pid as i32), None), Ok(()))
+    !matches!(kill(Pid::from_raw(pid as i32), None), Err(Errno::ESRCH))
 }
 
 #[cfg(test)]

@@ -51,7 +51,7 @@ pub struct pam_conv {
     pub conv: Option<
         unsafe extern "C" fn(
             num_msg: c_int,
-            msg: *mut *const pam_message,
+            msg: *const *const pam_message,
             resp: *mut *mut pam_response,
             appdata_ptr: *mut c_void,
         ) -> c_int,

@@ -224,9 +224,23 @@ mod tests {
     }
 
     #[test]
-    fn helper_spec_env_override_wins() {
-        let spec = HelperSpec::new("/tmp/custom-helper", vec![OsString::from("--check")]);
-        let command = spec.command();
-        assert_eq!(command.get_program(), "/tmp/custom-helper");
+    fn helper_spec_resolves_explicit_env_then_default() {
+        let explicit = HelperSpec::new("/tmp/custom-helper", vec![OsString::from("--check")]);
+        assert_eq!(explicit.command().get_program(), "/tmp/custom-helper");
+
+        // This is the only test that touches HELPER_PATH_ENV, so the sequential
+        // set/remove here cannot race another test's read of it.
+        std::env::remove_var(HELPER_PATH_ENV);
+        assert_eq!(
+            HelperSpec::from_env_or_default().program,
+            PathBuf::from(DEFAULT_HELPER_PATH)
+        );
+
+        std::env::set_var(HELPER_PATH_ENV, "/opt/tess/helper");
+        assert_eq!(
+            HelperSpec::from_env_or_default().program,
+            PathBuf::from("/opt/tess/helper")
+        );
+        std::env::remove_var(HELPER_PATH_ENV);
     }
 }
