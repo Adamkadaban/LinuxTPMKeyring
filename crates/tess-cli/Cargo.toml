@@ -30,6 +30,7 @@ tess-fprint.workspace = true
 tss-esapi.workspace = true
 clap.workspace = true
 anyhow.workspace = true
+thiserror.workspace = true
 zeroize.workspace = true
 getrandom.workspace = true
 base64.workspace = true

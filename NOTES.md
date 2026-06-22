@@ -347,3 +347,36 @@ Gotchas worth remembering:
   rather than derived — a derived `Debug` would leak the secret into any future log line.
 - swtpm + throwaway gnome-keyring run together per integration test; `pgrep` for `tess-cli-sim`/swtpm/
   `gnome-keyring-daemon` is clean after the run (each guard reaps on drop, even on panic).
+
+## 2026-06-22 — idempotent fail-open PAM installer (issue #30)
+**Resolution:** `tess install` / `tess install --uninstall` wire `session optional pam_tess.so` into
+`/etc/pam.d/common-session` via a re-runnable marked block, plus install/remove the module.
+`crates/tess-cli/src/install/config.rs` is pure string edit+validate logic; `install/mod.rs` does the
+filesystem side effects (backup → validate → atomic write → copy module). `deploy/pam/` holds the
+snippet + placement doc. PR for #30.
+
+Gotchas worth remembering:
+- **Uninstall restores from the marked block, not the backup, to preserve later admin edits.**
+  `config::remove_block` is the exact inverse of `add_block` for a newline-terminated stack (all real
+  `pam.d` files), so an install→uninstall round-trip is byte-for-byte. The backup is a safety artifact
+  (written once, never overwritten on re-install so it stays the *true* original) and is deleted on a
+  clean uninstall. A backup-based restore would clobber any admin edits made after install.
+- **Idempotency = strip-then-append.** `add_block` first calls `remove_block` then appends a fresh
+  block, so running install twice yields an identical file with exactly one block — no duplicate-line
+  drift. Asserted by counting `BEGIN_MARKER`/`SNIPPET_LINE` occurrences == 1.
+- **The fail-open invariant is enforced, not just documented.** `validate_stack` parses every
+  effective line and rejects any `pam_tess.so` line whose control flag is not fail-open (`optional`,
+  or a bracket with `default=ignore`/`ok` and no `die`/`bad`). `required`/`requisite`/`sufficient`
+  tess lines are rejected *before* the file is written; the edit aborts and the original is untouched
+  (it is never the temp file — temp-plus-rename atomic write). Non-tess `required` lines (e.g.
+  `pam_unix`) still pass — the rule is tess-specific.
+- **Module dir detection mirrors the CI smoke step:** bounded BFS for `pam_permit.so` under
+  `/lib`,`/usr/lib`,`/lib64`,`/usr/lib64`, take its parent. Depth-capped and does not follow symlinked
+  dirs, so a symlink loop can't trap it.
+- **`thiserror` had to be added to `tess-cli`'s manifest** for the `ValidationError` derive — it was a
+  workspace dep but only `tess-core` pulled it in before; without it `anyhow`'s `.context()` on a
+  `Result<_, ValidationError>` won't compile (the error must impl `std::error::Error`). No new crate
+  in the tree (`cargo deny` stays clean).
+- **Tests use temp fixtures only.** `/etc/pam.d` appears in `tess-cli` solely as the
+  `DEFAULT_SERVICE_FILE` const and one pure path-string assertion (`backup_path`); no test reads or
+  writes a real PAM path. Round-trip/idempotency live in `install::tests` + `tests/install_roundtrip.rs`.

@@ -3,7 +3,9 @@
 
 use clap::{Parser, Subcommand};
 
-use tess_cli::{doctor, enroll};
+use std::path::PathBuf;
+
+use tess_cli::{doctor, enroll, install};
 
 /// tess — Windows-Hello-style unlocking for the Linux keyring.
 #[derive(Parser)]
@@ -35,7 +37,20 @@ enum Command {
     /// Check TPM / keyring / fprintd readiness.
     Doctor,
     /// Wire (or unwire) the PAM module into the system stack.
-    Install,
+    Install {
+        /// Remove the tess PAM wiring and module instead of installing them.
+        #[arg(long)]
+        uninstall: bool,
+        /// `pam.d` service file to edit (default: the Debian session stack `/etc/pam.d/common-session`).
+        #[arg(long)]
+        service: Option<PathBuf>,
+        /// Built `pam_tess.so` to install (default: resolved next to the `tess` binary).
+        #[arg(long)]
+        module: Option<PathBuf>,
+        /// PAM module directory (default: auto-detected via `pam_permit.so`).
+        #[arg(long)]
+        module_dir: Option<PathBuf>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -43,12 +58,19 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Enroll { pin } => enroll::cli::run(pin)?,
         Command::Doctor => doctor::run(),
+        Command::Install {
+            uninstall,
+            service,
+            module,
+            module_dir,
+        } => install::cli::run(install::cli::InstallArgs {
+            uninstall,
+            service,
+            module,
+            module_dir,
+        })?,
         Command::Status => println!("tess status: not yet implemented"),
-        Command::Recover
-        | Command::Unenroll
-        | Command::Unlock
-        | Command::Test
-        | Command::Install => {
+        Command::Recover | Command::Unenroll | Command::Unlock | Command::Test => {
             println!("not yet implemented");
         }
     }

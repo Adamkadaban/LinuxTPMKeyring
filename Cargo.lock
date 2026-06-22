@@ -1249,6 +1249,7 @@ dependencies = [
  "tess-fprint",
  "tess-keyring",
  "tess-tpm",
+ "thiserror",
  "tss-esapi",
  "zbus",
  "zeroize",

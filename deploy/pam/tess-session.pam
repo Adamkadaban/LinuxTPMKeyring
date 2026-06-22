@@ -1,0 +1,7 @@
+# >>> tess >>>
+# Managed by `tess install` — do not edit between these markers. Run `tess install --uninstall`
+# to remove. The control flag is `optional`: a tess session failure (slow/declined unseal, no TPM)
+# is ignored and login proceeds with the keyring simply left locked, so this line can never lock a
+# user out. tess-pam's session phase always returns PAM_SUCCESS regardless.
+session optional pam_tess.so
+# <<< tess <<<
