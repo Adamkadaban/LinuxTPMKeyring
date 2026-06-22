@@ -248,6 +248,79 @@ SIGTERM-then-SIGKILLs the whole process group (the `dbus-run-session`, its `dbus
 any machine; CI installs the tooling and runs them for real. No real fingerprint hardware is ever
 touched.
 
+## Enrollment transaction (`tess-cli`)
+
+`tess enroll` composes the three building blocks — `tess-tpm` (seal/unseal), `tess-keyring` (in-place
+rekey), and `tess-core` (metadata) — into the project's #1 safety-critical path. It rekeys the login
+keyring from its password-derived wrapping key to a fresh random key sealed in the TPM, **transactionally**:
+a crash or error at any step must leave the keyring either fully-old or fully-enrolled, never a
+half-rekeyed lockout. The flow (`crates/tess-cli/src/enroll/mod.rs`) is strictly ordered:
+
+1. generate the random keyring key `K` (`generate_sealing_key`);
+2. **back up the recovery secret first** — wrap `K` under a user-saved recovery secret, verify the
+   wrap round-trips, and persist the recovery blob *before anything destructive*;
+3. seal `K` under the PIN, verify it unseals with that PIN, then persist the sealed blobs + metadata;
+4. verify the supplied old credential opens the keyring, then `rekey(old → K)` in place (destructive);
+5. verify the keyring unlocks with `K`, is no longer locked, and a known pre-existing item still
+   decrypts;
+6. commit.
+
+A `Tx` accumulator records exactly which destructive steps ran (recovery written, metadata written,
+keyring rekeyed). On any failure it rolls back **in reverse, credential-first**: it restores the
+original keyring credential (`rekey(K → old)`), and only once the keyring is safely back on `old`
+removes the just-written blobs. The one path that deliberately *keeps* the blobs is a failure to
+restore the credential during rollback — then the sealed and recovery blobs are the only way back in,
+so they are preserved and the error tells the user to run `tess recover` with the saved recovery
+secret. Verifying the unseal in step 3 *before* the rekey means a broken TPM path can never strand the
+keyring on a key the PIN can't recover. All key material lives in `SecretBytes`/`Zeroizing`; nothing
+secret reaches disk except the TPM-sealed blob and the recovery-wrapped blob (neither
+plaintext-recoverable).
+
+The `KeySealer` trait (`enroll::sealer`) abstracts seal/unseal so the transaction's rollback logic is
+unit-testable without a TPM; `TpmSealer` is the production impl owning the ESAPI context + ECC primary
+(the only place `tss-esapi` types appear in `tess-cli`). The CLI prompts for the PIN (or takes
+`--pin`) and the current keyring password without echo, selects the swtpm transport when
+`TESS_SWTPM_HOST`/`TESS_SWTPM_PORT` are set (else `/dev/tpmrm0`), and persists to
+`$XDG_DATA_HOME/tess/{metadata,recovery}.json`.
+
+### Recovery-secret scheme (TPM-independent)
+
+The TPM unseal path dies if the TPM is cleared or the PIN is lost, so enrollment additionally backs
+`K` up under a high-entropy **recovery secret** `R` the user saves offline (`enroll::recovery`). The
+scheme — committed in [ADR-0009](adr/0009-recovery-secret-wrapping-scheme.md):
+
+1. `R` — 256 bits from the OS CSPRNG, shown once as a transcription-friendly grouped-hex string.
+2. `KEK = HKDF-SHA256(salt, R, info)` with a fresh random salt — `R` is already high-entropy, so an
+   extract/expand KDF (not a slow password hash) suffices and keeps recovery instant.
+3. AEAD-seal `K` under `KEK` with **XChaCha20-Poly1305** and a fresh random 192-bit nonce.
+4. Persist only `{version, salt, nonce, ciphertext}` — never `K`, `R`, or any hash of either.
+
+The recovery blob is recoverable **without the TPM** (decrypt with `KEK` re-derived from the
+user-entered `R`) yet inert without `R`: the ciphertext is indistinguishable from random and the
+Poly1305 tag rejects a wrong secret or tampering. `R` is at least as strong as the PIN, so this never
+weakens the at-rest guarantee. `tess recover` (wave 2) decrypts the blob back to `K` to re-unlock and
+re-seal. Crypto is delegated to audited RustCrypto crates (`chacha20poly1305`, `hkdf`, `sha2`) — no
+hand-rolled primitives.
+
+### Tests
+
+The rollback bookkeeping and the recovery wrap/unwrap (round-trip, wrong-secret rejection, tamper
+detection, blob save/load) are pure unit tests in the default, hardware-free `cargo test --workspace`.
+The end-to-end transaction is gated behind `sim` + `daemon-tests`
+(`crates/tess-cli/tests/enroll_transaction.rs`), driving the real swtpm and a throwaway
+`gnome-keyring-daemon`:
+
+```sh
+cargo test -p tess-cli --features sim,daemon-tests
+```
+
+It asserts the happy path seals + rekeys + verifies and that **both** unlock paths (TPM-unseal with
+the PIN, and the TPM-independent recovery secret) recover the *same* key; and — the load-bearing
+safety assertion — that a failure injected at each destructive step (rekey, item-verify, persist)
+rolls back with all three pre-existing items intact and no sealed/recovery blobs left behind, and that
+the recovery backup is always created before the destructive rekey. Throwaway keyrings only; every
+swtpm/dbus/keyring process is reaped on drop.
+
 ## Deploy targets
 
 | Path | Purpose |

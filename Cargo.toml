@@ -47,6 +47,14 @@ clap = { version = "4", features = ["derive"] }
 
 # TPM (pinned ≥7.1.0 — RUSTSEC-2023-0044).
 tss-esapi = "7.7"
+# Recovery-secret wrapping: derive a key-encryption key from the high-entropy recovery secret
+# (HKDF-SHA256) and AEAD-seal the keyring key under it (XChaCha20-Poly1305), so the keyring is
+# recoverable without the TPM yet the on-disk blob is inert without the recovery secret.
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+hkdf = "0.12"
+sha2 = "0.10"
+# Non-echoing prompt for the current keyring password at enroll time.
+rpassword = "7"
 # D-Bus / Secret Service. async-io runtime on both so the blocking wrappers share one executor.
 zbus = "5"
 secret-service = { version = "5", default-features = false, features = [

@@ -188,7 +188,7 @@ swtpm in CI (`--features sim`).
 - [x] Versioned blob+metadata persistence; **no secret/secret-hash ever on disk**
 - [x] DA-lockout error mapping + lockout-state read + PIN-holder recovery (privileged lockout-hierarchy reset deferred → #16 / ADR-0008)
 - [x] Tests (swtpm/CI, `--features sim`): round-trip, wrong-PIN, lockout, persistence reload, **session-encryption assertion**; `hw`-feature suite + Azure exit-test harness + `doctor` TPM detail authored
-- [ ] Same suite green on the **Azure vTPM** (`cargo test -p tess-tpm --features hw`) — orchestrator's real-hardware exit run
+- [x] Same suite green on the **Azure vTPM** (`cargo test -p tess-tpm --features hw`) — orchestrator's real-hardware exit run
 
 | Wave | Worktree slug | Depends on | Tasks |
 |---|---|---|---|
@@ -243,7 +243,7 @@ recovery secret; `tess unenroll` restores password-based keyring with all items 
 --workspace` green.
 
 **Deliverables:**
-- [ ] `tess enroll`: gen key → seal (PIN) → **back up recovery secret first** → **rekey keyring in place, preserving all existing items** → write metadata; transactional with rollback
+- [x] `tess enroll`: gen key → seal (PIN) → **back up recovery secret first** → **rekey keyring in place, preserving all existing items** → write metadata; transactional with rollback
 - [ ] `tess recover`: re-unlock/re-enroll via recovery secret (covers TPM clear, PIN loss, PCR change)
 - [ ] `tess unenroll`: rekey keyring back to a password, remove blobs — restores stock behavior, items intact
 - [ ] `tess status`: enrollment/keyring/TPM/DA-lockout state

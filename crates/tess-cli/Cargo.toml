@@ -12,13 +12,38 @@ repository.workspace = true
 name = "tess"
 path = "src/main.rs"
 
+[features]
+# Drives the transactional enroll integration suite against an isolated swtpm (TPM seal/unseal) and a
+# throwaway gnome-keyring on a private bus (Secret Service rekey). Off by default so
+# `cargo test --workspace` stays hardware-free; the enroll CI job runs
+# `cargo test -p tess-cli --features sim,daemon-tests`. `daemon-tests` pulls in `secret-service` as
+# the high-level client that seeds and reads back the pre-existing items the rollback tests assert
+# survive.
+sim = []
+daemon-tests = ["dep:secret-service"]
+
 [dependencies]
 tess-core.workspace = true
 tess-tpm.workspace = true
 tess-keyring.workspace = true
 tess-fprint.workspace = true
+tss-esapi.workspace = true
 clap.workspace = true
 anyhow.workspace = true
+zeroize.workspace = true
+getrandom.workspace = true
+base64.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+chacha20poly1305.workspace = true
+hkdf.workspace = true
+sha2.workspace = true
+rpassword.workspace = true
+secret-service = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+zbus.workspace = true
 
 [lints]
 workspace = true

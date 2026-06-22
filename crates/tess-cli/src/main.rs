@@ -1,8 +1,9 @@
-//! The `tess` CLI. Skeleton — subcommands implemented in Phase 3 (see `PLAN.md` §5).
+//! The `tess` CLI. Enrollment is implemented; the remaining lifecycle subcommands land in a later
+//! phase.
 
 use clap::{Parser, Subcommand};
 
-mod doctor;
+use tess_cli::{doctor, enroll};
 
 /// tess — Windows-Hello-style unlocking for the Linux keyring.
 #[derive(Parser)]
@@ -15,7 +16,12 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Enroll: seal a random key under a PIN and rekey the keyring in place (transactional).
-    Enroll,
+    Enroll {
+        /// PIN that gates the TPM-sealed key. Prompted without echo when omitted; prefer that —
+        /// a PIN passed here is visible in the process list and may land in shell history.
+        #[arg(long)]
+        pin: Option<String>,
+    },
     /// Re-unlock / re-enroll using the recovery secret.
     Recover,
     /// Restore the password-based keyring (items preserved) and remove sealed blobs.
@@ -35,15 +41,15 @@ enum Command {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Enroll { pin } => enroll::cli::run(pin)?,
         Command::Doctor => doctor::run(),
-        Command::Status => println!("tess status: not yet implemented (Phase 3)"),
-        Command::Enroll
-        | Command::Recover
+        Command::Status => println!("tess status: not yet implemented"),
+        Command::Recover
         | Command::Unenroll
         | Command::Unlock
         | Command::Test
         | Command::Install => {
-            println!("not yet implemented — see PLAN.md");
+            println!("not yet implemented");
         }
     }
     Ok(())
