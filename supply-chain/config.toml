@@ -4,18 +4,6 @@
 [cargo-vet]
 version = "0.10"
 
-[imports.bytecodealliance]
-url = "https://raw.githubusercontent.com/bytecodealliance/wasmtime/main/supply-chain/audits.toml"
-
-[imports.embark-studios]
-url = "https://raw.githubusercontent.com/EmbarkStudios/rust-ecosystem/main/audits.toml"
-
-[imports.google]
-url = "https://raw.githubusercontent.com/google/supply-chain/main/audits.toml"
-
-[imports.mozilla]
-url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
-
 [[exemptions.aead]]
 version = "0.5.2"
 criteria = "safe-to-deploy"
@@ -84,12 +72,24 @@ criteria = "safe-to-deploy"
 version = "0.2.14"
 criteria = "safe-to-deploy"
 
+[[exemptions.async-task]]
+version = "4.7.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.async-trait]]
 version = "0.1.89"
 criteria = "safe-to-deploy"
 
+[[exemptions.atomic-waker]]
+version = "1.1.2"
+criteria = "safe-to-deploy"
+
 [[exemptions.autocfg]]
 version = "1.5.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.base64]]
+version = "0.22.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.bitfield]]
@@ -116,6 +116,10 @@ criteria = "safe-to-deploy"
 version = "1.6.2"
 criteria = "safe-to-deploy"
 
+[[exemptions.bumpalo]]
+version = "3.20.3"
+criteria = "safe-to-deploy"
+
 [[exemptions.cbc]]
 version = "0.1.2"
 criteria = "safe-to-deploy"
@@ -124,12 +128,20 @@ criteria = "safe-to-deploy"
 version = "1.0.4"
 criteria = "safe-to-deploy"
 
+[[exemptions.cfg_aliases]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.chacha20]]
 version = "0.9.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.chacha20poly1305]]
 version = "0.10.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.cipher]]
+version = "0.4.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.clap]]
@@ -182,6 +194,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.enumflags2_derive]]
 version = "0.7.12"
+criteria = "safe-to-deploy"
+
+[[exemptions.equivalent]]
+version = "1.0.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.errno]]
@@ -240,8 +256,16 @@ criteria = "safe-to-deploy"
 version = "0.17.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.heck]]
+version = "0.5.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.hermit-abi]]
 version = "0.5.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.hex]]
+version = "0.4.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.hkdf]]
@@ -316,8 +340,24 @@ criteria = "safe-to-deploy"
 version = "0.4.6"
 criteria = "safe-to-deploy"
 
+[[exemptions.num-derive]]
+version = "0.4.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.num-integer]]
+version = "0.1.46"
+criteria = "safe-to-deploy"
+
 [[exemptions.num-iter]]
 version = "0.1.45"
+criteria = "safe-to-deploy"
+
+[[exemptions.num-rational]]
+version = "0.4.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.num-traits]]
+version = "0.2.19"
 criteria = "safe-to-deploy"
 
 [[exemptions.oid]]
@@ -338,6 +378,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.ordered-stream]]
 version = "0.2.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.parking]]
+version = "2.2.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.picky-asn1]]
@@ -374,6 +418,14 @@ criteria = "safe-to-deploy"
 
 [[exemptions.proc-macro-crate]]
 version = "3.5.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.proc-macro2]]
+version = "1.0.106"
+criteria = "safe-to-deploy"
+
+[[exemptions.quote]]
+version = "1.0.45"
 criteria = "safe-to-deploy"
 
 [[exemptions.r-efi]]
@@ -456,6 +508,10 @@ criteria = "safe-to-deploy"
 version = "1.2.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.strsim]]
+version = "0.11.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.subtle]]
 version = "2.6.1"
 criteria = "safe-to-deploy"
@@ -526,6 +582,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.universal-hash]]
 version = "0.5.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.utf8parse]]
+version = "0.2.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.uuid]]

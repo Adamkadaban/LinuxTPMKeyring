@@ -668,11 +668,13 @@ Gotchas worth remembering:
   seeds ship; `target`/`artifacts`/`coverage` stay ignored.
 
 ## 2026-06-22 — Phase 6 wave 2: cargo vet + minimal-versions CI + auditd config (issue #52)
-**Resolution:** `cargo vet init` bootstrap-exempted all 175 deps; importing Mozilla/Google/
-bytecodealliance/embark audit sets (`--locked` against `imports.lock`) fully-audits 18, leaving 157
-exemptions (the accepted MVP state). New `vet` + `minimal-versions` jobs in `test.yml`; auditd rules
-ship in the `.deb` at `/usr/share/tess/auditd/tess.rules`. `supply-chain/audits.toml` ·
-`.github/workflows/test.yml` · `deploy/auditd/tess.rules:1` · #52
+**Resolution:** `cargo vet` with a **self-contained exemptions store** — all 175 deps exempted, no
+external `[imports]`. The Mozilla/Google/etc. audit-set imports were tried first but broke `cargo vet
+--locked` in CI: the fetched upstream `audits.toml` notes reformat between cargo-vet versions, so
+`imports.lock` drifts and `--locked` fails non-deterministically. Dropping imports makes the gate
+reproducible (no upstream fetch). New `vet` job in `test.yml`, `minimal-versions` in its own nightly
+workflow; auditd rules ship in the `.deb` at `/usr/share/tess/auditd/tess.rules`.
+`supply-chain/config.toml` · `.github/workflows/minimal-versions.yml` · `deploy/auditd/tess.rules:1` · #52
 
 Gotchas worth remembering:
 - **`tss-esapi`/`secret-service`/`zbus` left exempted, NOT certified.** A `safe-to-deploy`
