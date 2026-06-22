@@ -117,6 +117,7 @@ jobs:
           grep -Eq ' \./usr/lib/tess/tess-pam-helper$' /tmp/tess-deb-contents.txt
           grep -Eq ' \./usr/lib/x86_64-linux-gnu/security/pam_tess\.so$' /tmp/tess-deb-contents.txt
           grep -Eq ' \./usr/lib/udev/rules\.d/70-tess-tpm\.rules$' /tmp/tess-deb-contents.txt
+          grep -Eq ' \./usr/share/tess/auditd/tess\.rules$' /tmp/tess-deb-contents.txt
 
       - name: TPM-access install wiring (static assertions)
         run: |
@@ -139,3 +140,29 @@ jobs:
 
       - name: Supply-chain bans/licenses/sources
         run: cargo deny check
+
+  vet:
+    name: cargo vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache: true
+
+      - name: Install cargo-vet
+        uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
+        with:
+          # Pinned: cargo-vet version bumps can reformat/migrate the supply-chain store and make
+          # --locked fail on unrelated PRs. Bump deliberately in a dedicated store-update PR.
+          tool: cargo-vet@0.10.2
+
+      # The vet store is self-contained (exemptions only, no external [imports]), so there is no
+      # upstream audit set to fetch and the gate is reproducible. --locked forbids cargo vet from
+      # mutating the store, turning any drift between the committed exemptions and the lockfile into a
+      # CI failure. cargo vet never compiles the workspace, so no system libraries are needed.
+      - name: cargo vet
+        run: cargo vet --locked

@@ -666,3 +666,34 @@ Gotchas worth remembering:
   corpus entries are deleted before commit; only the curated named seeds are tracked.
 - **`fuzz/.gitignore` keeps `corpus` tracked** (drops the cargo-fuzz default `corpus` ignore) so the
   seeds ship; `target`/`artifacts`/`coverage` stay ignored.
+
+## 2026-06-22 — Phase 6 wave 2: cargo vet + minimal-versions CI + auditd config (issue #52)
+**Resolution:** `cargo vet` with a **self-contained exemptions store** — all 175 deps exempted, no
+external `[imports]`. The Mozilla/Google/etc. audit-set imports were tried first but broke `cargo vet
+--locked` in CI: the fetched upstream `audits.toml` notes reformat between cargo-vet versions, so
+`imports.lock` drifts and `--locked` fails non-deterministically. Dropping imports makes the gate
+reproducible (no upstream fetch). New `vet` job in `test.yml`, `minimal-versions` in its own nightly
+workflow; auditd rules ship in the `.deb` at `/usr/share/tess/auditd/tess.rules`.
+`supply-chain/config.toml` · `.github/workflows/minimal-versions.yml` · `deploy/auditd/tess.rules:1` · #52
+
+Gotchas worth remembering:
+- **`tss-esapi`/`secret-service`/`zbus` left exempted, NOT certified.** A `safe-to-deploy`
+  cargo-vet certification is a shareable security attestation; honestly attesting the FFI-heavy
+  `tss-esapi` (+ `-sys`) or the large async `zbus`/`secret-service` stack needs a real deep review
+  out of scope for this wave. Fabricating it would pollute an importable audit set, so they stay as
+  exemptions — still pinned (`tss-esapi ≥ 7.1.0`, RUSTSEC-2023-0044) and `cargo audit`/`deny`-gated.
+  `cargo vet certify --criteria safe-to-deploy --who … --notes … --accept-all` is non-interactive
+  and works; the blocker was honesty, not mechanics.
+- **`-Z minimal-versions`, NOT `-Z direct-minimal-versions`.** direct-minimal fails to even resolve
+  this graph (`getrandom = "0.4"` floor conflicts when only direct deps are minimized while
+  transitives stay latest). Full `-Z minimal-versions` + `cargo +nightly check --workspace
+  --all-targets` builds clean for the default feature set — no lower-bound bumps were needed.
+- **The minimal-versions job deliberately omits `--all-features`.** `--all-features` enables
+  `tss-esapi` optional features we never compile, which drag in an old transitive `num-bigint`
+  whose own under-declared floor (`div_ceil(&n64)`) won't build on current nightly. That floor is
+  not ours to fix; the default-feature `--all-targets` check is the meaningful proof of our bounds.
+- **auditd is tamper-EVIDENCE, not a boundary.** Watches the installed binaries/PAM module/helper/
+  udev rule/`common-session` only; per-user `~/.local/share/tess` blobs are unwatched (system-wide
+  ruleset can't enumerate per-user paths, and they're already inert without TPM+PIN / recovery
+  secret). Shipped to `/usr/share/tess`, never `/etc/audit/rules.d` — opt-in only; root can disable
+  auditd, so it's forensic-only. Framing duplicated in the file header, `threat-model.md`, README.
