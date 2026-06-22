@@ -131,6 +131,13 @@ fn derive_kek(recovery: &SecretBytes, salt: &[u8]) -> Result<Zeroizing<[u8; KEK_
 /// AEAD-seal `key` under a key-encryption key derived from `recovery`, returning the persistable
 /// blob. Salt and nonce are fresh per call.
 pub fn wrap_key(key: &SecretBytes, recovery: &SecretBytes) -> Result<RecoveryBlob> {
+    // The recovery format is fixed-size; refuse a non-32-byte key up front so a misuse fails
+    // immediately rather than persisting a `recovery.json` that `unwrap_key` would later reject.
+    ensure!(
+        key.len() == WRAPPED_KEY_LEN,
+        "recovery wrap expects a {WRAPPED_KEY_LEN}-byte key, got {}",
+        key.len()
+    );
     let mut salt = [0u8; SALT_LEN];
     getrandom::fill(&mut salt).map_err(|e| anyhow!("draw recovery salt: {e}"))?;
     let mut nonce = [0u8; NONCE_LEN];
@@ -160,30 +167,9 @@ pub fn unwrap_key(blob: &RecoveryBlob, recovery: &SecretBytes) -> Result<SecretB
         blob.version,
         RECOVERY_BLOB_VERSION
     );
-    let salt = STANDARD
-        .decode(&blob.salt)
-        .map_err(|e| anyhow!("decode recovery salt: {e}"))?;
-    ensure!(
-        salt.len() == SALT_LEN,
-        "recovery salt must be {SALT_LEN} bytes, got {}",
-        salt.len()
-    );
-    let nonce = STANDARD
-        .decode(&blob.nonce)
-        .map_err(|e| anyhow!("decode recovery nonce: {e}"))?;
-    ensure!(
-        nonce.len() == NONCE_LEN,
-        "recovery nonce must be {NONCE_LEN} bytes, got {}",
-        nonce.len()
-    );
-    let ciphertext = STANDARD
-        .decode(&blob.ciphertext)
-        .map_err(|e| anyhow!("decode recovery ciphertext: {e}"))?;
-    ensure!(
-        ciphertext.len() == WRAPPED_CIPHERTEXT_LEN,
-        "recovery ciphertext must be {WRAPPED_CIPHERTEXT_LEN} bytes, got {}",
-        ciphertext.len()
-    );
+    let salt = decode_exact(&blob.salt, SALT_LEN, "salt")?;
+    let nonce = decode_exact(&blob.nonce, NONCE_LEN, "nonce")?;
+    let ciphertext = decode_exact(&blob.ciphertext, WRAPPED_CIPHERTEXT_LEN, "ciphertext")?;
 
     let kek = derive_kek(recovery, &salt)?;
     let cipher = XChaCha20Poly1305::new_from_slice(&*kek)
@@ -192,6 +178,27 @@ pub fn unwrap_key(blob: &RecoveryBlob, recovery: &SecretBytes) -> Result<SecretB
         .decrypt(XNonce::from_slice(&nonce), ciphertext.as_ref())
         .map_err(|_| anyhow!("recovery secret did not match (or the recovery blob is corrupt)"))?;
     Ok(SecretBytes::new(plaintext))
+}
+
+/// Base64-decode a fixed-size field, bounding the *encoded* length first so a maliciously edited
+/// `recovery.json` can't force a large allocation, then asserting the decoded length is exact.
+fn decode_exact(value: &str, expected: usize, field: &str) -> Result<Vec<u8>> {
+    // base64 encodes 3 bytes as 4 chars; allow a few extra chars for padding before rejecting.
+    let max_encoded = expected.div_ceil(3) * 4 + 4;
+    ensure!(
+        value.len() <= max_encoded,
+        "recovery {field} is too long ({} chars; expected <= {max_encoded})",
+        value.len()
+    );
+    let bytes = STANDARD
+        .decode(value)
+        .map_err(|e| anyhow!("decode recovery {field}: {e}"))?;
+    ensure!(
+        bytes.len() == expected,
+        "recovery {field} must be {expected} bytes, got {}",
+        bytes.len()
+    );
+    Ok(bytes)
 }
 
 /// Serialize a recovery blob to pretty JSON and write it to `path` atomically (temp sibling +
@@ -333,6 +340,23 @@ mod tests {
         ct[0] ^= 0xff;
         blob.ciphertext = STANDARD.encode(ct);
         assert!(unwrap_key(&blob, &r).is_err());
+    }
+
+    #[test]
+    fn wrap_rejects_non_32_byte_key() {
+        let r = generate_recovery_secret().unwrap();
+        let err = wrap_key(&SecretBytes::new(vec![0u8; 16]), &r).unwrap_err();
+        assert!(format!("{err:#}").contains("32-byte key"));
+    }
+
+    #[test]
+    fn unwrap_rejects_oversized_encoded_field() {
+        let k = key();
+        let r = generate_recovery_secret().unwrap();
+        let mut blob = wrap_key(&k, &r).unwrap();
+        blob.ciphertext = STANDARD.encode(vec![0u8; 4096]);
+        let err = unwrap_key(&blob, &r).unwrap_err();
+        assert!(format!("{err:#}").contains("too long"));
     }
 
     #[test]

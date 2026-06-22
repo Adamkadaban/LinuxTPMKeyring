@@ -1,5 +1,5 @@
-//! The `tess` CLI. Enrollment is implemented; the remaining lifecycle subcommands are Phase 3
-//! wave 2 (see `PLAN.md` §5).
+//! The `tess` CLI. Enrollment is implemented; the remaining lifecycle subcommands land in a later
+//! phase.
 
 use clap::{Parser, Subcommand};
 
@@ -43,13 +43,13 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Enroll { pin } => enroll::cli::run(pin)?,
         Command::Doctor => doctor::run(),
-        Command::Status => println!("tess status: not yet implemented (Phase 3 wave 2)"),
+        Command::Status => println!("tess status: not yet implemented"),
         Command::Recover
         | Command::Unenroll
         | Command::Unlock
         | Command::Test
         | Command::Install => {
-            println!("not yet implemented — see PLAN.md");
+            println!("not yet implemented");
         }
     }
     Ok(())
