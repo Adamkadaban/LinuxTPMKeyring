@@ -135,8 +135,9 @@ fn default_module_src() -> Result<PathBuf> {
         }
     }
     Err(anyhow!(
-        "could not find libpam_tess.so next to {}; build it (`cargo build -p tess-pam`) and pass \
-         --module <path>",
+        "could not find libpam_tess.so or {} next to {}; build it (`cargo build -p tess-pam`) and \
+         pass --module <path>",
+        config::MODULE_FILE,
         dir.display()
     ))
 }

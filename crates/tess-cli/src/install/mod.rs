@@ -86,6 +86,12 @@ pub struct UninstallReport {
 /// stack last can never leave a half-applied install that affects login. Re-running is a no-op edit
 /// (the block is refreshed in place, never duplicated) and refreshes the module.
 pub fn install(plan: &InstallPlan) -> Result<InstallReport> {
+    if !ensure_regular_if_present(&plan.service_file)? {
+        bail!(
+            "PAM service file {} does not exist (run as root?)",
+            plan.service_file.display()
+        );
+    }
     let original = fs::read_to_string(&plan.service_file).with_context(|| {
         format!(
             "read PAM service file {} (does it exist? run as root)",
@@ -158,26 +164,22 @@ pub fn install(plan: &InstallPlan) -> Result<InstallReport> {
 /// module removal is skipped but the lockout-relevant stack edit still happens.
 pub fn uninstall(plan: &InstallPlan) -> Result<UninstallReport> {
     let mut removed_block = false;
-    match fs::read_to_string(&plan.service_file) {
-        Ok(original) => {
-            if config::has_block(&original) {
-                let restored = config::remove_block(&original);
-                config::validate_stack(&restored).with_context(|| {
-                    format!(
-                        "refusing to write {}: stack after removing the tess block failed validation",
-                        plan.service_file.display()
-                    )
-                })?;
-                atomic_write_preserving_mode(&plan.service_file, &restored).with_context(|| {
-                    format!("restore PAM stack in {}", plan.service_file.display())
-                })?;
-                removed_block = true;
-            }
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => {
-            return Err(e)
-                .with_context(|| format!("read PAM service file {}", plan.service_file.display()));
+    // A missing service file is a no-op; a symlink or other non-regular file is refused so an
+    // atomic write can't replace an unexpected path.
+    if ensure_regular_if_present(&plan.service_file)? {
+        let original = fs::read_to_string(&plan.service_file)
+            .with_context(|| format!("read PAM service file {}", plan.service_file.display()))?;
+        if config::has_block(&original) {
+            let restored = config::remove_block(&original);
+            config::validate_stack(&restored).with_context(|| {
+                format!(
+                    "refusing to write {}: stack after removing the tess block failed validation",
+                    plan.service_file.display()
+                )
+            })?;
+            atomic_write_preserving_mode(&plan.service_file, &restored)
+                .with_context(|| format!("restore PAM stack in {}", plan.service_file.display()))?;
+            removed_block = true;
         }
     }
 
@@ -312,6 +314,23 @@ fn atomic_write_preserving_mode(path: &Path, content: &str) -> Result<()> {
         let _ = fs::remove_file(&tmp);
     }
     write_result
+}
+
+/// Refuse to operate on a service path that exists but isn't a regular file (notably a symlink): an
+/// atomic rename would replace the link entry itself rather than edit the intended target. Returns
+/// whether the file exists; a missing file is left for the caller to handle (an error for install, a
+/// no-op for uninstall).
+fn ensure_regular_if_present(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_file() => Ok(true),
+        Ok(meta) if meta.file_type().is_symlink() => bail!(
+            "refusing to edit symlinked PAM service file {} (expected a regular file)",
+            path.display()
+        ),
+        Ok(_) => bail!("PAM service file {} is not a regular file", path.display()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("inspect PAM service file {}", path.display())),
+    }
 }
 
 /// fsync the directory containing `path` so a freshly renamed entry is durable across a crash. On
@@ -533,6 +552,23 @@ session optional     pam_gnome_keyring.so auto_start
         assert!(err.to_string().contains("not a regular file"));
         // The PAM stack must be left untouched when a valid backup can't be written.
         assert_eq!(fs::read_to_string(&plan.service_file).unwrap(), FIXTURE);
+    }
+
+    #[test]
+    fn install_and_uninstall_refuse_symlinked_service_file() {
+        let root = tempdir();
+        let plan = plan_in(root.path(), FIXTURE);
+        let target = root.path().join("real-stack");
+        fs::write(&target, FIXTURE).unwrap();
+        fs::remove_file(&plan.service_file).unwrap();
+        std::os::unix::fs::symlink(&target, &plan.service_file).unwrap();
+
+        let err = install(&plan).unwrap_err();
+        assert!(err.to_string().contains("symlink"));
+        let err = uninstall(&plan).unwrap_err();
+        assert!(err.to_string().contains("symlink"));
+        // The symlink target is never edited.
+        assert_eq!(fs::read_to_string(&target).unwrap(), FIXTURE);
     }
 
     #[test]
