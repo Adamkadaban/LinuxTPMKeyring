@@ -1,8 +1,10 @@
 //! `KeyringBackend` over the freedesktop Secret Service API (`org.freedesktop.secrets`).
 //!
-//! GNOME's gnome-keyring is the reference implementation. KWallet (with `apiEnabled=true`) and
-//! KeePassXC expose the same API and are reachable through the same backend. Any dependency on
-//! GNOME's unstable private D-Bus interface is isolated inside [`SecretServiceBackend`].
+//! GNOME's gnome-keyring is the reference implementation, and the headless `unlock`/`rekey` here
+//! target its private D-Bus interface (isolated inside [`SecretServiceBackend`]). KWallet (with
+//! `apiEnabled=true`) and KeePassXC expose the same Secret Service API, so reading lock state works
+//! against them; headless unlock/rekey on non-GNOME daemons (via the stable `Unlock`/`Prompt` path)
+//! is future work.
 
 mod backend;
 

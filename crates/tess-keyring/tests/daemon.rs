@@ -31,7 +31,7 @@ fn login_collection_path(service: &SecretService<'_>) -> String {
         .to_string()
 }
 
-fn random_key() -> SecretBytes {
+fn deterministic_new_key() -> SecretBytes {
     SecretBytes::new(
         (0u8..32)
             .map(|i| i.wrapping_mul(7).wrapping_add(3))
@@ -78,7 +78,7 @@ fn rekey_preserves_items_and_lock_transitions() {
         "login keyring should start unlocked"
     );
 
-    let new = random_key();
+    let new = deterministic_new_key();
     backend.rekey(&old, &new).expect("rekey old -> new");
 
     collection.lock().expect("lock collection");
@@ -134,10 +134,14 @@ fn unlock_with_wrong_secret_fails() {
     assert!(backend.is_locked().expect("is_locked after lock"));
 
     let wrong = SecretBytes::new(b"not-the-password".to_vec());
-    let result = backend.unlock(&wrong);
-    let still_locked = backend.is_locked().unwrap_or(true);
+    // A wrong secret may be rejected (`Err`) or no-op, but it must never unlock — so the binding
+    // assertion is that the collection is still locked, with `is_locked()` errors surfaced as test
+    // failures rather than silently treated as "still locked".
+    let _ = backend.unlock(&wrong);
     assert!(
-        result.is_err() || still_locked,
+        backend
+            .is_locked()
+            .expect("is_locked after wrong unlock attempt"),
         "a wrong secret must never unlock the keyring"
     );
 }

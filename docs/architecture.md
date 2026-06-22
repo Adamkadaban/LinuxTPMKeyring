@@ -157,11 +157,12 @@ host** — they exist purely as a contributor convenience and only ever talk to 
 ## Keyring backend (`tess-keyring`)
 
 `SecretServiceBackend` implements `tess_core::KeyringBackend` over the freedesktop **Secret Service**
-API (`org.freedesktop.secrets`) via `zbus`. gnome-keyring is the reference daemon; KWallet (KDE
-Frameworks ≥ 5.97 with `apiEnabled=true`) and KeePassXC expose the same API and are reachable through
-the same backend. KWallet's native `pam_kwallet` path (keyed to the login password, not separately
-unlockable) is out of scope — the backend drives the Secret Service `Unlock` with the released key
-instead.
+API (`org.freedesktop.secrets`) via `zbus`. gnome-keyring is the reference daemon, and the headless
+`unlock`/`rekey` below target its private interface. KWallet (KDE Frameworks ≥ 5.97 with
+`apiEnabled=true`) and KeePassXC expose the same Secret Service API, so `is_locked` works against
+them, but headless unlock/rekey on non-GNOME daemons (via the stable `Unlock` + `Prompt` path) is
+future work. KWallet's native `pam_kwallet` path (keyed to the login password, not separately
+unlockable) is out of scope.
 
 - `is_locked()` reads the collection's `Locked` property with a fresh (uncached) `Properties.Get`,
   so it reflects the daemon's live state after an out-of-band lock/unlock.

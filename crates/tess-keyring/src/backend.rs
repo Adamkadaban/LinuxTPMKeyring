@@ -11,8 +11,10 @@
 //! --unlock` stdin path; this in-process `unlock` covers re-unlocking an already-running daemon.
 //!
 //! KWallet (KDE Frameworks ≥ 5.97 with `apiEnabled=true`) and KeePassXC implement the same Secret
-//! Service API and are reachable through this backend; KWallet's native `pam_kwallet` path (keyed to
-//! the login password, not separately unlockable) is out of scope.
+//! Service API, so reading lock state works against them; the headless `unlock`/`rekey` here,
+//! however, depend on GNOME's private interface — a stable `Unlock`/`Prompt` fallback for non-GNOME
+//! daemons is future work. KWallet's native `pam_kwallet` path (keyed to the login password, not
+//! separately unlockable) is out of scope.
 //!
 //! Secret material reaches the daemon through a `plain` session: the value crosses the *per-user*
 //! session-bus socket without D-Bus-layer encryption. That socket is owned by the user and a
