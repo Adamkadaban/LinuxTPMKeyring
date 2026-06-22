@@ -452,9 +452,10 @@ place rather than aborting. It is a no-op when nothing is installed.
 ### Module-directory detection
 
 The PAM module directory is detected by locating a stock module (`pam_permit.so`) under `/lib`,
-`/usr/lib`, `/lib64`, `/usr/lib64` and taking its parent — the same approach as the CI smoke test, so
-it works across the multiarch layouts Debian and others use. `--service`, `--module`, and
-`--module-dir` override the defaults.
+`/usr/lib`, `/lib64`, `/usr/lib64` and taking its parent — the same locate-`pam_permit.so` approach
+the CI smoke test uses (CI itself only searches `/lib` and `/usr/lib`), so it works across the
+multiarch layouts Debian and others use. `--service`, `--module`, and `--module-dir` override the
+defaults.
 
 ### Tests
 

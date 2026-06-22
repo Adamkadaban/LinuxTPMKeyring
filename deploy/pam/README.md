@@ -53,9 +53,10 @@ session optional pam_tess.so
 ## Module installation
 
 `tess install` also copies the built `pam_tess.so` into the system PAM module directory. That
-directory is detected the same way the CI smoke test does — by locating a stock module
-(`pam_permit.so`) under `/lib`, `/usr/lib`, `/lib64`, and `/usr/lib64` and taking its parent
-directory — so it works across the multiarch layouts Debian and other distros use
+directory is detected by locating a stock module (`pam_permit.so`) under the common library roots
+`/lib`, `/usr/lib`, `/lib64`, and `/usr/lib64` and taking its parent directory — the same
+locate-`pam_permit.so` approach the CI smoke test uses (CI itself only needs `/lib` and `/usr/lib`).
+This works across the multiarch layouts Debian and other distros use
 (`/lib/x86_64-linux-gnu/security`, `/usr/lib64/security`, …).
 
 ## Removal

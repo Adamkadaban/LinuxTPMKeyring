@@ -66,9 +66,10 @@ tess install --uninstall   # remove the tess block + module (best-effort), un-wi
 
 `tess install` (run as root) does two things, idempotently:
 
-1. copies the built `pam_tess.so` into the system PAM module directory (auto-detected the way the CI
-   smoke test finds it — via `pam_permit.so` under `/lib`, `/usr/lib`, `/lib64`, and `/usr/lib64`),
-   and
+1. copies the built `pam_tess.so` into the system PAM module directory (auto-detected by locating a
+   stock module, `pam_permit.so`, under the common library roots `/lib`, `/usr/lib`, `/lib64`, and
+   `/usr/lib64` — the same locate-`pam_permit.so` trick the CI smoke test uses, which itself only
+   needs to search `/lib` and `/usr/lib`), and
 2. adds one line to the session stack (`/etc/pam.d/common-session` by default) inside a re-runnable
    marked block:
 
