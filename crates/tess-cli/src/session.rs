@@ -97,15 +97,17 @@ fn read_pin_from_stdin() -> Result<SecretBytes> {
 /// fingerprint result (match, no-match, timeout, unavailable) falls through to the PIN unseal, which
 /// alone can release the sealed key.
 pub fn run_pam_helper(fingerprint: bool) -> Result<()> {
-    let pin = read_pin_from_stdin()?;
     let paths = Paths::for_user().context("resolve the tess data directory")?;
     let tcti = tcti_from_env();
     if fingerprint {
         // Precedence: fingerprint (convenience) -> PIN (the real TPM gate) -> password fallthrough.
-        // The verify is bounded and its outcome only logged; the PIN below is what unseals the key.
+        // The verify is bounded and its outcome only logged; the PIN read below is what unseals the
+        // key. Run the verify first so the PIN's in-memory lifetime spans only the unseal, not the
+        // (potentially multi-second) fingerprint wait.
         report_fingerprint(fingerprint_front_gate());
     }
     let keyring = SecretServiceBackend::connect().context("connect to the Secret Service")?;
+    let pin = read_pin_from_stdin()?;
     unseal_and_unlock(&tcti, &paths.metadata, &pin, &keyring)
 }
 

@@ -327,9 +327,16 @@ impl FprintMock {
 
         let address = match rx.recv_timeout(FPRINT_ADDRESS_TIMEOUT) {
             Ok(addr) if !addr.is_empty() => addr,
-            _ => panic!(
-                "fprintd mock did not announce a bus address within {FPRINT_ADDRESS_TIMEOUT:?}"
-            ),
+            _ => {
+                // A bare `Child` does not reap on drop, so kill and wait the whole process group
+                // before failing — otherwise a timeout leaks the `dbus-daemon`/`dbusmock` group.
+                let pgid = Pid::from_raw(child.id() as i32);
+                let _ = killpg(pgid, Signal::SIGKILL);
+                let _ = child.wait();
+                panic!(
+                    "fprintd mock did not announce a bus address within {FPRINT_ADDRESS_TIMEOUT:?}"
+                );
+            }
         };
         Self { child, address }
     }
