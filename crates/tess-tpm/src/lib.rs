@@ -1,6 +1,6 @@
 //! TPM2 seal/unseal of a random key, gated by a PIN `PolicyAuthValue`, with mandatory HMAC +
-//! parameter-encryption sessions. Phase 1 plumbing: an ESAPI context, the ECC storage primary, and
-//! the salted encrypted session that later seal/unseal builds on (seal/unseal itself is not here).
+//! parameter-encryption sessions. Provides an ESAPI context, the ECC storage primary, the salted
+//! encrypted session, and `seal`/`unseal` of a random key under a PIN over that session.
 
 use std::str::FromStr;
 

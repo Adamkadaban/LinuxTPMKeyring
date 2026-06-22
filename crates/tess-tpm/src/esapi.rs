@@ -16,8 +16,9 @@ use tss_esapi::structures::{
 use tss_esapi::Context;
 
 /// Errors from the `tess-tpm` ESAPI layer. Wrap the underlying `tss-esapi` error as a string so the
-/// detail is preserved without leaking the crate's types across the public boundary. Maps into
-/// [`tess_core::Error::Tpm`] at the crate edge.
+/// detail is preserved without leaking the crate's types across the public boundary. At the crate
+/// edge the auth-related variants (`WrongPin`/`PinTooLong`/`PinEmpty`) map to
+/// [`tess_core::Error::Auth`]; everything else maps to [`tess_core::Error::Tpm`].
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("invalid TCTI configuration: {0}")]

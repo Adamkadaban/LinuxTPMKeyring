@@ -301,8 +301,9 @@ fn is_auth_failure(e: &tss_esapi::Error) -> bool {
 }
 
 /// Flush a transient TPM handle. Callers attempt the flush even when the primary operation failed
-/// (so handles never leak), but surface a flush failure only when the primary operation succeeded —
-/// a leaked-handle error must never silently mask, nor be masked by, the real result.
+/// (so handles never leak); error precedence is: if the primary operation already failed, its error
+/// takes precedence and the flush is best-effort; if the primary operation succeeded, a flush
+/// failure is surfaced as the result instead of being silently dropped.
 fn flush(context: &mut Context, handle: ObjectHandle) -> Result<()> {
     context
         .flush_context(handle)
