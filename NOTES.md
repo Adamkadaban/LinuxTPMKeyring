@@ -313,3 +313,37 @@ Gotchas worth remembering:
   through libpam and a no-op session returns `PAM_SUCCESS`. The dlopen can't be a Rust test because
   `libloading` needs `unsafe` outside the `ffi` module (forbidden); pamtester keeps the unsafe in C.
   The bounded + reap proof is the pure-Rust `tests/stall_injection.rs`.
+
+## 2026-06-22 — atomic, recoverable enrollment transaction (issue #26)
+**Resolution:** `tess enroll` composes seal/rekey into a credential-first transactional flow:
+generate `K` → back up + verify a recovery-secret-wrapped copy of `K` → seal under PIN + verify
+unseal + persist → `rekey(old→K)` → verify unlock + item decrypt → commit; any failure rolls back
+(restore credential first, then remove blobs; keep blobs only if credential restore fails).
+`crates/tess-cli/src/enroll/mod.rs:1` · `crates/tess-cli/src/enroll/recovery.rs:1` · ADR-0009 · PR for #26.
+
+Gotchas worth remembering:
+- **Recovery must survive a TPM clear, so it cannot live in the TPM.** Scheme: `KEK =
+  HKDF-SHA256(salt, R)` (R is full-entropy → fast KDF, not Argon2), then `K` AEAD-sealed under `KEK`
+  with XChaCha20-Poly1305 (192-bit nonce → safe with random nonces). Stored in a *separate*
+  `recovery.json` `{version,salt,nonce,ciphertext}`, never in `tess-core::Metadata` (keeps the
+  TPM schema decoupled and the rollback symmetric). The happy-path test asserts the recovery secret
+  and the TPM unseal recover the *same* `K`.
+- **`tess-cli` needs a `[lib]` target** so integration tests can `use tess_cli::enroll::...`; a
+  bin-only crate's `tests/` can't reach crate items. `src/lib.rs` exposes `enroll`/`doctor`; `main.rs`
+  consumes the lib. Without it the rollback/enroll logic would only be testable as a subprocess.
+- **Rollback ordering is the whole safety story.** Restore the keyring credential (`rekey(K→old)`)
+  *before* deleting any blob; only delete once it's safely back on `old`. If the credential restore
+  fails, KEEP the sealed + recovery blobs (the only way back in) and surface "run `tess recover`" —
+  deleting them there would be the lockout the transaction exists to prevent. `Tx.new_key` is set
+  only *after* a successful forward rekey, so a failed forward rekey (atomic D-Bus call) never
+  triggers a spurious restore.
+- **Fault injection without breaking the real path:** rekey-fail via a `KeyringBackend` decorator;
+  verify-fail via the injected `verify_item` closure; persist-fail by pointing the metadata path at a
+  child of a regular file so `create_dir_all` fails. The same decorator records whether `recovery.json`
+  existed at first-rekey time, proving the recovery backup precedes the destructive step.
+- **`hkdf`/`sha2` were already transitive deps** (via the secret-service crypto stack), so only
+  `chacha20poly1305` is a genuinely new crate; `cargo deny` stays clean (no new license, advisories ok).
+- **`EnrollOutcome` carries the one-time recovery secret**, so its `Debug` is hand-redacted (`<redacted>`)
+  rather than derived — a derived `Debug` would leak the secret into any future log line.
+- swtpm + throwaway gnome-keyring run together per integration test; `pgrep` for `tess-cli-sim`/swtpm/
+  `gnome-keyring-daemon` is clean after the run (each guard reaps on drop, even on panic).
