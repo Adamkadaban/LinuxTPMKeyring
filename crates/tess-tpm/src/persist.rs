@@ -86,14 +86,20 @@ pub fn save(metadata: &Metadata, path: &Path) -> Result<()> {
         let tmp = temp_sibling(path);
         match write_new_private(&tmp, &json) {
             Ok(()) => {
-                return std::fs::rename(&tmp, path).map_err(|e| {
+                std::fs::rename(&tmp, path).map_err(|e| {
                     let _ = std::fs::remove_file(&tmp);
                     Error::Io(format!(
                         "renaming {} -> {}: {e}",
                         tmp.display(),
                         path.display()
                     ))
-                });
+                })?;
+                // fsync the parent directory so the rename (the new directory entry) is itself
+                // durable; without this a crash after rename can still lose the update.
+                sync_parent_dir(path).map_err(|e| {
+                    Error::Io(format!("syncing parent dir of {}: {e}", path.display()))
+                })?;
+                return Ok(());
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 last_err = Some(e);
@@ -161,6 +167,22 @@ fn write_new_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .open(path)?;
     file.write_all(bytes)?;
     file.sync_all()
+}
+
+/// fsync the directory containing `path` so a freshly created/renamed entry survives a crash. On
+/// Unix a directory is fsync'd by opening it read-only and calling `sync_all` on the handle.
+#[cfg(unix)]
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    std::fs::File::open(parent)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
