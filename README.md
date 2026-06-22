@@ -62,7 +62,8 @@ isolation, which doesn't exist on commodity hardware. This is the same boundary 
 
 ```sh
 # Debian 13 with a TPM 2.0 exposed through the kernel resource manager (/dev/tpmrm0).
-# Build everything (tess, the PAM helper, pam_tess.so):
+# Build everything — tess, tess-pam-helper, and the cdylib target/release/libpam_tess.so
+# (which `tess install` copies into the PAM module dir as pam_tess.so):
 git clone https://github.com/Adamkadaban/LinuxTPMKeyring && cd LinuxTPMKeyring
 cargo build --workspace --release
 
