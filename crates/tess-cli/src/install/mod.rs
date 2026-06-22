@@ -317,24 +317,16 @@ session required     pam_unix.so
 session optional     pam_gnome_keyring.so auto_start
 ";
 
-    fn tempdir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "tess-install-test-{}-{}",
-            std::process::id(),
-            // A monotonic-ish discriminator so parallel tests don't collide.
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    /// A self-cleaning temp directory (removed on drop, even on panic), matching the repo's test
+    /// convention and avoiding leaked directories.
+    fn tempdir() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
     }
 
     #[test]
     fn install_then_uninstall_restores_byte_for_byte() {
         let root = tempdir();
-        let plan = plan_in(&root, FIXTURE);
+        let plan = plan_in(root.path(), FIXTURE);
 
         let report = install(&plan).unwrap();
         assert!(!report.already_wired);
@@ -351,14 +343,12 @@ session optional     pam_gnome_keyring.so auto_start
         assert_eq!(fs::read_to_string(&plan.service_file).unwrap(), FIXTURE);
         assert!(!plan.installed_module().exists());
         assert!(!plan.backup_file().exists());
-
-        fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn install_is_idempotent() {
         let root = tempdir();
-        let plan = plan_in(&root, FIXTURE);
+        let plan = plan_in(root.path(), FIXTURE);
 
         install(&plan).unwrap();
         let once = fs::read_to_string(&plan.service_file).unwrap();
@@ -372,14 +362,12 @@ session optional     pam_gnome_keyring.so auto_start
         assert_eq!(once, twice, "re-running install must not change the file");
         assert_eq!(twice.matches(config::BEGIN_MARKER).count(), 1);
         assert_eq!(twice.matches(config::SNIPPET_LINE).count(), 1);
-
-        fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn backup_preserves_true_original_across_reinstall() {
         let root = tempdir();
-        let plan = plan_in(&root, FIXTURE);
+        let plan = plan_in(root.path(), FIXTURE);
 
         install(&plan).unwrap();
         // A second install must not overwrite the backup with the already-edited file.
@@ -388,39 +376,33 @@ session optional     pam_gnome_keyring.so auto_start
 
         uninstall(&plan).unwrap();
         assert_eq!(fs::read_to_string(&plan.service_file).unwrap(), FIXTURE);
-
-        fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn uninstall_is_safe_when_not_installed() {
         let root = tempdir();
-        let plan = plan_in(&root, FIXTURE);
+        let plan = plan_in(root.path(), FIXTURE);
 
         let report = uninstall(&plan).unwrap();
         assert!(!report.removed_block && !report.removed_module && !report.removed_backup);
         // The file is untouched.
         assert_eq!(fs::read_to_string(&plan.service_file).unwrap(), FIXTURE);
-
-        fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn uninstall_missing_service_file_is_ok() {
         let root = tempdir();
-        let plan = plan_in(&root, FIXTURE);
+        let plan = plan_in(root.path(), FIXTURE);
         fs::remove_file(&plan.service_file).unwrap();
 
         let report = uninstall(&plan).unwrap();
         assert!(!report.removed_block);
-
-        fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn install_preserves_file_mode() {
         let root = tempdir();
-        let plan = plan_in(&root, FIXTURE);
+        let plan = plan_in(root.path(), FIXTURE);
         fs::set_permissions(&plan.service_file, fs::Permissions::from_mode(0o600)).unwrap();
 
         install(&plan).unwrap();
@@ -430,14 +412,12 @@ session optional     pam_gnome_keyring.so auto_start
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600, "atomic write must preserve the original mode");
-
-        fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn install_aborts_and_preserves_file_when_module_src_missing() {
         let root = tempdir();
-        let plan = plan_in(&root, FIXTURE);
+        let plan = plan_in(root.path(), FIXTURE);
         fs::remove_file(&plan.module_src).unwrap();
 
         // The module is installed before the stack is committed, so a missing module source aborts
@@ -451,14 +431,12 @@ session optional     pam_gnome_keyring.so auto_start
         );
         assert!(!plan.installed_module().exists());
         assert!(!plan.backup_file().exists());
-
-        fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn uninstall_unwires_stack_even_without_module_dir() {
         let root = tempdir();
-        let plan = plan_in(&root, FIXTURE);
+        let plan = plan_in(root.path(), FIXTURE);
         install(&plan).unwrap();
 
         // Simulate module-dir detection having failed: the stack must still be unwired and the
@@ -476,22 +454,18 @@ session optional     pam_gnome_keyring.so auto_start
         assert_eq!(fs::read_to_string(&plan.service_file).unwrap(), FIXTURE);
         // The actually-installed module is left in place (not located), which is the safe outcome.
         assert!(plan.installed_module().exists());
-
-        fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn find_module_dir_locates_needle() {
         let root = tempdir();
-        let nested = root.join("x86_64-linux-gnu").join("security");
+        let nested = root.path().join("x86_64-linux-gnu").join("security");
         fs::create_dir_all(&nested).unwrap();
         fs::write(nested.join("pam_permit.so"), b"x").unwrap();
 
-        let found = find_module_dir(&root, "pam_permit.so", PAM_SEARCH_MAX_DEPTH).unwrap();
+        let found = find_module_dir(root.path(), "pam_permit.so", PAM_SEARCH_MAX_DEPTH).unwrap();
         assert_eq!(found, nested);
-        assert!(find_module_dir(&root, "pam_absent.so", PAM_SEARCH_MAX_DEPTH).is_none());
-
-        fs::remove_dir_all(&root).ok();
+        assert!(find_module_dir(root.path(), "pam_absent.so", PAM_SEARCH_MAX_DEPTH).is_none());
     }
 
     #[test]

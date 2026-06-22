@@ -61,18 +61,21 @@ pub fn add_block(content: &str) -> String {
     out
 }
 
-/// Remove the tess-managed block from `content`, restoring the surrounding stack.
+/// Remove every tess-managed block from `content`, restoring the surrounding stack.
 ///
-/// For the realistic case — a newline-terminated stack with the block appended by [`add_block`] —
-/// this is the exact inverse of [`add_block`], so an install→uninstall round-trip restores the
-/// original bytes. If no block is present the input is returned unchanged.
+/// For the realistic case — a newline-terminated stack with a single block appended by
+/// [`add_block`] — this is the exact inverse of [`add_block`], so an install→uninstall round-trip
+/// restores the original bytes. All blocks are stripped (not just the first), so a file that somehow
+/// accumulated duplicates is fully cleaned, which is what keeps [`add_block`]'s strip-then-append
+/// guarantee of exactly one block. If no block is present the input is returned unchanged.
 pub fn remove_block(content: &str) -> String {
-    let Some((begin_byte, end_byte)) = marker_byte_span(content) else {
-        return content.to_string();
-    };
-    let mut out = String::with_capacity(content.len());
-    out.push_str(&content[..begin_byte]);
-    out.push_str(&content[end_byte..]);
+    let mut out = content.to_string();
+    while let Some((begin_byte, end_byte)) = marker_byte_span(&out) {
+        let mut next = String::with_capacity(out.len());
+        next.push_str(&out[..begin_byte]);
+        next.push_str(&out[end_byte..]);
+        out = next;
+    }
     out
 }
 
@@ -310,6 +313,18 @@ session optional     pam_gnome_keyring.so auto_start
         let added = add_block("");
         assert_eq!(added, block_text());
         assert_eq!(remove_block(&added), "");
+    }
+
+    #[test]
+    fn add_collapses_duplicate_blocks_to_one() {
+        // A file that somehow accumulated two blocks must end up with exactly one after add_block.
+        let doubled = format!("{COMMON_SESSION}{}{}", block_text(), block_text());
+        assert_eq!(doubled.matches(BEGIN_MARKER).count(), 2);
+        let fixed = add_block(&doubled);
+        assert_eq!(fixed.matches(BEGIN_MARKER).count(), 1);
+        assert_eq!(fixed.matches(SNIPPET_LINE).count(), 1);
+        // Stripping all blocks restores the original stack.
+        assert_eq!(remove_block(&doubled), COMMON_SESSION);
     }
 
     #[test]
