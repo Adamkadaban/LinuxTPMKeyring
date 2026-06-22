@@ -627,3 +627,6 @@ Gotchas worth remembering:
   spawn a prompt on a headless bus and hang; `timeout 20 secret-tool lookup ...` makes a failed
   unlock surface as FAIL, not a hang. The probe is seeded while unlocked, before the explicit
   D-Bus `Secret.Service.Lock`.
+
+## 2026-06-22 — code comments back-referenced in-repo docs (ADR/AGENTS pointers)
+**Resolution:** stripped `(see docs/adr/0001)` and `(see AGENTS.md)` from doc comments, keeping the rationale; rest of skeleton was already clean. crates/tess-core/src/lib.rs:76,119 · #13

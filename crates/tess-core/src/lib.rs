@@ -73,7 +73,7 @@ impl std::fmt::Debug for SecretBytes {
 }
 
 /// Describes how a sealed object is gated. The MVP uses [`Policy::PinAuthValue`]; PCR binding and
-/// `PolicyOR(PIN | biometric)` are deferred extension points (see `docs/adr/0001`).
+/// `PolicyOR(PIN | biometric)` are deferred extension points.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Policy {
@@ -116,7 +116,7 @@ impl Metadata {
 }
 
 /// A factor that authorizes a key release (PIN now; fingerprint and face later). Implementations
-/// must be bounded by a deadline and must never block the PAM thread (see `AGENTS.md`).
+/// must be bounded by a deadline and must never block the PAM thread.
 pub trait AuthGate {
     /// Returns `Ok(())` if the factor was satisfied within `deadline_ms`, else an [`Error`].
     fn authorize(&self, deadline_ms: u64) -> Result<()>;
