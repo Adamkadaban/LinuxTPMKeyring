@@ -219,9 +219,9 @@ seconds with the helper reaped**.
 - [x] `tess-fprint`: `FprintClient` (`Claim`/`VerifyStart`/`VerifyStatus`/`Release`), consumed unmodified
 - [x] `tess-fprint`: `testing/fprint-mock/` virtual-driver socket scripting + `python-dbusmock` template
 - [x] `tess-fprint`: deterministic verify(match/no-match) tests, headless
-- [ ] `tess-pam`: minimal `libc` FFI in isolated `ffi` module; session entrypoints
-- [ ] `tess-pam`: **watchdog'd helper process + hard timeout + fail-open**; SSH/remote + no-TPM abort
-- [ ] `tess-pam`: **stall-injection "login never freezes" test** (bounded, helper reaped)
+- [x] `tess-pam`: minimal `libc` FFI in isolated `ffi` module; session entrypoints
+- [x] `tess-pam`: **watchdog'd helper process + hard timeout + fail-open**; SSH/remote + no-TPM abort
+- [x] `tess-pam`: **stall-injection "login never freezes" test** (bounded, helper reaped)
 
 | Wave | Worktree slug | Depends on | Tasks |
 |---|---|---|---|

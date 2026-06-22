@@ -259,3 +259,57 @@ Gotchas worth remembering:
   `test.yml`) runs them for real. No `libfprint`/fprintd needed — only the D-Bus surface is mocked.
 - `clippy::doc-lazy-continuation` fires on a doc line that starts after a wrapped `(... + ...)` list-
   looking fragment; reflowed the test module docstring to avoid the false list.
+## 2026-06-21 — non-blocking PAM module + watchdog helper (issue #22)
+**Resolution:** `tess-pam` is now a loadable `cdylib` (`libpam_tess.so` → `pam_tess.so`) + `rlib`.
+Hand-rolled PAM FFI (`pam_get_item`/`pam_set_data`/`pam_get_data`/`pam_get_authtok` +
+`pam_conv`/`pam_message`/`pam_response` + the four `pam_sm_*` entrypoints) confined to
+`crates/tess-pam/src/ffi.rs` — the only `unsafe` in the workspace. `helper::run` supervises a child
+under a `Watchdog { deadline, term_grace, poll }`: poll `try_wait`, on deadline SIGTERM → grace →
+SIGKILL → bounded `try_wait` poll (no blocking `wait`); a child stuck in uninterruptible I/O is handed
+to a detached reaper thread so the call returns bounded and the child is still reaped. `gate::{classify,
+decide}` map the outcome to PAM codes (auth fails open to `PAM_AUTHINFO_UNAVAIL`; session always
+`PAM_SUCCESS`); the gate aborts (auth `PAM_IGNORE`, session `PAM_SUCCESS`) for a remote session
+(non-empty `PAM_RHOST`) and no-TPM. `crates/tess-pam/src/helper.rs:71` ·
+`crates/tess-pam/src/gate.rs:1` · `crates/tess-pam/src/ffi.rs:1` · PR for #22.
+
+Gotchas worth remembering:
+- **A PAM-module rlib that references `pam_get_item` won't link into test binaries unless the symbol
+  resolves.** `#[no_mangle]`/`#[export_name]` entrypoints are kept (treated as reachable) even in a
+  test harness, so their calls into undefined `pam_*` symbols become link errors for `cargo test`.
+  Fix: `build.rs` emits `cargo:rustc-link-lib=dylib=pam` — the `.so` and every test binary then link
+  `libpam` and resolve the symbols. Needs `libpam0g-dev` (the `libpam.so` dev symlink) at build time;
+  added to the CI apt list. The cdylib gains a harmless `NEEDED libpam.so.0` (always already loaded
+  by the PAM application).
+- **`[lib] name = "pam_tess"`** (not the default `tess_pam`) so the cdylib is `libpam_tess.so`; PAM
+  loads modules by file name. Dependents/tests then `use pam_tess::...`.
+- **SIGTERM-ignoring stall case must busy-loop, not `sleep`.** `sleep` dies on the default SIGTERM
+  disposition (never exercises the SIGKILL escalation), and a `sh`/`sleep` pair would orphan the
+  inner `sleep` on SIGKILL (a leaked child the reap-proof would catch). `sh -c "trap '' TERM; while
+  :; do :; done"` ignores SIGTERM, has no child, and is killed+reaped cleanly within
+  `deadline + 2 * term_grace` (a `term_grace` budget after SIGTERM and another after SIGKILL).
+- **A `SIGKILL`ed child stuck in uninterruptible I/O won't die until its syscall returns**, so a
+  blocking `wait()` after SIGKILL could exceed the hard bound. The watchdog instead polls `try_wait`
+  for a bounded budget after SIGKILL and, in that pathological case, hands the child to a detached
+  reaper thread (`Builder::spawn`, non-panicking) — the PAM thread stays bounded *and* the child is
+  reaped. Only if even that thread can't be created (resource exhaustion) is the orphan left for the
+  OS to reap at host-process exit; we deliberately do *not* add a global orphan registry to close
+  that corner because PLAN forbids shared mutable global state, and the caller is never blocked
+  regardless.
+- **No PID-reuse race in the watchdog:** we signal the child only *before* the final `wait`, so while
+  it may be an unreaped zombie its PID is still ours and cannot be recycled. `send_signal` swallows
+  only `ESRCH` (already gone); other errno propagate.
+- **`process_alive` keys off `ESRCH` only.** `kill(pid, 0)` returning `EPERM` means the process
+  exists but isn't signalable, so only `ESRCH` proves it gone — the reap proof would otherwise flake
+  under restricted permissions.
+- **A privileged PAM module must not take its helper exec path from the environment.** The helper is
+  resolved from a root-controlled `helper=PATH` PAM module argument, falling back to the compiled
+  install path `/usr/lib/tess/tess-pam-helper`; the `TESS_PAM_HELPER` env override is compiled in
+  only under `debug_assertions` (test harness), so release builds can't be redirected via env.
+  Until the real helper (Phase 3) is installed, a missing-helper spawn fails open — correct
+  non-blocking behaviour, unit-tested as the spawn-failure → `Unavailable` path.
+- `pamtester` live-load smoke runs in CI only (host runs no PAM per project policy): the `test`
+  workflow installs the built `pam_tess.so`, writes a `pam_permit`-backed `/etc/pam.d/tess-smoke`
+  service, and drives `open_session`/`close_session`/`authenticate` to prove the module dlopens
+  through libpam and a no-op session returns `PAM_SUCCESS`. The dlopen can't be a Rust test because
+  `libloading` needs `unsafe` outside the `ffi` module (forbidden); pamtester keeps the unsafe in C.
+  The bounded + reap proof is the pure-Rust `tests/stall_injection.rs`.

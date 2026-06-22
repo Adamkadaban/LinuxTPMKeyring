@@ -1,6 +1,6 @@
 [package]
 name = "tess-pam"
-description = "pam_tess.so: non-blocking PAM module. The only crate permitted unsafe (in ffi only). (skeleton)"
+description = "pam_tess.so: non-blocking PAM module. The only crate permitted unsafe (in ffi only)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,19 +9,17 @@ authors.workspace = true
 repository.workspace = true
 
 [lib]
-# PAM modules must be a cdylib (.so) for dlopen; rlib lets us unit-test the safe logic.
+# PAM loads the module by file name, so the cdylib must be `libpam_tess.so` (-> `pam_tess.so`).
+# The rlib lets us unit-test the safe logic.
+name = "pam_tess"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-tess-core.workspace = true
-tess-tpm.workspace = true
-tess-keyring.workspace = true
-tess-fprint.workspace = true
 libc.workspace = true
-thiserror.workspace = true
+nix.workspace = true
 
-# NOTE: this crate intentionally does NOT inherit the workspace `unsafe_code = "forbid"` lint.
-# Instead lib.rs sets `#![deny(unsafe_code)]` and only the `ffi` module is `#[allow(unsafe_code)]`,
-# so unsafe is confined to the FFI boundary. See AGENTS.md "Project quirks" and docs/adr/0006.
+# This crate intentionally does NOT inherit the workspace `unsafe_code = "forbid"` lint. Instead
+# lib.rs sets `#![deny(unsafe_code)]` and only the `ffi` module is `#[allow(unsafe_code)]`, confining
+# unsafe to the FFI boundary.
 [lints.clippy]
 all = { level = "warn", priority = -1 }

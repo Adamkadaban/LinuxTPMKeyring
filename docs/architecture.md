@@ -276,3 +276,69 @@ never panics or fails the verdict, which still depends only on the device node's
 opens a D-Bus session, touches a secret, or unlocks anything; per project policy it runs in CI or on
 a fresh Azure VM for self-check, not the developer host. Only the TPM resource manager is required
 for the verdict.
+
+## Non-blocking PAM module (`tess-pam`)
+
+`pam_tess.so` is the login-time gate. Its overriding constraint is that it must **never freeze
+login**: no blocking TPM, D-Bus, or camera I/O ever runs on the PAM thread. The crate is built as a
+`cdylib` (`libpam_tess.so` → installed as `pam_tess.so`) plus an `rlib` so the safe logic is unit-
+and integration-testable.
+
+### Confined FFI
+
+The PAM C ABI is hand-rolled in `crates/tess-pam/src/ffi.rs` — the **only** `unsafe` in the
+workspace. Every other crate forbids unsafe through the workspace lint
+(`[workspace.lints.rust] unsafe_code = "forbid"`, inherited via `[lints] workspace = true`);
+`tess-pam` opts out of that inheritance and instead sets `#![deny(unsafe_code)]`
+at the crate root with `#[allow(unsafe_code)]` on the `ffi` module alone. The module declares the
+small frozen surface it needs (`pam_get_item`, `pam_set_data`/`pam_get_data`, `pam_get_authtok`, and
+the `pam_conv`/`pam_message`/`pam_response` structs), exports the four entrypoints
+(`pam_sm_authenticate`/`pam_sm_setcred`/`pam_sm_open_session`/`pam_sm_close_session`), and wraps the
+raw calls in safe functions (e.g. reading `PAM_RHOST`) so the rest of the crate stays safe Rust. The
+`.so` links `libpam` (via `build.rs`), which also lets the test binaries resolve the `pam_*` symbols
+without a live PAM stack.
+
+### Watchdog'd helper + fail-open
+
+Heavy work runs in a short-lived child process supervised by `helper::run` under a hard
+`Watchdog { deadline, term_grace, poll }`. The supervisor polls `try_wait`; on deadline it sends
+`SIGTERM`, waits `term_grace`, escalates to `SIGKILL`, and polls `try_wait` for another `term_grace`.
+In the normal timeout path the child is killed and reaped (no zombies, no leaks) and the call returns
+within `deadline + 2 * term_grace`. In the pathological case where even `SIGKILL` cannot terminate the
+child promptly (uninterruptible I/O), the call still returns within that bound, but the child may
+linger and its reap is deferred to a detached thread — so the PAM thread is never blocked and the
+child is still reaped once the kernel can deliver the kill. Only in the extreme corner where even
+that reaper thread cannot be created (resource exhaustion) is the orphan left for the OS to reap at
+host-process exit; the caller is never blocked in any path. A run yields a `RunOutcome { pid, termination }` that
+`gate::classify` maps to `Authorized` / `Declined` / `Unavailable` (a spawn or syscall error is
+`Unavailable` — fail open, never authorization).
+
+`gate::decide` turns that into a PAM code per phase:
+
+- **Auth** returns `PAM_SUCCESS` only on an explicit `Authorized`; `Declined`, timeout, and spawn
+  failure all return `PAM_AUTHINFO_UNAVAIL`, so a `[success=done default=ignore]` stack falls through
+  to the password factor.
+- **Session** always returns `PAM_SUCCESS` — a slow or failed unseal degrades to "keyring stays
+  locked, login proceeds", never a frozen or failed login.
+
+Before running anything the gate aborts when no gesture is available: a remote session (a non-empty
+`PAM_RHOST` — the authoritative PAM-provided signal, not an environment variable) or no TPM device
+(`/dev/tpmrm0`/`/dev/tpm0` absent). Auth
+aborts with `PAM_IGNORE` (fall through to password); a session open aborts with `PAM_SUCCESS` so it
+never disturbs login under any control flag. The helper executable is resolved from a root-controlled
+PAM module argument (`helper=PATH` in the PAM config), falling back to the compiled install path
+`/usr/lib/tess/tess-pam-helper`; release builds ignore the environment so a caller cannot substitute
+the helper in the privileged PAM context (debug/test builds additionally honour `TESS_PAM_HELPER` for
+the test harness). The real unseal → keyring-unlock helper is wired in a later phase; until it is
+installed, a missing-helper spawn fails open, which is the correct non-blocking behaviour.
+
+### "Login never freezes" test
+
+`crates/tess-pam/tests/stall_injection.rs` injects three helper states — slow-but-eventually-OK,
+hang-forever (SIGTERM-ignoring, forcing SIGKILL escalation), and clean-failure — and asserts each
+finishes within a hard bound, maps to the correct PAM code, and leaves the child neither alive nor a
+zombie (`process_alive(pid)` is false after the run). Pure unit tests cover the timeout / fail-open /
+abort decision logic. A CI step additionally installs the compiled `pam_tess.so` and drives it with
+`pamtester` (backed by `pam_permit`), proving the module dlopens through libpam and that a no-op
+session returns `PAM_SUCCESS` — host-side execution is never run on the developer machine.
+
