@@ -101,8 +101,9 @@ pub fn run(command: &mut Command, watchdog: &Watchdog) -> io::Result<Reaped> {
         }),
         Kill::Stuck => {
             // Even SIGKILL does not terminate a process stuck in uninterruptible I/O until the
-            // syscall returns. Never block the caller waiting for that; reap in the background so the
-            // child still cannot become a leaked zombie.
+            // syscall returns. Never block the caller waiting for that; defer the reap to a
+            // background thread (best-effort — see reap_in_background for the resource-exhaustion
+            // corner where the OS reaps the orphan at host-process exit instead).
             reap_in_background(child);
             Ok(Reaped {
                 pid,
