@@ -80,10 +80,11 @@ pub fn run(command: &mut Command, watchdog: &Watchdog) -> io::Result<Reaped> {
                 termination: Termination::Exited(status),
             });
         }
-        if started.elapsed() >= watchdog.deadline {
+        let remaining = watchdog.deadline.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
             break;
         }
-        std::thread::sleep(watchdog.poll);
+        std::thread::sleep(watchdog.poll.min(remaining));
     }
 
     match escalate_termination(&mut child, pid, watchdog)? {
@@ -140,10 +141,11 @@ fn wait_within(child: &mut Child, budget: Duration, poll: Duration) -> io::Resul
         if child.try_wait()?.is_some() {
             return Ok(true);
         }
-        if started.elapsed() >= budget {
+        let remaining = budget.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
             return Ok(false);
         }
-        std::thread::sleep(poll);
+        std::thread::sleep(poll.min(remaining));
     }
 }
 
