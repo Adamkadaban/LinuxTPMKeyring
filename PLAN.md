@@ -279,7 +279,7 @@ unlocks the GNOME login keyring with **no password** (verified by `secret-tool`/
 survives reboot; stall-injection proves login never freezes; teardown removes all Azure resources.
 
 **Deliverables:**
-- [ ] Wire `tess-fprint` verify as the PAM gate (PIN kept as fallback), still non-blocking
+- [x] Wire `tess-fprint` verify as the PAM gate (PIN kept as fallback), still non-blocking
 - [ ] `deploy/install.sh`: detect Debian 13, install runtime deps, build/fetch binaries, `tess install`
 - [ ] `deploy/debian/`: `cargo-deb` producing an installable `.deb`
 - [ ] Azure E2E harness: provision → install → enroll → scripted virtual-fprint session → assert unlocked → teardown (one script)

@@ -52,6 +52,7 @@ secret-service = { workspace = true, optional = true }
 [dev-dependencies]
 tempfile.workspace = true
 zbus.workspace = true
+nix.workspace = true
 
 [lints]
 workspace = true

@@ -1240,6 +1240,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hkdf",
  "libc",
+ "nix",
  "rpassword",
  "secret-service",
  "serde",

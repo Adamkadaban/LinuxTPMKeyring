@@ -7,10 +7,15 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
+use nix::sys::signal::{killpg, Signal};
+use nix::unistd::Pid;
 use tempfile::TempDir;
 use tess_tpm::TctiConfig;
 
@@ -261,6 +266,134 @@ fn wait_for_secrets(address: &str, keyring: &mut Child) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// fprintd mock (python-dbusmock on its own private bus)
+// ---------------------------------------------------------------------------------------------
+
+const FPRINT_ADDRESS_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn fprintd_mock_script() -> String {
+    format!(
+        "{}/../../testing/fprint-mock/fprintd_mock.py",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+/// True when the fprintd mock tooling (`dbus-run-session` plus the Python modules the harness
+/// imports) is usable, so the fingerprint tests skip cleanly when it is absent.
+pub fn fprint_harness_available() -> bool {
+    let dbus_run = binary_available("dbus-run-session");
+    let python_imports = Command::new("python3")
+        .args([
+            "-c",
+            "import dbus, dbusmock; from gi.repository import GLib",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    dbus_run && python_imports
+}
+
+/// A scripted `net.reactivated.Fprint` mock on its own private session bus, separate from the
+/// keyring's bus. Dropping it reaps the whole process group (the `dbus-run-session`, its
+/// `dbus-daemon`, and the `dbusmock` server), so nothing leaks.
+pub struct FprintMock {
+    child: Child,
+    address: String,
+}
+
+impl FprintMock {
+    /// Start the mock for `scenario` (`match` / `no-match` / `stall`) and return it once the harness
+    /// has announced its private bus address.
+    pub fn start(scenario: &str) -> Self {
+        let mut child = Command::new("dbus-run-session")
+            .arg("--")
+            .args(["python3", &fprintd_mock_script(), scenario])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("spawn dbus-run-session fprintd mock");
+
+        let stdout = child.stdout.take().expect("fprintd mock stdout piped");
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut line = String::new();
+            if BufReader::new(stdout).read_line(&mut line).is_ok() {
+                let _ = tx.send(line.trim().to_owned());
+            }
+        });
+
+        let address = match rx.recv_timeout(FPRINT_ADDRESS_TIMEOUT) {
+            Ok(addr) if !addr.is_empty() => addr,
+            _ => {
+                // A bare `Child` does not reap on drop, so kill and wait the whole process group
+                // before failing — otherwise a timeout leaks the `dbus-daemon`/`dbusmock` group.
+                let pgid = Pid::from_raw(child.id() as i32);
+                let _ = killpg(pgid, Signal::SIGKILL);
+                let _ = child.wait();
+                panic!(
+                    "fprintd mock did not announce a bus address within {FPRINT_ADDRESS_TIMEOUT:?}"
+                );
+            }
+        };
+        Self { child, address }
+    }
+
+    /// The private bus address the mock fprintd listens on.
+    pub fn address(&self) -> &str {
+        &self.address
+    }
+}
+
+impl Drop for FprintMock {
+    fn drop(&mut self) {
+        let pgid = Pid::from_raw(self.child.id() as i32);
+        let _ = killpg(pgid, Signal::SIGTERM);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && matches!(self.child.try_wait(), Ok(None)) {
+            thread::sleep(Duration::from_millis(20));
+        }
+        // Unconditionally SIGKILL the whole group: children (`dbus-daemon`, the `dbusmock` server)
+        // can outlive the `dbus-run-session` leader. SIGKILL to an already-dead group is a harmless
+        // ESRCH.
+        let _ = killpg(pgid, Signal::SIGKILL);
+        let _ = self.child.wait();
+    }
+}
+
+/// Run `tess-pam-helper` with the fingerprint front gate enabled (`--fingerprint`), pointing its
+/// fprintd verify at `fprint_bus` (the [`FprintMock`]) with a bounded `fprint_timeout`. Otherwise
+/// identical to [`run_pam_helper`]: the PIN is fed on stdin, the wait is bounded, and the child is
+/// reaped under a hard deadline. Returns the exit success flag and the captured (secret-free)
+/// stderr, on which the caller asserts the fingerprint verdict line.
+pub fn run_pam_helper_fprint(
+    tcti: &TctiConfig,
+    bus_address: &str,
+    data_home: &Path,
+    pin: &[u8],
+    fprint_bus: &str,
+    fprint_timeout: Duration,
+) -> (bool, String) {
+    run_helper_inner(
+        tcti,
+        bus_address,
+        data_home,
+        pin,
+        Some(FprintEnv {
+            bus_address: fprint_bus.to_string(),
+            timeout_ms: fprint_timeout.as_millis() as u64,
+        }),
+    )
+}
+
+struct FprintEnv {
+    bus_address: String,
+    timeout_ms: u64,
+}
+
+// ---------------------------------------------------------------------------------------------
 // tess-pam-helper
 // ---------------------------------------------------------------------------------------------
 
@@ -281,20 +414,36 @@ pub fn run_pam_helper(
     data_home: &Path,
     pin: &[u8],
 ) -> (bool, String) {
+    run_helper_inner(tcti, bus_address, data_home, pin, None)
+}
+
+fn run_helper_inner(
+    tcti: &TctiConfig,
+    bus_address: &str,
+    data_home: &Path,
+    pin: &[u8],
+    fprint: Option<FprintEnv>,
+) -> (bool, String) {
     let (host, port) = match tcti {
         TctiConfig::Swtpm { host, port } => (host.clone(), port.to_string()),
         TctiConfig::DeviceManager { .. } => panic!("sim test must use swtpm"),
     };
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tess-pam-helper"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tess-pam-helper"));
+    command
         .env("DBUS_SESSION_BUS_ADDRESS", bus_address)
         .env("XDG_DATA_HOME", data_home)
         .env("TESS_SWTPM_HOST", host)
         .env("TESS_SWTPM_PORT", port)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn tess-pam-helper");
+        .stderr(Stdio::piped());
+    if let Some(fprint) = fprint {
+        command
+            .arg("--fingerprint")
+            .env("TESS_FPRINT_BUS_ADDRESS", fprint.bus_address)
+            .env("TESS_FPRINT_TIMEOUT_MS", fprint.timeout_ms.to_string());
+    }
+    let mut child = command.spawn().expect("spawn tess-pam-helper");
 
     child
         .stdin

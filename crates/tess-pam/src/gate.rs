@@ -104,13 +104,28 @@ const DEFAULT_HELPER_PATH: &str = "/usr/lib/tess/tess-pam-helper";
 #[cfg(debug_assertions)]
 const HELPER_PATH_ENV: &str = "TESS_PAM_HELPER";
 
-/// The helper program the gate runs under the watchdog. The real unseal/unlock helper is wired in a
-/// later phase; until it is installed, spawning a missing path fails open (auth → fall through,
-/// session → success), which is the correct non-blocking behaviour.
+/// The flag the gate appends to the helper command line to enable the fingerprint front gate.
+const FINGERPRINT_FLAG: &str = "--fingerprint";
+/// The environment variable carrying the login user to the helper, so its fprintd verify claims the
+/// device for the right user. Not a secret; the username only selects whose enrolled finger fprintd
+/// matches against.
+const FPRINT_USER_ENV: &str = "TESS_FPRINT_USER";
+
+/// The helper program the gate runs under the watchdog, plus whether the fingerprint front gate is
+/// enabled. A missing helper path fails open (auth → fall through, session → success), the correct
+/// non-blocking behaviour.
 #[derive(Debug, Clone)]
 pub struct HelperSpec {
     pub program: PathBuf,
     pub args: Vec<OsString>,
+    /// When true, the helper attempts a bounded fprintd verify before the PIN unseal. The
+    /// fingerprint match is host-trusted convenience that never replaces the PIN: the key is sealed
+    /// under the PIN authValue, so the PIN remains required to unseal regardless of the verify
+    /// result. Defaults off (PIN-only), the safe default.
+    pub fingerprint: bool,
+    /// The login user passed to the helper for the fprintd claim (`None` until the session phase
+    /// resolves `PAM_USER`). Only meaningful when `fingerprint` is true.
+    pub fingerprint_user: Option<String>,
 }
 
 impl HelperSpec {
@@ -118,6 +133,8 @@ impl HelperSpec {
         Self {
             program: program.into(),
             args,
+            fingerprint: false,
+            fingerprint_user: None,
         }
     }
 
@@ -125,23 +142,66 @@ impl HelperSpec {
     /// configured in the PAM stack, falling back to the compiled install path. Debug/test builds
     /// additionally honour `TESS_PAM_HELPER` for the test harness; release builds ignore the
     /// environment entirely, so a caller's environment cannot substitute the helper executable in
-    /// the privileged PAM context.
+    /// the privileged PAM context. The `fingerprint=yes` module argument enables the fingerprint
+    /// front gate; anything else (including its absence) leaves it off.
     pub fn resolve(pam_args: &[&str]) -> Self {
-        if let Some(path) = helper_arg(pam_args) {
-            return Self::new(path, Vec::new());
-        }
-        #[cfg(debug_assertions)]
-        if let Some(path) = std::env::var_os(HELPER_PATH_ENV) {
-            return Self::new(PathBuf::from(path), Vec::new());
-        }
-        Self::new(DEFAULT_HELPER_PATH, Vec::new())
+        let fingerprint = fingerprint_enabled(pam_args);
+        let mut spec = if let Some(path) = helper_arg(pam_args) {
+            Self::new(path, Vec::new())
+        } else {
+            #[cfg(debug_assertions)]
+            {
+                if let Some(path) = std::env::var_os(HELPER_PATH_ENV) {
+                    Self::new(PathBuf::from(path), Vec::new())
+                } else {
+                    Self::new(DEFAULT_HELPER_PATH, Vec::new())
+                }
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                Self::new(DEFAULT_HELPER_PATH, Vec::new())
+            }
+        };
+        spec.fingerprint = fingerprint;
+        spec
+    }
+
+    /// Set the login user used for the fprintd claim. No-op effect unless `fingerprint` is enabled.
+    pub fn with_fingerprint_user(mut self, user: Option<String>) -> Self {
+        self.fingerprint_user = user;
+        self
     }
 
     pub fn command(&self) -> Command {
         let mut command = Command::new(&self.program);
         command.args(&self.args);
+        if self.fingerprint {
+            command.arg(FINGERPRINT_FLAG);
+            match &self.fingerprint_user {
+                Some(user) => {
+                    command.env(FPRINT_USER_ENV, user);
+                }
+                // The environment is not a trusted channel in the privileged PAM context: clear any
+                // inherited value so the helper can only ever use the PAM-resolved user (or the
+                // empty-string default), never one an attacker planted in the parent environment.
+                None => {
+                    command.env_remove(FPRINT_USER_ENV);
+                }
+            }
+        }
         command
     }
+}
+
+/// Whether a `fingerprint=yes` module argument is present. Only an explicit `yes` enables the front
+/// gate; `no`, any other value, or the argument's absence keeps the PIN-only default.
+fn fingerprint_enabled(pam_args: &[&str]) -> bool {
+    pam_args
+        .iter()
+        .filter_map(|arg| arg.strip_prefix("fingerprint="))
+        .next_back()
+        .map(|value| value.eq_ignore_ascii_case("yes"))
+        .unwrap_or(false)
 }
 
 /// Extract an absolute `helper=PATH` PAM module argument, if present. A relative path is rejected so
@@ -245,6 +305,59 @@ mod tests {
     fn helper_spec_new_uses_explicit_program() {
         let spec = HelperSpec::new("/tmp/custom-helper", vec![OsString::from("--check")]);
         assert_eq!(spec.command().get_program(), "/tmp/custom-helper");
+    }
+
+    #[test]
+    fn fingerprint_defaults_off_and_adds_no_flag() {
+        let spec = HelperSpec::new("/tmp/helper", Vec::new());
+        assert!(!spec.fingerprint);
+        let args: Vec<_> = spec.command().get_args().map(|a| a.to_owned()).collect();
+        assert!(
+            !args.iter().any(|a| a == "--fingerprint"),
+            "PIN-only helper must not get --fingerprint"
+        );
+    }
+
+    #[test]
+    fn fingerprint_yes_arg_enables_flag_and_passes_user() {
+        let spec = HelperSpec::resolve(&["helper=/etc/tess/helper", "fingerprint=yes"])
+            .with_fingerprint_user(Some("alice".to_string()));
+        assert!(spec.fingerprint);
+        let command = spec.command();
+        let args: Vec<_> = command.get_args().map(|a| a.to_owned()).collect();
+        assert!(
+            args.iter().any(|a| a == "--fingerprint"),
+            "fingerprint=yes must append --fingerprint"
+        );
+        let user_env = command
+            .get_envs()
+            .find(|(k, _)| *k == "TESS_FPRINT_USER")
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_owned());
+        assert_eq!(user_env, Some(OsString::from("alice")));
+    }
+
+    #[test]
+    fn fingerprint_without_user_clears_inherited_env() {
+        // With the front gate on but no PAM-resolved user, the command must explicitly *remove*
+        // TESS_FPRINT_USER so an attacker-planted parent-environment value can't reach the helper.
+        let spec = HelperSpec::resolve(&["fingerprint=yes"]);
+        assert!(spec.fingerprint_user.is_none());
+        let command = spec.command();
+        let removed = command
+            .get_envs()
+            .any(|(k, v)| k == "TESS_FPRINT_USER" && v.is_none());
+        assert!(removed, "TESS_FPRINT_USER must be explicitly cleared");
+    }
+
+    #[test]
+    fn fingerprint_only_yes_enables_it() {
+        assert!(!HelperSpec::resolve(&["fingerprint=no"]).fingerprint);
+        assert!(!HelperSpec::resolve(&["fingerprint=maybe"]).fingerprint);
+        assert!(!HelperSpec::resolve(&[]).fingerprint);
+        assert!(HelperSpec::resolve(&["fingerprint=yes"]).fingerprint);
+        // Case-insensitive, and a later occurrence wins.
+        assert!(HelperSpec::resolve(&["fingerprint=no", "fingerprint=YES"]).fingerprint);
     }
 
     #[test]

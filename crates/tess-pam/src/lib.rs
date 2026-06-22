@@ -28,8 +28,10 @@ pub mod ret {
 /// Decide whether the gate can run and, if so, classify the helper outcome — independent of PAM
 /// phase. Returns `None` when there is no gesture to run (remote session or no TPM); otherwise
 /// `Some(result)`: `Unavailable` when no PIN was available (so no helper is spawned), else the
-/// classified outcome of running the watchdog'd helper with `pin` on its standard input. Bounded by
-/// `watchdog.deadline + 2 * watchdog.term_grace`; never blocks login.
+/// classified outcome of running the watchdog'd helper with `pin` on its standard input. When
+/// `helper_spec.fingerprint` is set, the helper additionally runs a bounded fprintd verify as a
+/// front gate before the PIN unseal — host-trusted convenience that never replaces the PIN. Bounded
+/// by `watchdog.deadline + 2 * watchdog.term_grace`; never blocks login.
 pub fn evaluate(
     env: &GateEnv,
     helper_spec: &HelperSpec,

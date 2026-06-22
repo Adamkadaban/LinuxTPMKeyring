@@ -16,9 +16,15 @@
 ## Flow (MVP)
 
 ```
-login → PAM session (PIN via conv, bounded helper) → tess-tpm::unseal(pin) → random key
+login → PAM session → [fingerprint front gate (optional, convenience)]
+      → PIN via conv (the real gate) → bounded helper → tess-tpm::unseal(pin) → random key
       → tess-keyring::unlock(key) over Secret Service → GNOME login keyring unlocked
 ```
+
+The precedence is **fingerprint (host-trusted convenience) → PIN (the real TPM gate) → password
+fallthrough**. The fingerprint match is layered *on* the PIN, never in place of it: the random key is
+sealed under the PIN authValue, so the PIN is always required to unseal — a fingerprint match alone
+cannot release the key. See "Session flow" below for the honest limitation.
 
 Enrollment rekeys the keyring in place (transactional, with a recovery secret) — see the
 keyring-preservation invariant in `PLAN.md` §2.
@@ -440,7 +446,7 @@ zeroizing buffer, and a secret-free `syslog` line) so the rest of the crate stay
 `.so` links `libpam` (via `build.rs`), which also lets the test binaries resolve the `pam_*` symbols
 without a live PAM stack.
 
-### Session flow: PIN → unseal → unlock
+### Session flow: fingerprint → PIN → unseal → unlock
 
 The session phase (`pam_sm_open_session`) performs the real work, non-blocking:
 
@@ -452,16 +458,50 @@ The session phase (`pam_sm_open_session`) performs the real work, non-blocking:
    environment (which `ps`/`/proc` expose), and not via a disk file (which would persist the secret).
    The transfer uses an anonymous in-memory file (`memfd`), so there is no pipe whose broken read end
    could raise `SIGPIPE` and kill the login process.
-3. **Run the helper** `tess-pam-helper` under the watchdog. The helper reads the PIN from stdin,
-   loads the sealed object from `$XDG_DATA_HOME/tess/metadata.json`, opens the TPM
-   (`tess_tpm::unseal`), and unlocks the login keyring (`tess_keyring::unlock`). It exits `0` on a
-   successful unlock, non-zero on any failure; the PIN and the unsealed key never reach argv, the
-   environment, disk, or the output. The helper is a second binary of the `tess-cli` crate so it
-   shares the enroll/unlock composition (`tess_cli::session::unseal_and_unlock`) rather than
-   duplicating it.
+3. **Run the helper** `tess-pam-helper` under the watchdog. When the fingerprint front gate is
+   enabled (see below), the helper first runs **one bounded fprintd verify** and logs the verdict,
+   then — *regardless of the verify result* — reads the PIN, loads the sealed object from
+   `$XDG_DATA_HOME/tess/metadata.json`, opens the TPM (`tess_tpm::unseal`), and unlocks the login
+   keyring (`tess_keyring::unlock`). It exits `0` on a successful unlock, non-zero on any failure; the
+   PIN and the unsealed key never reach argv, the environment, disk, or the output. The helper is a
+   second binary of the `tess-cli` crate so it shares the enroll/unlock composition
+   (`tess_cli::session::unseal_and_unlock`) rather than duplicating it.
 4. **Always return `PAM_SUCCESS`** and log the outcome (unlocked / wrong-PIN / timeout / no-gesture)
    to `LOG_AUTHPRIV` without any secret. On timeout or failure the keyring simply stays locked and
    login proceeds.
+
+#### Fingerprint front gate (`fingerprint=yes`)
+
+The module argument `fingerprint=yes` enables an fprintd verify ahead of the PIN unseal; **the
+default is PIN-only** (the safe default — no fingerprint dependency unless explicitly opted in). When
+enabled, the module resolves `PAM_USER`, hands it and a `--fingerprint` flag to the helper, and
+widens the watchdog deadline (`Watchdog::FINGERPRINT_DEADLINE`, 12 s) so a real swipe has room ahead
+of the unseal. Inside the helper the verify is itself bounded through
+`tess_fprint::FprintClient::verify`, well inside the watchdog ceiling, and connects to the system
+fprintd. Both the verify deadline (default 8 s) and the fprintd bus are fixed in release builds: a
+caller's environment cannot change them, so it cannot redirect the privileged helper to an
+attacker-controlled D-Bus address or push the verify into watchdog-kill territory. The only
+*fingerprint-related* environment the release helper reads is `TESS_FPRINT_USER`, a trusted channel
+the PAM module sets from `PAM_USER` (and clears when no user is resolved) to select whose finger
+fprintd matches. (The helper still reads the non-fingerprint deployment vars it always has —
+`DBUS_SESSION_BUS_ADDRESS`, `XDG_DATA_HOME`, and the `TESS_SWTPM_*` transport selector.)
+Debug/test builds additionally honour `TESS_FPRINT_TIMEOUT_MS` (shorten the deadline) and
+`TESS_FPRINT_BUS_ADDRESS` (point at a private `python-dbusmock` bus), mirroring how `TESS_PAM_HELPER`
+is debug-gated.
+
+**Precedence: fingerprint (convenience) → PIN (the real gate) → password fallthrough.** Every
+fingerprint outcome — `match`, `no-match`, `timeout`, `unavailable`/absent — falls through to the
+PIN unseal; only the PIN can release the sealed key. A no-match or stalled reader never blocks login
+and never fails the session; it is logged and the PIN path runs.
+
+**Honest limitation.** Because the key is sealed under the PIN authValue, **a fingerprint match alone
+cannot unseal it — the PIN is still required.** In this MVP the fingerprint is therefore a
+host-trusted *presence/convenience* signal layered on the PIN, not a PIN replacement: it does not
+skip the PIN prompt. A scheme where a fingerprint *releases* a stored PIN (true Windows-Hello-style
+"swipe instead of type") would need that PIN to be itself TPM/recovery-protected and is deliberately
+out of scope here; it would require its own ADR. The biometric remains host-trusted convenience,
+never the sole gate — a root adversary can forge a `verify-match`, which is exactly why it can never
+stand in for the TPM-sealed PIN authValue.
 
 The auth phase (`pam_sm_authenticate`) does **not** authenticate the user or unlock the keyring (that
 is the session phase's job): it declines (`PAM_AUTHINFO_UNAVAIL`, or `PAM_IGNORE` when aborting) so a
@@ -514,7 +554,13 @@ the keyring, runs the real `tess-pam-helper` binary exactly as the module does (
 wait, reap), and asserts the keyring flips to unlocked with every pre-existing item intact. A CI step
 additionally installs the compiled `pam_tess.so` and drives it with `pamtester` (backed by
 `pam_permit`), proving the module dlopens through libpam and that a no-op session returns
-`PAM_SUCCESS` — host-side execution is never run on the developer machine.
+`PAM_SUCCESS` — host-side execution is never run on the developer machine. The fingerprint front
+gate is proved end-to-end in `crates/tess-cli/tests/fprint_gate_session.rs` (`sim` + `daemon-tests`):
+it enrolls against swtpm + a throwaway keyring, then drives the real helper with `--fingerprint` and
+the `python-dbusmock` fprintd mock across three scenarios — `match`, `no-match`, and `stall` — and
+asserts that in every case the **PIN** unlocks the keyring (the fingerprint never substitutes for it),
+that the no-match and stall cases fall back to the PIN within a hard bound, and that the helper logs
+the expected verdict. Every spawned process (swtpm, dbus, keyring, fprintd mock, helper) is reaped.
 
 
 ## PAM wiring & installer (`tess install`)
