@@ -54,8 +54,11 @@ jobs:
           # fuzz/ is a separate workspace with its own lockfile, so the main test.yml audit/deny gate
           # doesn't cover it. Audit fuzz/Cargo.lock, and run cargo deny from the repo root against the
           # fuzz manifest so fuzz-only deps are held to the same root deny.toml license/bans/sources.
-          (cd fuzz && cargo audit)
-          cargo deny --manifest-path fuzz/Cargo.toml check
+          # Run both from within fuzz/ so they use fuzz/Cargo.lock and fuzz/deny.toml (the latter
+          # mirrors the root policy but additionally allows NCSA for libfuzzer-sys's LLVM libFuzzer).
+          cd fuzz
+          cargo audit
+          cargo deny check
 
       - name: Smoke each target (seed + short bounded run)
         run: |
@@ -101,8 +104,11 @@ jobs:
           # fuzz/ is a separate workspace with its own lockfile, so the main test.yml audit/deny gate
           # doesn't cover it. Audit fuzz/Cargo.lock, and run cargo deny from the repo root against the
           # fuzz manifest so fuzz-only deps are held to the same root deny.toml license/bans/sources.
-          (cd fuzz && cargo audit)
-          cargo deny --manifest-path fuzz/Cargo.toml check
+          # Run both from within fuzz/ so they use fuzz/Cargo.lock and fuzz/deny.toml (the latter
+          # mirrors the root policy but additionally allows NCSA for libfuzzer-sys's LLVM libFuzzer).
+          cd fuzz
+          cargo audit
+          cargo deny check
 
       - name: Fuzz each target (longer bounded run)
         run: |
