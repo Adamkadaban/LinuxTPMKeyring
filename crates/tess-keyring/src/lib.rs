@@ -1,6 +1,12 @@
-//! `KeyringBackend` implementation over the freedesktop Secret Service API (`org.freedesktop.secrets`).
-//! GNOME is the reference impl; KWallet is reachable via `apiEnabled`. Unstable private GNOME D-Bus
-//! calls stay isolated here. Skeleton — implemented in Phase 2 (see `PLAN.md` §5, `docs/adr/0005`).
+//! `KeyringBackend` over the freedesktop Secret Service API (`org.freedesktop.secrets`).
+//!
+//! GNOME's gnome-keyring is the reference implementation. KWallet (with `apiEnabled=true`) and
+//! KeePassXC expose the same API and are reachable through the same backend. Any dependency on
+//! GNOME's unstable private D-Bus interface is isolated inside [`SecretServiceBackend`].
+
+mod backend;
+
+pub use backend::SecretServiceBackend;
 
 /// The well-known D-Bus name every supported backend implements.
 pub const SECRET_SERVICE_BUS_NAME: &str = "org.freedesktop.secrets";
@@ -15,5 +21,13 @@ mod tests {
     #[test]
     fn bus_name_is_freedesktop_secrets() {
         assert_eq!(SECRET_SERVICE_BUS_NAME, "org.freedesktop.secrets");
+    }
+
+    #[test]
+    fn login_collection_path_is_well_known() {
+        assert_eq!(
+            LOGIN_COLLECTION_PATH,
+            "/org/freedesktop/secrets/collection/login"
+        );
     }
 }

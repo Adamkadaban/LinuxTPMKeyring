@@ -8,7 +8,7 @@
 |---|---|---|
 | `tess-core` | lib | Shared types, versioned `Metadata` schema, config, errors, secret hygiene (`zeroize`/`secrecy`/`mlock`), the `KeyringBackend` / `AuthGate` / `SecretStash` traits |
 | `tess-tpm` | lib | TPM2 seal/unseal of a random key under a PIN `PolicyAuthValue`, with mandatory HMAC + parameter-encryption sessions; ECC primary; DA-lockout aware |
-| `tess-keyring` | lib | `KeyringBackend` over the freedesktop Secret Service API; rekey (enroll) + unlock (runtime) |
+| `tess-keyring` | lib | `SecretServiceBackend` (`KeyringBackend`) over the freedesktop Secret Service API; in-place rekey (enroll) + unlock (runtime); GNOME private calls isolated behind the trait |
 | `tess-fprint` | lib | `fprintd` client over `net.reactivated.Fprint` (consumed unmodified) + a mock harness |
 | `tess-pam` | cdylib + rlib | `pam_tess.so`: non-blocking gate → unseal → unlock, via a watchdog'd helper process. The only `unsafe` in the workspace |
 | `tess-cli` | bin | the `tess` binary: `enroll`, `recover`, `unenroll`, `status`, `unlock`, `test`, `doctor`, `install` |
@@ -153,6 +153,45 @@ hardware-free `cargo test --workspace`.
 `deploy/qemu/up.sh` / `down.sh` bring up a throwaway Debian 13 KVM guest with an swtpm vTPM and
 key-only SSH for manual end-to-end exercise. **The agent and CI never run these on the developer's
 host** — they exist purely as a contributor convenience and only ever talk to an emulated TPM.
+
+## Keyring backend (`tess-keyring`)
+
+`SecretServiceBackend` implements `tess_core::KeyringBackend` over the freedesktop **Secret Service**
+API (`org.freedesktop.secrets`) via `zbus`. gnome-keyring is the reference daemon; KWallet (KDE
+Frameworks ≥ 5.97 with `apiEnabled=true`) and KeePassXC expose the same API and are reachable through
+the same backend. KWallet's native `pam_kwallet` path (keyed to the login password, not separately
+unlockable) is out of scope — the backend drives the Secret Service `Unlock` with the released key
+instead.
+
+- `is_locked()` reads the collection's `Locked` property with a fresh (uncached) `Properties.Get`,
+  so it reflects the daemon's live state after an out-of-band lock/unlock.
+- `unlock(secret)` and `rekey(old, new)` need to *prove possession* of a collection password
+  headlessly, which the stable spec can't do (`Unlock` raises an interactive `Prompt`). They use
+  GNOME's private `org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface`
+  (`UnlockWithMasterPassword` / `ChangeWithMasterPassword`, the call Seahorse's "change password"
+  uses). `rekey` re-wraps the collection's master credential **in place** — every stored item stays
+  intact, never a fresh shadow keyring. The runtime login unlock is expected to use the stable
+  `gnome-keyring-daemon --unlock` stdin path; the in-process `unlock` re-unlocks an already-running
+  daemon.
+
+Every dependency on the unstable private interface lives in `SecretServiceBackend`, behind the trait,
+so churn there never reaches callers. Released key material is carried in `SecretBytes` and the D-Bus
+`Secret` buffer is zeroized as soon as each call returns. The value crosses the *per-user* session-bus
+socket through a `plain` session without D-Bus-layer encryption; that socket is owned by the user and
+a root/runtime adversary is out of scope, so the at-rest guarantee is unaffected.
+
+The `daemon-tests` feature gates an end-to-end suite that stands up a private `dbus-daemon` plus
+`gnome-keyring-daemon` (secrets component) against a throwaway `XDG_DATA_HOME`, then reaps both even on
+panic:
+
+```sh
+cargo test -p tess-keyring --features daemon-tests   # CI installs dbus-x11 + gnome-keyring
+```
+
+It asserts the keyring-preservation invariant (store N items → `rekey(old → new)` → `unlock(new)` →
+all N still decrypt), the lock/unlock state transitions, and that a wrong secret never unlocks. The
+suite uses throwaway keyrings only and skips cleanly when the daemons are absent, so the default
+`cargo test --workspace` stays green and daemon-free.
 
 ## Deploy targets
 
