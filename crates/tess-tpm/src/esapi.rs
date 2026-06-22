@@ -70,8 +70,9 @@ impl From<Error> for tess_core::Error {
         match e {
             // A wrong PIN is an authentication failure, not a TPM fault — keep it distinguishable so
             // the enrollment/recovery layers can react (retry, count toward lockout) rather than
-            // treating it as a hardware error.
-            Error::WrongPin => tess_core::Error::Auth(e.to_string()),
+            // treating it as a hardware error. PinTooLong is likewise local input validation, not a
+            // TPM fault.
+            Error::WrongPin | Error::PinTooLong { .. } => tess_core::Error::Auth(e.to_string()),
             other => tess_core::Error::Tpm(other.to_string()),
         }
     }

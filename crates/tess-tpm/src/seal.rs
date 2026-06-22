@@ -50,15 +50,17 @@ impl SealedObject {
 /// `GetRandom`, so the key is unpredictable unless *both* sources are subverted — never a TPM-born
 /// asymmetric key (ROCA) and never trusting the TPM RNG alone.
 pub fn generate_sealing_key(context: &mut Context) -> Result<SecretBytes> {
-    let mut key = vec![0u8; SEALED_KEY_LEN];
-    getrandom_fill(&mut key).map_err(|e| Error::Rng(e.to_string()))?;
+    // Zeroizing from the start so the OS-random bytes are wiped even if collect_tpm_random errors
+    // before we reach the SecretBytes handoff.
+    let mut key = zeroize::Zeroizing::new(vec![0u8; SEALED_KEY_LEN]);
+    getrandom_fill(&mut key[..]).map_err(|e| Error::Rng(e.to_string()))?;
 
     let tpm_random = zeroize::Zeroizing::new(collect_tpm_random(context, SEALED_KEY_LEN)?);
     for (k, t) in key.iter_mut().zip(tpm_random.iter()) {
         *k ^= t;
     }
 
-    Ok(SecretBytes::new(key))
+    Ok(SecretBytes::new(std::mem::take(&mut *key)))
 }
 
 /// Collect exactly `len` random bytes from the TPM. `TPM2_GetRandom` may legitimately return fewer
