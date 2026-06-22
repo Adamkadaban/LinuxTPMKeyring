@@ -52,8 +52,13 @@ enum Command {
     },
     /// Dry-run the session unlock path (no changes) and report what would happen.
     Test,
-    /// Check TPM / keyring / fprintd readiness.
-    Doctor,
+    /// Check TPM / keyring / fprintd / enrollment readiness. Exits non-zero when not ready.
+    Doctor {
+        /// Post-install verification: also require a Secret Service daemon and a completed
+        /// `tess enroll` (sealed metadata present and parseable), not just the TPM.
+        #[arg(long)]
+        post_install: bool,
+    },
     /// Wire (or unwire) the PAM module into the system stack.
     Install {
         /// Remove the tess PAM wiring and module instead of installing them.
@@ -80,7 +85,12 @@ fn main() -> anyhow::Result<()> {
         Command::Status => lifecycle::cli::run_status()?,
         Command::Unlock { pin } => lifecycle::cli::run_unlock(pin)?,
         Command::Test => lifecycle::cli::run_test()?,
-        Command::Doctor => doctor::run(),
+        Command::Doctor { post_install } => {
+            if !doctor::run(post_install) {
+                // read-only probes have already dropped any TPM context; nothing live to unwind.
+                std::process::exit(1);
+            }
+        }
         Command::Install {
             uninstall,
             service,

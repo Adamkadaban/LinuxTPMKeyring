@@ -9,7 +9,11 @@ use std::env;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use tess_tpm::{read_lockout_state, read_tpm_version, LockoutState, TctiConfig, TpmVersion};
+use tess_tpm::{
+    persist, read_lockout_state, read_tpm_version, LockoutState, TctiConfig, TpmVersion,
+};
+
+use crate::enroll;
 
 /// Display name of the TPM resource-manager probe. Shared between the probe
 /// construction and the verdict logic so the two can't drift.
@@ -35,11 +39,17 @@ impl ProbeStatus {
 }
 
 /// A named readiness check with its result and a short human note.
+///
+/// `required` probes fail the overall verdict (and the process exit code) when missing; optional
+/// ones are reported but never block. `hint` carries a one-line remediation surfaced in the verdict
+/// when a required probe is missing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Probe {
     pub name: String,
     pub status: ProbeStatus,
     pub detail: String,
+    pub required: bool,
+    pub hint: Option<String>,
 }
 
 impl Probe {
@@ -48,17 +58,29 @@ impl Probe {
             name: name.to_string(),
             status,
             detail: detail.to_string(),
+            required: false,
+            hint: None,
         }
     }
-}
 
-/// Whether a probe is required for the core TPM-sealing guarantee.
-///
-/// The TPM is mandatory; keyring and fprintd are reported but never block the
-/// overall verdict (fprintd is convenience; the keyring daemon is checked more
-/// thoroughly at enroll time).
-fn is_required(name: &str) -> bool {
-    name == TPM_RM_PROBE_NAME
+    /// Mark this probe as required for the overall verdict.
+    fn required(mut self) -> Self {
+        self.required = true;
+        self
+    }
+
+    /// Mark this probe required only when `yes` — used by probes that are informational by default
+    /// but mandatory in post-install verification mode.
+    fn required_if(mut self, yes: bool) -> Self {
+        self.required = yes;
+        self
+    }
+
+    /// Attach a one-line remediation hint, surfaced when a required probe is missing.
+    fn with_hint(mut self, hint: &str) -> Self {
+        self.hint = Some(hint.to_string());
+        self
+    }
 }
 
 /// Render the probes as an aligned OK/MISSING table followed by a one-line verdict.
@@ -96,31 +118,44 @@ pub fn render_report(probes: &[Probe]) -> String {
     out
 }
 
-/// One-line overall verdict. Only *required* probes can fail the verdict.
-pub fn overall_verdict(probes: &[Probe]) -> String {
-    let required_missing: Vec<&str> = probes
+/// True when no *required* probe is missing — the machine-readable readiness signal behind the
+/// process exit code.
+pub fn is_ready(probes: &[Probe]) -> bool {
+    !probes
         .iter()
-        .filter(|p| p.status == ProbeStatus::Missing && is_required(&p.name))
-        .map(|p| p.name.as_str())
+        .any(|p| p.status == ProbeStatus::Missing && p.required)
+}
+
+/// One-line overall verdict (plus per-component remediation hints when not ready). Only *required*
+/// probes can fail the verdict.
+pub fn overall_verdict(probes: &[Probe]) -> String {
+    let required_missing: Vec<&Probe> = probes
+        .iter()
+        .filter(|p| p.status == ProbeStatus::Missing && p.required)
         .collect();
     let optional_missing = probes
         .iter()
-        .filter(|p| p.status == ProbeStatus::Missing && !is_required(&p.name))
+        .filter(|p| p.status == ProbeStatus::Missing && !p.required)
         .count();
 
     if required_missing.is_empty() {
         if optional_missing == 0 {
             "verdict: READY — all components present.".to_string()
         } else {
-            format!(
-                "verdict: READY — TPM present; {optional_missing} optional component(s) missing."
-            )
+            format!("verdict: READY — {optional_missing} optional component(s) missing.")
         }
     } else {
-        format!(
+        let names: Vec<&str> = required_missing.iter().map(|p| p.name.as_str()).collect();
+        let mut out = format!(
             "verdict: NOT READY — missing required: {}.",
-            required_missing.join(", ")
-        )
+            names.join(", ")
+        );
+        for probe in &required_missing {
+            if let Some(hint) = &probe.hint {
+                let _ = write!(out, "\n  → {}: {hint}", probe.name);
+            }
+        }
+        out
     }
 }
 
@@ -149,7 +184,7 @@ fn probe_path(name: &str, path: &str) -> Probe {
     }
 }
 
-fn probe_keyring() -> Probe {
+fn probe_keyring(required: bool) -> Probe {
     // Lightweight: just check whether a keyring daemon binary is plausibly installed.
     // We deliberately do NOT open a D-Bus session or talk to org.freedesktop.secrets.
     let candidates = ["gnome-keyring-daemon", "kwalletd6", "kwalletd5"];
@@ -159,12 +194,61 @@ fn probe_keyring() -> Probe {
             ProbeStatus::Ok,
             &format!("{found} on PATH (not contacted)"),
         )
+        .required_if(required)
     } else {
         Probe::new(
             "Secret Service daemon",
             ProbeStatus::Missing,
             "no gnome-keyring/kwallet binary on PATH",
         )
+        .required_if(required)
+        .with_hint("install a Secret Service provider, e.g. `apt install gnome-keyring`")
+    }
+}
+
+/// Probe whether `tess enroll` has completed: the sealed metadata must be present *and* parseable
+/// (a truncated/corrupt blob is treated as missing). Informational by default; promoted to required
+/// in post-install verification. Read-only — it loads metadata but never unseals or touches a
+/// secret, so it consumes no DA attempt.
+fn probe_enrollment(required: bool) -> Probe {
+    const NAME: &str = "tess enrollment";
+    let paths = match enroll::Paths::for_user() {
+        Ok(paths) => paths,
+        Err(reason) => {
+            return Probe::new(
+                NAME,
+                ProbeStatus::Missing,
+                &format!("cannot resolve data directory: {reason}"),
+            )
+            .required_if(required)
+            .with_hint("set HOME (or XDG_DATA_HOME) so tess can locate its sealed metadata");
+        }
+    };
+    if !paths.metadata.exists() {
+        return Probe::new(
+            NAME,
+            ProbeStatus::Missing,
+            "not enrolled (no sealed metadata)",
+        )
+        .required_if(required)
+        .with_hint("run `tess enroll`");
+    }
+    match persist::load(&paths.metadata) {
+        Ok(_) => {
+            let recovery = if paths.recovery.exists() {
+                "recovery blob present"
+            } else {
+                "no recovery blob"
+            };
+            Probe::new(NAME, ProbeStatus::Ok, &format!("enrolled; {recovery}"))
+        }
+        Err(reason) => Probe::new(
+            NAME,
+            ProbeStatus::Missing,
+            &format!("sealed metadata unreadable: {reason}"),
+        )
+        .required_if(required)
+        .with_hint("re-run `tess enroll`, or `tess recover` if the TPM state changed"),
     }
 }
 
@@ -176,13 +260,16 @@ fn probe_fprintd() -> Probe {
     }
 }
 
-/// Run all probes against the live system (read-only).
-pub fn run_probes() -> Vec<Probe> {
+/// Run all probes against the live system (read-only). When `post_install` is set, the keyring
+/// daemon and a completed `tess` enrollment are promoted to *required* — the post-install
+/// verification mode the acceptance harness runs after `tess enroll`.
+pub fn run_probes(post_install: bool) -> Vec<Probe> {
     vec![
         probe_tpm_rm(),
         probe_path("TPM raw device (/dev/tpm0)", "/dev/tpm0"),
-        probe_keyring(),
+        probe_keyring(post_install),
         probe_fprintd(),
+        probe_enrollment(post_install),
     ]
 }
 
@@ -197,7 +284,9 @@ fn probe_tpm_rm() -> Probe {
             TPM_RM_PROBE_NAME,
             ProbeStatus::Missing,
             "device node not found",
-        );
+        )
+        .required()
+        .with_hint("no TPM 2.0 resource manager — this host has no usable TPM, or the kernel TPM driver is not loaded");
     }
     let detail = match read_tpm_caps() {
         Ok((version, lockout)) => format_tpm_detail(
@@ -207,7 +296,7 @@ fn probe_tpm_rm() -> Probe {
         ),
         Err(reason) => format_tpm_detail(None, None, Some(&reason)),
     };
-    Probe::new(TPM_RM_PROBE_NAME, ProbeStatus::Ok, &detail)
+    Probe::new(TPM_RM_PROBE_NAME, ProbeStatus::Ok, &detail).required()
 }
 
 /// Best-effort read-only capability read over the device TCTI: TPM version + DA-lockout state. The
@@ -259,10 +348,13 @@ fn format_tpm_detail(
     parts.join("; ")
 }
 
-/// Entry point for the `doctor` subcommand.
-pub fn run() {
-    let probes = run_probes();
+/// Entry point for the `doctor` subcommand. Prints the readiness report and returns whether the
+/// system is ready (no required component missing) so the caller can set the process exit code.
+/// When `post_install` is set, the keyring daemon and a completed enrollment are required.
+pub fn run(post_install: bool) -> bool {
+    let probes = run_probes(post_install);
     println!("{}", render_report(&probes));
+    is_ready(&probes)
 }
 
 #[cfg(test)]
@@ -273,10 +365,15 @@ mod tests {
         Probe::new(name, status, "x")
     }
 
+    /// A required probe, for verdict tests that exercise the required/optional split.
+    fn req(name: &str, status: ProbeStatus) -> Probe {
+        Probe::new(name, status, "x").required()
+    }
+
     #[test]
     fn verdict_ready_when_all_present() {
         let probes = vec![
-            probe("TPM resource manager (/dev/tpmrm0)", ProbeStatus::Ok),
+            req("TPM resource manager (/dev/tpmrm0)", ProbeStatus::Ok),
             probe("fprintd", ProbeStatus::Ok),
         ];
         assert_eq!(
@@ -288,32 +385,55 @@ mod tests {
     #[test]
     fn verdict_ready_with_optional_missing() {
         let probes = vec![
-            probe("TPM resource manager (/dev/tpmrm0)", ProbeStatus::Ok),
+            req("TPM resource manager (/dev/tpmrm0)", ProbeStatus::Ok),
             probe("fprintd", ProbeStatus::Missing),
             probe("Secret Service daemon", ProbeStatus::Missing),
         ];
         assert_eq!(
             overall_verdict(&probes),
-            "verdict: READY — TPM present; 2 optional component(s) missing."
+            "verdict: READY — 2 optional component(s) missing."
         );
     }
 
     #[test]
     fn verdict_not_ready_when_tpm_missing() {
         let probes = vec![
-            probe("TPM resource manager (/dev/tpmrm0)", ProbeStatus::Missing),
+            req("TPM resource manager (/dev/tpmrm0)", ProbeStatus::Missing),
             probe("fprintd", ProbeStatus::Ok),
         ];
-        assert_eq!(
-            overall_verdict(&probes),
+        assert!(overall_verdict(&probes).starts_with(
             "verdict: NOT READY — missing required: TPM resource manager (/dev/tpmrm0)."
-        );
+        ));
+    }
+
+    #[test]
+    fn verdict_surfaces_remediation_hints_for_required_missing() {
+        let probes = vec![
+            Probe::new("tess enrollment", ProbeStatus::Missing, "not enrolled")
+                .required()
+                .with_hint("run `tess enroll`"),
+        ];
+        let verdict = overall_verdict(&probes);
+        assert!(verdict.contains("NOT READY"));
+        assert!(verdict.contains("→ tess enrollment: run `tess enroll`"));
+    }
+
+    #[test]
+    fn is_ready_tracks_required_probes_only() {
+        assert!(is_ready(&[
+            req("TPM resource manager (/dev/tpmrm0)", ProbeStatus::Ok),
+            probe("fprintd", ProbeStatus::Missing),
+        ]));
+        assert!(!is_ready(&[req(
+            "TPM resource manager (/dev/tpmrm0)",
+            ProbeStatus::Missing
+        )]));
     }
 
     #[test]
     fn optional_missing_does_not_fail_verdict() {
         let probes = vec![
-            probe("TPM resource manager (/dev/tpmrm0)", ProbeStatus::Ok),
+            req("TPM resource manager (/dev/tpmrm0)", ProbeStatus::Ok),
             probe("TPM raw device (/dev/tpm0)", ProbeStatus::Missing),
         ];
         assert!(overall_verdict(&probes).starts_with("verdict: READY"));
@@ -321,7 +441,7 @@ mod tests {
 
     #[test]
     fn report_has_header_and_verdict() {
-        let probes = vec![probe("TPM resource manager (/dev/tpmrm0)", ProbeStatus::Ok)];
+        let probes = vec![req("TPM resource manager (/dev/tpmrm0)", ProbeStatus::Ok)];
         let report = render_report(&probes);
         assert!(report.contains("COMPONENT"));
         assert!(report.contains("STATUS"));
