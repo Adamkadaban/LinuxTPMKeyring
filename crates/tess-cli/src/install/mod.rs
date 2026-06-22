@@ -125,6 +125,13 @@ pub fn install(plan: &InstallPlan) -> Result<InstallReport> {
                     backup.display()
                 )
             })?;
+            // Make the rollback artifact durable before the live stack is edited: a crash after the
+            // (fsync'd) stack commit must not be able to leave a wired stack with no backup.
+            fs::File::open(&backup)
+                .and_then(|f| f.sync_all())
+                .with_context(|| format!("fsync backup {}", backup.display()))?;
+            sync_parent_dir(&backup)
+                .with_context(|| format!("sync parent dir of {}", backup.display()))?;
         }
         Err(e) => {
             return Err(e).with_context(|| format!("inspect backup path {}", backup.display()));
