@@ -56,3 +56,31 @@ nix.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.deb]
+name = "tess"
+maintainer = "Adam Hassan"
+license-file = ["../../LICENSE", "0"]
+section = "admin"
+priority = "optional"
+extended-description = """
+tess seals a high-entropy random key in the TPM 2.0, bound to a PIN authValue, and a non-blocking,
+fail-open PAM module unseals it at login to unlock the GNOME login keyring with no password. Protects
+the keyring at rest with hardware anti-hammering; a root/kernel adversary on a live machine is out of
+scope. PAM wiring is left to the explicit `tess install` so packaging can never lock you out."""
+# `$auto` resolves the dynamically linked runtime libraries (libtss2-esys, libc, ...) from the
+# packaged ELF binaries. gnome-keyring is reached over the Secret Service D-Bus API, not linked, so
+# it must be named explicitly. fprintd drives the optional fingerprint front gate — tess runs
+# PIN-only without it — so it is a Recommends (apt installs it by default, but it is removable and
+# can be skipped with `apt --no-install-recommends`), not a hard Depends.
+depends = "$auto, gnome-keyring"
+recommends = "fprintd"
+maintainer-scripts = "../../deploy/debian/"
+# `tess-pam-helper` goes to the path the PAM module resolves at runtime; `libpam_tess.so` is renamed
+# to its PAM load name `pam_tess.so` under the Debian amd64 multiarch security directory. `tess
+# install` still copies the module/wires PAM at deploy time; these assets make a clean install path.
+assets = [
+    ["target/release/tess", "usr/bin/", "755"],
+    ["target/release/tess-pam-helper", "usr/lib/tess/tess-pam-helper", "755"],
+    ["target/release/libpam_tess.so", "usr/lib/x86_64-linux-gnu/security/pam_tess.so", "644"],
+]

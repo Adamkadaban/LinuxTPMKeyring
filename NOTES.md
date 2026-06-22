@@ -535,3 +535,43 @@ Doc/behavior mismatch noted (no code fix — out of this docs PR's scope):
 - **`.deb` / `deploy/install.sh` do not exist yet** (issue #38 still open). README describes the
   working build-from-source + `tess install` path and notes the packaged `.deb` is the smooth path
   landing with #38, incl. the helper resolving from `/usr/lib/tess/tess-pam-helper`.
+## 2026-06-22 — Debian packaging: cargo-deb .deb + one-command install.sh (issue #38)
+**Resolution:** `[package.metadata.deb]` in `crates/tess-cli/Cargo.toml` builds package `tess`;
+`cargo build --release -p tess-cli -p tess-pam && cargo deb -p tess-cli --no-build` produces
+`target/debian/tess_<ver>_amd64.deb`. `deploy/install.sh` is the one-command path; `deploy/debian/postinst`
+prints next steps without touching pam.d. `crates/tess-cli/Cargo.toml` · `deploy/install.sh` ·
+`deploy/debian/postinst` · `.github/workflows/test.yml` · PR for #38.
+
+Gotchas worth remembering:
+- **`--no-build` + a prior build of `tess-cli` + `tess-pam` is mandatory.** `cargo deb -p tess-cli`
+  on its own only builds the `tess-cli` package, so the `tess-pam` cdylib `libpam_tess.so` (a
+  different workspace member) is absent and packaging fails. Build `-p tess-cli -p tess-pam` first
+  (tess-cli pulls in the other workspace libs as deps), then package without a rebuild — the
+  deterministic path used by `install.sh` and CI alike. Asset paths use the special
+  `target/release/...` prefix cargo-deb rewrites to the real target dir.
+- **Three runtime paths must match what the PAM module/installer resolve.** `tess` → `/usr/bin/tess`;
+  `tess-pam-helper` → `/usr/lib/tess/tess-pam-helper` (the compiled `DEFAULT_HELPER_PATH` in
+  `crates/tess-pam/src/gate.rs`); `libpam_tess.so` → `pam_tess.so` under
+  `/usr/lib/x86_64-linux-gnu/security/` (Debian 13 amd64 multiarch security dir, where
+  `pam_permit.so` lives). A drift here would make the installed helper unreachable at login.
+- **`depends = "$auto, gnome-keyring"`, `recommends = "fprintd"`.** `$auto` resolves the linked
+  tpm2-tss libs (libtss2-esys/-mu/-tctildr) + libc/libpam from the packaged ELFs via dpkg-shlibdeps;
+  gnome-keyring is reached over D-Bus (not linked) so it is named explicitly. fprintd is the optional
+  fingerprint front gate — tess is PIN-only without it — so Recommends, not Depends, is the
+  Debian-correct relationship (apt installs Recommends by default, but fprintd stays removable and
+  `deploy/install.sh --no-recommends` / `apt --no-install-recommends` skips it).
+- **The package never edits `/etc/pam.d`.** Lockout safety: PAM wiring stays in the explicit,
+  fail-open `tess install`. The `postinst` only prints instructions and `exit 0`s. CI runs
+  `dpkg -c` (contents-only) and never `dpkg -i`, so it can't perturb the runner.
+- **CI build host is Ubuntu, not Debian 13**, so `$auto` resolves Ubuntu package names — fine,
+  because the CI step asserts only the three artifact *paths* via `dpkg -c`, not the depends line. A
+  real Debian 13 `.deb` is produced by `install.sh` on the target.
+
+## 2026-06-22 — Copilot review #42: packaged `tess install` needs `--module` (issue #38)
+**Resolution:** After a `.deb` install `tess install` fails — `default_module_src()`
+(`crates/tess-cli/src/install/cli.rs:126`) looks for the module *next to the `tess` binary*, and a
+packaged `/usr/bin/tess` has none beside it. Fix is the documented override: point `tess install` at
+the packaged module with `--module /usr/lib/x86_64-linux-gnu/security/pam_tess.so`. `deploy/install.sh`
+passes it automatically; README + `postinst` show the explicit form for the manual/`--no-pam` path.
+The redundant re-copy (dpkg already placed the module there) is an idempotent no-op. `deploy/install.sh:157`
+· `deploy/debian/postinst:15` · `README.md` · PR #42.
