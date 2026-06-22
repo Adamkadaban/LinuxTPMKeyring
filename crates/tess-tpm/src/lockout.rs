@@ -3,7 +3,7 @@
 //!
 //! The sealed object is DA-protected, so each wrong PIN counts toward the TPM's global
 //! `lockoutCounter`. Once it reaches `maxAuthFail` the TPM refuses further DA-protected
-//! authorizations until the lockout is reset or self-heals over `lockoutInterval`. Reading the
+//! authorizations until the lockout is reset or self-heals over the lockout interval. Reading the
 //! counter lets callers warn before lockout; mapping the TPM's lockout response code to a distinct
 //! error lets callers tell "locked out" apart from "wrong PIN".
 
@@ -84,7 +84,7 @@ fn read_property(context: &mut Context, tag: PropertyTag) -> Result<u32> {
 /// (`counter >= max_auth_fail`) it refuses the authorization with [`Error::Lockout`], which this
 /// function surfaces rather than clears. Escaping a hard lockout needs the lockout hierarchy's
 /// `TPM2_DictionaryAttackLockReset` (not yet wired — the pinned `tss-esapi` exposes no safe wrapper
-/// and `unsafe` FFI is disallowed in this crate) or waiting out `lockout_interval`. The name
+/// and `unsafe` FFI is disallowed in this crate) or waiting out the lockout interval. The name
 /// `reset_lockout` is deliberately reserved for that future privileged reset.
 pub fn pin_holder_recover(
     context: &mut Context,

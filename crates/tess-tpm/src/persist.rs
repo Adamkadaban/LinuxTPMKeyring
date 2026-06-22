@@ -66,9 +66,11 @@ pub fn from_metadata(metadata: &Metadata) -> Result<SealedObject> {
 
 /// Serialize `metadata` to pretty JSON and write it to `path` atomically (write a fresh sibling temp
 /// file, then rename) so a crash mid-write can never leave a truncated, unparseable metadata file.
-/// The temp file is created with `create_new` (never reusing a stale file); on Unix it is mode
-/// `0600` (no `0600` guarantee on non-Unix targets) — it holds no secret, but enrollment metadata is
-/// not world-business. After rename the parent directory is fsync'd (Unix) so the entry is durable.
+/// Atomic replace-on-rename is a Unix guarantee; on non-Unix targets `std::fs::rename` may not
+/// replace an existing destination. The temp file is created with `create_new` (never reusing a
+/// stale file); on Unix it is mode `0600` (no `0600` guarantee on non-Unix targets) — it holds no
+/// secret, but enrollment metadata is not world-business. After rename the parent directory is
+/// fsync'd (Unix) so the entry is durable.
 pub fn save(metadata: &Metadata, path: &Path) -> Result<()> {
     let json = serde_json::to_vec_pretty(metadata)
         .map_err(|e| Error::Metadata(format!("serializing metadata: {e}")))?;
