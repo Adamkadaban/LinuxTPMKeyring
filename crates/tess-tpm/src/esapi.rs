@@ -89,7 +89,8 @@ impl From<Error> for tess_core::Error {
             // enrollment/recovery layers can prompt for a lockout reset or recovery secret rather
             // than retrying a PIN that will be rejected regardless.
             Error::Lockout => tess_core::Error::Lockout(
-                "too many failed PIN attempts; wait for the lockout interval or reset".to_string(),
+                "too many failed PIN attempts; locked out until the lockout interval elapses"
+                    .to_string(),
             ),
             other => tess_core::Error::Tpm(other.to_string()),
         }
