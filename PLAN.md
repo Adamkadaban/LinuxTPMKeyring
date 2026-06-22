@@ -352,7 +352,7 @@ audit`/`cargo deny`/`cargo vet` gate every PR; `cargo +nightly -Z minimal-versio
 - [x] `fuzz_metadata` — the on-disk `Metadata` deserializer + our post-deserialize validation
 - [x] `fuzz_tpm_blob` — the sealed pub/priv blob loader before it crosses into `tss-esapi` FFI
 - [x] `fuzz_dbus_reply` — our interpretation of Secret Service / fprintd replies
-- [x] Seeded corpora from real artifacts; short-in-PR / long-nightly CI
+- [x] Seeded corpora (structurally-valid; real sealed-blob capture is swtpm-CI-only, never on host); short-in-PR / long-nightly CI
 - [ ] `cargo vet` supply-chain audit set imported; `tess-tpm`/`secret-service` manually certified
 - [ ] `cargo +nightly -Z minimal-versions` CI job (prove declared lower bounds build)
 - [ ] `auditd` tamper-evidence config in packaging (documented as *audit*, not a security boundary)

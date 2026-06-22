@@ -21,8 +21,10 @@ fuzz_target!(|data: &[u8]| {
 });
 
 fn split(data: &[u8]) -> (&[u8], &[u8]) {
+    // Inputs too short to carry the u16 length prefix have no public blob — both regions are empty
+    // rather than misattributing the partial prefix bytes to the public area.
     if data.len() < 2 {
-        return (data, &[]);
+        return (&[], &[]);
     }
     let want = u16::from_le_bytes([data[0], data[1]]) as usize;
     let rest = &data[2..];

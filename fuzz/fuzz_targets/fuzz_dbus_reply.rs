@@ -18,10 +18,10 @@ use tess_cli::enroll::recovery::{decode, unwrap_key, RecoveryBlob};
 use tess_core::SecretBytes;
 
 fuzz_target!(|data: &[u8]| {
-    // A fixed, non-secret key: the harness fuzzes the parse/AEAD reject path, not key confidentiality.
-    let recovery = SecretBytes::new(vec![0x42u8; 32]);
-
     if let Ok(blob) = serde_json::from_slice::<RecoveryBlob>(data) {
+        // A fixed, non-secret key: the harness fuzzes the parse/AEAD reject path, not key
+        // confidentiality. Allocated only on a successful parse — the common reject path stays cheap.
+        let recovery = SecretBytes::new(vec![0x42u8; 32]);
         let _ = unwrap_key(&blob, &recovery);
     }
 
