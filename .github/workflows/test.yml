@@ -98,6 +98,25 @@ jobs:
           pamtester tess-smoke "$user" authenticate
 
 
+      - name: Install cargo-deb
+        uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
+        with:
+          tool: cargo-deb
+
+      - name: Package .deb and verify contents
+        run: |
+          set -euxo pipefail
+          # cargo-deb packages the binaries already in target/release; build the whole workspace
+          # first so the tess-pam cdylib (libpam_tess.so) exists alongside the tess-cli binaries,
+          # then package without rebuilding. Contents-only check — the package is never installed.
+          cargo build --release --workspace
+          deb=$(cargo deb -p tess-cli --no-build)
+          test -f "$deb"
+          dpkg -c "$deb" | tee /tmp/tess-deb-contents.txt
+          grep -Eq ' \./usr/bin/tess$' /tmp/tess-deb-contents.txt
+          grep -Eq ' \./usr/lib/tess/tess-pam-helper$' /tmp/tess-deb-contents.txt
+          grep -Eq ' \./usr/lib/x86_64-linux-gnu/security/pam_tess\.so$' /tmp/tess-deb-contents.txt
+
       - name: cargo-audit + cargo-deny
         uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
         with:

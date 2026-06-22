@@ -57,34 +57,34 @@ isolation, which doesn't exist on commodity hardware. This is the same boundary 
 
 ## Install
 
-> **`.deb` packaging and a one-command `install.sh` are in progress** (issue #38). Until they land,
-> build from source — the path below works today on Debian 13 with a TPM 2.0.
+> Pre-MVP. tess targets **Debian 13 (trixie)** on a machine with a TPM 2.0. The one-command path
+> builds and installs a `.deb`, then wires the fail-open PAM module.
 
 ```sh
-# Debian 13 with a TPM 2.0 exposed through the kernel resource manager (/dev/tpmrm0).
-# Build everything — tess, tess-pam-helper, and the cdylib target/release/libpam_tess.so
-# (which `tess install` copies into the PAM module dir as pam_tess.so):
-git clone https://github.com/Adamkadaban/LinuxTPMKeyring && cd LinuxTPMKeyring
-cargo build --workspace --release
-
-# Install the session helper to the path the PAM module resolves at runtime:
-sudo install -Dm755 target/release/tess-pam-helper /usr/lib/tess/tess-pam-helper
-
-# Wire the PAM session module (copies pam_tess.so, edits the session stack, fail-open). Run as root:
-sudo ./target/release/tess install
-
-# Seal a random key under a PIN and rekey your keyring in place (transactional; prints a recovery secret):
-./target/release/tess enroll
+# on Debian 13 with a TPM 2.0, from a checkout of this repo
+deploy/install.sh        # build + install the .deb (with runtime deps), then `tess install`
+tess enroll              # set a PIN, seal a random key, rekey your keyring (transactional)
 ```
 
-When building from source, prefix the `tess` commands with `./target/release/` as shown. The PAM
-module looks for the helper at the compiled default `/usr/lib/tess/tess-pam-helper` (the
-`install -Dm755` step above), or at an **absolute** `helper=/path` argument on the PAM line —
-relative paths are ignored. The packaged `.deb` (issue #38) is the smooth path: it installs the
-`tess` binary, the `tess-pam-helper`, and `pam_tess.so` to these canonical paths automatically.
-`tess install` copies `pam_tess.so` into the system PAM module directory and wires the session stack
-(idempotent, fail-open); it does **not** install the `tess` binary or the helper — that's what the
-`.deb` (or the manual steps above) handles.
+`deploy/install.sh` detects Debian 13, builds the `.deb` (installing `cargo-deb` if needed),
+installs it with its runtime dependencies, then runs `tess install` to wire the fail-open PAM session
+module. It is idempotent. Flags: `--deb PATH` installs a prebuilt package instead of building;
+`--no-pam` skips the PAM wiring (run `sudo tess install` yourself later); `--yes` makes apt
+non-interactive.
+
+To build the package by hand:
+
+```sh
+cargo build --release --workspace          # builds tess, tess-pam-helper, and libpam_tess.so
+cargo deb -p tess-cli --no-build           # -> target/debian/tess_<ver>_amd64.deb
+```
+
+The package installs `tess` to `/usr/bin/tess`, the PAM helper to `/usr/lib/tess/tess-pam-helper`
+(the path the module resolves at runtime), and `pam_tess.so` to the Debian PAM module directory
+(`/usr/lib/x86_64-linux-gnu/security/`). It **does not** edit `/etc/pam.d` — PAM wiring is always the
+explicit, fail-open `tess install`, so installing the package can never lock you out. Runtime
+dependencies (`gnome-keyring`, the tpm2-tss libraries) are pulled in automatically; `fprintd` is a
+Recommends (the optional fingerprint front gate; tess runs PIN-only without it).
 
 ## Use
 

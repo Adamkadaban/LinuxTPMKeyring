@@ -1,0 +1,22 @@
+#!/bin/sh
+#
+# Deliberately does NOT touch /etc/pam.d. PAM wiring is left to the explicit, fail-open
+# `tess install` so installing the package can never lock a user out of login.
+
+set -e
+
+case "$1" in
+configure)
+	cat <<'EOF'
+tess installed. PAM wiring is NOT applied automatically, so installing the package can never
+lock you out of login. To finish setup, run as root on the target machine:
+
+  tess install      # wire pam_tess.so into the session stack (idempotent, fail-open)
+  tess enroll       # set a PIN, seal a random key, rekey your keyring (transactional)
+
+Undo the PAM wiring at any time with:  tess install --uninstall
+EOF
+	;;
+esac
+
+exit 0

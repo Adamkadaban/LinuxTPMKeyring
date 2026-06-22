@@ -404,6 +404,8 @@ Phase 4.
 | `deploy/azure/deallocate.sh` | Stops (deallocates) the VM to halt compute billing without deleting it. |
 | `deploy/azure/teardown.sh` | Lists the tagged resources, then (after explicit confirmation) deletes the whole resource group. |
 | `deploy/azure/hw-exit-test.sh` | Runs the Phase 1 hardware exit test against an **already-provisioned** VM: tars the workspace over SSH, installs the toolchain + tpm2-tss deps, runs `cargo test -p tess-tpm --features hw` against `/dev/tpmrm0`, then `tess doctor`. Provisions/tears down nothing and runs no `az` — lifecycle stays with the orchestrator. Inputs: `TESS_HW_SSH`, `TESS_SSH_KEY`. |
+| `deploy/install.sh` | One-command Debian 13 install: build (or take `--deb`) the `.deb`, install it with its runtime dependencies, then wire the fail-open PAM module via `tess install`. Idempotent; never edits `/etc/pam.d` directly. |
+| `deploy/debian/postinst` | Package post-install script. Prints the next steps (`tess install`, `tess enroll`); deliberately does **not** touch `/etc/pam.d`, so installing the package can never lock a user out. |
 
 The Azure vTPM is the only real TPM 2.0 acceptance gate; its PCR values differ from bare metal, so
 the MVP TPM policy binds the PIN authValue only (no PCR binding). Cost discipline — deallocate when
