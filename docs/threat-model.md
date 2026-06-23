@@ -212,22 +212,6 @@ fails or hangs.
 - **No secret or secret-hash is ever written to disk** — only the TPM-sealed blob (inert without the
   TPM and PIN) and the recovery-wrapped blob (inert without `R`).
 
-## Tamper-evidence (auditd) is forensic audit, not a security boundary
-
-The `.deb` ships an optional auditd ruleset (`/usr/share/tess/auditd/tess.rules`) that an admin can
-copy into `/etc/audit/rules.d/` to record write and attribute changes to the installed tess binaries,
-PAM module, PAM helper, the TPM-access udev rule, and the system session stack. It is **not
-auto-activated** and it is **not a security control**.
-
-A root/kernel attacker on a live machine is out of scope (above), and that same attacker can disable
-auditd, flush its rules, unload the kernel audit subsystem, or forge the logs — the watches stop none
-of that. They exist only to provide **after-the-fact forensic evidence** that a tess-relevant file
-was modified, and only on the assumption that logs are shipped off-box to a collector the attacker
-does not control. The per-user sealed and recovery blobs under `~/.local/share/tess` are deliberately
-not watched: a system-wide ruleset cannot enumerate per-user paths, and those blobs are already inert
-without the TPM and PIN, or without the offline recovery secret. tess claims tamper-*evidence* here,
-never tamper-*resistance*.
-
 ## Attack-class → control
 
 Derived from the prior-vulnerability survey; each row cites the failure mode tess was designed to
@@ -252,5 +236,3 @@ avoid.
   from bare metal, so PCR binding would be brittle. It is a deferred, optional bar-raise, not shipped.
 - **Defending KWallet's native `pam_kwallet` path** — out of scope; tess targets the freedesktop
   Secret Service API (GNOME reference impl).
-- **Tamper-resistance** — the optional auditd ruleset is forensic tamper-*evidence* only; root can
-  disable it. It prevents nothing (see [Tamper-evidence](#tamper-evidence-auditd-is-forensic-audit-not-a-security-boundary)).

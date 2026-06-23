@@ -197,22 +197,6 @@ daemon).
 > The PAM install logic is exercised in tests against throwaway fixtures only — it never edits a real
 > `/etc/pam.d` or module directory in CI.
 
-### Tamper-evidence (auditd) — forensic audit only, not a security boundary
-
-The `.deb` ships an optional auditd ruleset to `/usr/share/tess/auditd/tess.rules` that watches the
-installed tess binaries, PAM module/helper, the TPM-access udev rule, and the session stack. It is
-**not auto-activated**. An admin opts in:
-
-```sh
-sudo cp /usr/share/tess/auditd/tess.rules /etc/audit/rules.d/tess.rules
-sudo augenrules --load        # then review with: ausearch -k tess-binary
-```
-
-This is **forensic tamper-evidence only — not a security control**. A root attacker is out of scope
-and can disable auditd or forge its logs; the rules merely give after-the-fact evidence (on the
-assumption logs are shipped off-box) that a tess file was modified. See the
-[threat model](docs/threat-model.md#tamper-evidence-auditd-is-forensic-audit-not-a-security-boundary).
-
 ## Status
 
 MVP (Phase 4). The TPM core, keyring rekey/unlock, fprintd verify, the non-blocking PAM module, the
