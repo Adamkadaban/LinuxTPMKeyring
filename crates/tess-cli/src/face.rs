@@ -236,10 +236,16 @@ const ENV_MODEL_PATH: &str = "MUG_MODEL_PATH";
 /// real `tract` ONNX matcher; otherwise it is the deterministic model-free mock (the CI/default), so
 /// face stays a liveness-gated convenience. Returns a boxed extractor so both share one matcher type.
 fn build_matcher(cfg: &MugConfig) -> Result<Matcher<Box<dyn EmbeddingExtractor>>> {
-    let model_path = cfg
-        .model_path
-        .clone()
-        .or_else(|| std::env::var(ENV_MODEL_PATH).ok());
+    let model_path = match cfg.model_path.clone() {
+        Some(path) => Some(path),
+        None => match std::env::var(ENV_MODEL_PATH) {
+            Ok(path) => Some(path),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(anyhow!("{ENV_MODEL_PATH} is set but is not valid UTF-8"));
+            }
+        },
+    };
 
     #[cfg(feature = "face-model")]
     if let Some(path) = model_path.as_deref() {

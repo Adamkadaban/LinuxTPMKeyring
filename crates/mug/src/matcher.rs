@@ -330,6 +330,13 @@ impl EmbeddingExtractor for TractExtractor {
                 "model produced an empty embedding".into(),
             ));
         }
+        if emb.len() != self.dim {
+            return Err(MugError::MatcherUnavailable(format!(
+                "model output length {} does not match the declared embedding dim {}",
+                emb.len(),
+                self.dim
+            )));
+        }
         l2_normalize(&mut emb)?;
         Ok(emb)
     }
