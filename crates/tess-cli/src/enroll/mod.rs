@@ -191,9 +191,8 @@ impl Tx {
         if self.face_store_enrolled {
             if let Some((username, store)) = face {
                 if let Err(e) = store.remove(username) {
-                    cleanup = Err(anyhow!(
-                        "remove face enrollment for {username} during rollback: {e}"
-                    ));
+                    let err = anyhow!("remove face enrollment for {username} during rollback: {e}");
+                    cleanup = fold_cleanup(cleanup, err);
                 }
             }
         }
@@ -217,10 +216,11 @@ impl Tx {
         }
         if self.metadata_written {
             if let Err(e) = remove_file(&paths.metadata) {
-                cleanup = Err(anyhow::Error::new(e).context(format!(
+                let err = anyhow::Error::new(e).context(format!(
                     "remove sealed metadata {} during rollback",
                     paths.metadata.display()
-                )));
+                ));
+                cleanup = fold_cleanup(cleanup, err);
             }
         }
         if self.recovery_written {

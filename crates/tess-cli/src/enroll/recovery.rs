@@ -294,7 +294,7 @@ pub(crate) fn read_secret_file(path: &Path) -> Result<SecretBytes> {
     let mode = meta.permissions().mode() & 0o777;
     ensure!(
         mode & 0o077 == 0,
-        "{} has insecure permissions {:#o}; expected 0600 (no group/other access). Fix with: chmod 600 {}",
+        "{} has insecure permissions {:#o}; expected no group/other access (e.g. 0600). Fix with: chmod 600 {}",
         path.display(),
         mode,
         path.display()

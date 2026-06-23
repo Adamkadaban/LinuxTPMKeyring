@@ -1,8 +1,9 @@
 //! CLI-facing face-factor plumbing: resolve the current user, build the mug enroll store, and
 //! construct the IR capture pipeline (template capture at enroll, bounded verify at unlock) from the
-//! environment. CI selects the virtual IR substrate + model-free mock matcher via
-//! `MUG_VIRTUAL_IR_DIR`; on hardware the real Brio + an ONNX matcher would be used (no model ships,
-//! so that path reports the factor unavailable and the caller degrades to the PIN).
+//! environment. The only capture backend wired today is the virtual IR substrate + model-free mock
+//! matcher, selected via `MUG_VIRTUAL_IR_DIR` (used by CI and to try the flow). Real Brio capture +
+//! an ONNX matcher model are a tracked follow-up (issue #56); until then a non-virtual environment
+//! reports the factor unavailable and the caller degrades to the PIN.
 
 use anyhow::{anyhow, Context, Result};
 use mug::{

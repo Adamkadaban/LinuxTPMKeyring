@@ -93,10 +93,11 @@ pub fn unlock<S: KeySealer>(
 
 /// Whether the face-unlock credential is enrolled (both the face-sealed metadata and the on-disk
 /// face authValue are present).
-/// Whether face-unlock is fully usable: the on-disk credential files *and* the per-user mug
-/// template must all be present. Checking only the files would let `tess status` report
-/// "enrolled" while `tess unlock --face` always falls back to the PIN (a missing/corrupt template
-/// makes the match unavailable). Non-mutating — the template probe never creates the store dir.
+/// Whether face-unlock is **fully usable** — i.e. all three artifacts are present: the on-disk
+/// sealed-face metadata, the on-disk authValue, *and* the per-user mug template. A files-only check
+/// would let `tess status` report "enrolled" while `tess unlock --face` always falls back to the PIN
+/// (a missing/corrupt template makes the match unavailable). Non-mutating — the template probe never
+/// creates the store dir. (The unlock path itself only needs the on-disk files; see `unlock_with_face`.)
 pub fn face_enrolled(paths: &Paths) -> bool {
     paths.metadata_face.exists() && paths.face_key.exists() && crate::face::template_present()
 }
