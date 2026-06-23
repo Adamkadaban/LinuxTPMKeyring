@@ -190,6 +190,7 @@ impl EnrollStore {
 
     /// Remove a user's enrollment. Returns `true` if a record existed.
     pub fn remove(&self, username: &str) -> Result<bool> {
+        self.ensure_dir()?;
         let path = self.user_path(username)?;
         match fs::remove_file(&path) {
             Ok(()) => Ok(true),
