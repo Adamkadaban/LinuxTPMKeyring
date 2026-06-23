@@ -1,0 +1,30 @@
+[package]
+name = "mug"
+description = "Secure IR face factor for tess: active-illumination liveness, pluggable matcher, enroll store."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+tess-core.workspace = true
+thiserror.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+zeroize.workspace = true
+libc.workspace = true
+# `ioctl` adds the safe ioctl-number macros; the generated wrappers are still `unsafe fn`, confined
+# to the single `sys` module so the rest of the crate stays `deny(unsafe_code)`.
+nix = { workspace = true, features = ["ioctl"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# This crate intentionally does NOT inherit the workspace `unsafe_code = "forbid"` lint. lib.rs sets
+# `#![deny(unsafe_code)]` and only the `sys` module is `#[allow(unsafe_code)]`, confining the raw
+# V4L2 / UVC ioctls (no safe wrapper exists for the Brio IR-emitter extension-unit control) to the
+# FFI boundary — mirroring how `tess-pam` confines its PAM FFI.
+[lints.clippy]
+all = { level = "warn", priority = -1 }

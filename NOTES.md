@@ -722,3 +722,43 @@ reset shells out to `tpm2_dictionarylockout --clear-lockout --auth file:-`. `cra
   skips binding (warns) when it's already set; unenroll only clears when it owns it.
 - tpm2-tools is now a CI system dep (`.github/workflows/test.yml`) and a documented runtime dep for
   the hard-lockout recovery path. Supersedes ADR-0008 → ADR-0011.
+## 2026-06-22 — Phase 5 wave 1: `mug` secure IR face crate (Brio facts + 2nd confined unsafe)
+**Resolution:** New workspace crate `crates/mug` delivers active-IR-reflectance liveness (the
+security core), a pluggable model-free matcher, IR capture behind a trait + synthetic source, the
+Brio IR-emitter enable, and a 0600 zeroized enroll store. Default crate is `#![deny(unsafe_code)]`;
+all raw V4L2/UVC ioctls confined to one `#[allow(unsafe_code)]` `mug::sys` module — a **second**
+allowed-unsafe location (was: only `tess-pam::ffi`), recorded in `docs/adr/0012`, AGENTS.md invariant
+amended. `crates/mug/src/liveness.rs:1` · `crates/mug/src/sys.rs:1` · PR for Phase 5.
+
+Brio hardware-discovery FACTS (one-time, on the user's real Logitech Brio — never re-run on host):
+- USB `046d:085e`, bus `usb-0000:00:14.0-1.2`. `/dev/video2` = RGB (YUYV/MJPG); **`/dev/video4` = IR
+  sensor, pixelformat `GREY` 8-bit, single discrete 340×340 @ 30fps**; video3/video5 = metadata.
+- **IR emitter is OFF by default** (empty-scene video4 reads near-black, mean ~10/255); enabled by a
+  Brio-specific UVC extension-unit `SET_CUR` (cf. `linux-enable-ir-emitter`). Node selection: pick the
+  046d/085e node advertising `GREY`, reference via `/dev/v4l/by-id/...` not a hardcoded `/dev/video4`.
+
+Gotchas worth remembering:
+- **No heavy deps in wave 1 — deliberate.** `v4l`/`ort`/`image`/`ndarray` were NOT added. `v4l` still
+  can't drive the UVC XU emitter (the security-relevant part) and adds a `libv4l`/`-sys` + registry
+  subtree that churns `cargo deny` / `cargo vet --locked` for code CI can't exercise (no camera). The
+  real capture+emitter path uses only `libc` + `nix` (with the `ioctl` feature) raw ioctls in
+  `mug::sys`, so Cargo.lock gains ONLY the `mug` entry → vet/deny stay green untouched.
+- **`v4l2_format` must be exactly 208 bytes or the `_IOWR` size field mismatches.** Modelled as
+  `type_:u32 + _pad:u32 + fmt:[u8;200]`; the kernel union's pointer members force align-8 hence the
+  explicit pad. `pix` (`v4l2_pix_format`, 48B) overlays `fmt` at offset 0. `crates/mug/src/sys.rs`.
+- **Matcher stays model-free in CI via trait+mock, NOT a tiny test ONNX.** `EmbeddingExtractor` trait
+  + `PooledExtractor` (average-pool→**mean-center**→L2-normalize). Mean-centering is load-bearing:
+  without it every all-positive brightness vector clusters in cosine space and distinct scenes look
+  identical (live-vs-screen distance was 0.047). Centered, it encodes spatial structure → screen/photo
+  land far from a live enroll. The `ort` ArcFace/SFace backend is the documented drop-in (model path
+  from config/env; absent ⇒ factor unavailable ⇒ degrade to PIN). No model ships.
+- **Liveness thresholds (0..255 GREY) that separate the synthetic fixtures:** hard gates `mean_delta
+  ≥12`, `delta_std ≥16`, `gradient_energy ≥5`, screen guard `baseline>70 & delta<20`, saturation
+  `>50%`, plus composite score ≥0.45. Flat photo clears mean but fails std (uniform); glossy/curved
+  photo clears mean+std but fails gradient (no high-freq relief — this is *why* the gradient gate
+  exists); screen fails mean + emission guard (bright baseline, tiny differential). Live = radial
+  falloff + feature relief + skin-texture noise + speculars passes all. Procedural fixtures in
+  `liveness::synth` (deterministic xorshift, no `rand` dep), proven in unit + integration tests.
+- **Synthetic IR substrate mirrors tess-fprint's virtual-driver pattern:** `MUG_VIRTUAL_IR_DIR` env
+  → `VirtualIrDevice` serving `ir_off.grey`/`ir_on.grey`; `MUG_STORE_DIR` relocates the enroll store
+  for tests. Headless: no camera, no model, no `unsafe` exercised. 27 mug tests green.
