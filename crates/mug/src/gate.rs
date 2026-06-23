@@ -36,8 +36,14 @@ where
     X: EmbeddingExtractor,
 {
     let pair = capture_liveness_pair(source, emitter, deadline_ms)?;
-    // Liveness is a hard gate before identity: a rejected pair never reaches the matcher.
-    analyze(&pair, liveness_cfg)?.into_result()?;
+    // Liveness is a hard gate before identity: a rejected pair never reaches the matcher. The score
+    // threshold comes from the per-enrollment calibration (captured at enroll), with the rest of the
+    // gate parameters from the caller's config.
+    let effective_cfg = LivenessConfig {
+        score_threshold: enrolled.liveness.score_threshold,
+        ..liveness_cfg.clone()
+    };
+    analyze(&pair, &effective_cfg)?.into_result()?;
 
     let distance = matcher.distance(&pair.emitter_on, &enrolled.embedding)?;
     if distance <= enrolled.match_threshold {

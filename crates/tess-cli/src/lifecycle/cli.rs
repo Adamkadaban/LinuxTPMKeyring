@@ -134,6 +134,14 @@ pub fn run_unenroll(pin: Option<String>) -> Result<()> {
         (Some(u), Some(s)) => Some((u, s)),
         _ => None,
     };
+    // If face-unlock was enrolled but we can't resolve the store/username, the on-disk files are
+    // still removed below, but the mug template (keyed by username) would remain — surface that.
+    if face.is_none() && (paths.metadata_face.exists() || paths.face_key.exists()) {
+        eprintln!(
+            "warning: could not resolve the face store/username; the enrolled face template may \
+             remain under the mug store. Remove it manually if you no longer want it."
+        );
+    }
 
     unenroll(
         &mut sealer,
