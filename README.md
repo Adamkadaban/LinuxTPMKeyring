@@ -223,8 +223,9 @@ The face release path is likewise **opt-in** and **off by default**. Enable it w
 module argument (and combine it with `fingerprint=yes` if you want both):
 
 ```pam
-session optional pam_tess.so face=yes
-session optional pam_tess.so fingerprint=yes face=yes
+# Pick one (these are alternatives, not both — adding both runs the module twice per session):
+session optional pam_tess.so face=yes                  # face-only
+session optional pam_tess.so fingerprint=yes face=yes  # face + fingerprint front gate
 ```
 
 With `face=yes` the session helper first attempts a **bounded, liveness-gated face match**. Unlike

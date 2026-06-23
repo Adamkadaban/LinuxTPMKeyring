@@ -19,7 +19,8 @@ use crate::enroll::{recovery, FaceTemplateSource, Paths};
 /// comes from the loaded network; this only governs the deterministic mock path.
 const MOCK_DIM: usize = 64;
 
-/// Resolve the current login user, used as the mug-store key. Reads `$USER`, then `$LOGNAME`.
+/// Resolve the current login user, used as the mug-store key. Prefers `$TESS_FACE_USER` (the
+/// authoritative PAM-plumbed user in the helper), then falls back to `$USER`, then `$LOGNAME`.
 pub fn current_username() -> Result<String> {
     // Prefer the PAM-plumbed user: in the privileged PAM helper the inherited `$USER`/`$LOGNAME` are
     // untrusted, so the session gate passes the PAM-resolved login user in `TESS_FACE_USER`. Outside
