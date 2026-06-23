@@ -462,6 +462,16 @@ fn run_helper_inner(
     }
     if face {
         command.arg("--face");
+        // Model the gate: it plumbs the PAM-resolved login user via TESS_FACE_USER and the helper
+        // must prefer it over the (untrusted) inherited $USER/$LOGNAME. Carry the enrolled user
+        // (the caller's $USER) in TESS_FACE_USER and poison $USER/$LOGNAME, so a regression that
+        // resolved the enrollment from $USER would look up the wrong user and fail to unlock.
+        if let Ok(user) = std::env::var("USER") {
+            command.env("TESS_FACE_USER", user);
+        }
+        command
+            .env("USER", "inherited-untrusted-user")
+            .env_remove("LOGNAME");
     }
     let mut child = command.spawn().expect("spawn tess-pam-helper");
 
