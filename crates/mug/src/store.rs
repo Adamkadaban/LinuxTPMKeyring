@@ -143,6 +143,7 @@ impl EnrollStore {
 
     /// Load a user's enrollment, or `None` if they are not enrolled.
     pub fn load(&self, username: &str) -> Result<Option<FaceEnrollment>> {
+        self.ensure_dir()?;
         let path = self.user_path(username)?;
         match fs::read(&path) {
             Ok(bytes) => {
@@ -202,6 +203,7 @@ impl EnrollStore {
         if !self.dir.exists() {
             return Ok(Vec::new());
         }
+        self.ensure_dir()?;
         let mut users = Vec::new();
         let entries = fs::read_dir(&self.dir)
             .map_err(|e| MugError::Store(format!("read {}: {e}", self.dir.display())))?;

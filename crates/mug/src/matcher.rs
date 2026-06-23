@@ -128,8 +128,9 @@ impl EmbeddingExtractor for PooledExtractor {
         let mut counts = vec![0u64; self.dim];
         let n = bytes.len();
         for (i, &p) in bytes.iter().enumerate() {
-            // Contiguous segmentation of the flattened frame into `dim` buckets.
-            let bucket = (i * self.dim) / n;
+            // Contiguous segmentation of the flattened frame into `dim` buckets. Use a u128
+            // intermediate so a large `dim` (misconfigured) can't overflow `i * dim`.
+            let bucket = ((i as u128 * self.dim as u128) / n as u128) as usize;
             sums[bucket] += p as f64;
             counts[bucket] += 1;
         }
