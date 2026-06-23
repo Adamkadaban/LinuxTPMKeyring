@@ -166,6 +166,17 @@ pub fn set_grey_format(fd: RawFd, width: u32, height: u32) -> io::Result<(u32, u
         let src = fmt.fmt.as_ptr() as *const v4l2_pix_format;
         src.read_unaligned()
     };
+    // V4L2 S_FMT may silently substitute a different pixelformat. This is the "force GREY" boundary,
+    // so reject anything else rather than let callers read non-GREY bytes as GREY.
+    if granted.pixelformat != V4L2_PIX_FMT_GREY {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "driver granted pixelformat {:#010x}, not GREY ({:#010x})",
+                granted.pixelformat, V4L2_PIX_FMT_GREY
+            ),
+        ));
+    }
     Ok((granted.width, granted.height))
 }
 
