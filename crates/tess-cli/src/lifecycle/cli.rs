@@ -36,16 +36,44 @@ fn keyring_lock_state() -> Option<std::result::Result<bool, String>> {
     })
 }
 
-/// `tess unlock`.
-pub fn run_unlock(pin: Option<String>) -> Result<()> {
+/// `tess unlock`. With `face`, attempt the liveness-gated face unlock first (no PIN typed); on any
+/// face failure, no-enrollment, or timeout, fall back to the PIN path. The fallback is explicit and
+/// logged — face errors are never swallowed.
+pub fn run_unlock(pin: Option<String>, face: bool) -> Result<()> {
     let paths = Paths::for_user().context("resolve tess data directory")?;
     super::ensure_enrolled(&paths)?;
+    if face {
+        match try_face_unlock(&paths) {
+            Ok(()) => {
+                println!("Keyring unlocked via face.");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("Face unlock unavailable ({e:#}); falling back to PIN.");
+            }
+        }
+    }
     let pin = pin_or_prompt(pin, "PIN to unseal the keyring key: ")?;
     let mut sealer = TpmSealer::open(&tcti::from_env()).context("open the TPM")?;
     let keyring = SecretServiceBackend::connect().context("connect to the Secret Service")?;
     unlock(&mut sealer, &keyring, &paths, &pin)?;
     println!("Keyring unlocked.");
     Ok(())
+}
+
+/// The face-unlock attempt: run the bounded liveness-gated match, then unseal `K` via the on-disk
+/// face authValue and unlock the keyring. Any error here is the caller's cue to fall back to the PIN.
+fn try_face_unlock(paths: &Paths) -> Result<()> {
+    ensure!(
+        super::face_enrolled(paths),
+        "face-unlock is not enrolled on this machine"
+    );
+    let enrollment = crate::face::load_enrollment()?
+        .ok_or_else(|| anyhow::anyhow!("no face enrollment for the current user"))?;
+    crate::face::verify_from_env(&enrollment)?;
+    let mut sealer = TpmSealer::open(&tcti::from_env()).context("open the TPM")?;
+    let keyring = SecretServiceBackend::connect().context("connect to the Secret Service")?;
+    super::unlock_with_face(&mut sealer, &keyring, paths)
 }
 
 /// `tess recover` — restore access via the recovery secret, optionally re-sealing under a new PIN.
@@ -97,6 +125,16 @@ pub fn run_unenroll(pin: Option<String>) -> Result<()> {
     let new_password = prompt_new_password()?;
     let mut sealer = TpmSealer::open(&tcti::from_env()).context("open the TPM")?;
     let keyring = SecretServiceBackend::connect().context("connect to the Secret Service")?;
+
+    // Resolve the mug store + username so the face template is cleared too. Best-effort: an
+    // unresolved username/store still removes the on-disk face files (they live under `paths`).
+    let store = crate::face::enroll_store().ok();
+    let username = crate::face::current_username().ok();
+    let face = match (username.as_deref(), store.as_ref()) {
+        (Some(u), Some(s)) => Some((u, s)),
+        _ => None,
+    };
+
     unenroll(
         &mut sealer,
         &keyring,
@@ -104,6 +142,7 @@ pub fn run_unenroll(pin: Option<String>) -> Result<()> {
         &pin,
         &new_password,
         recovery_secret.as_ref(),
+        face,
     )?;
     println!(
         "Unenrolled. The login keyring is back on a password and the sealed blobs were removed."

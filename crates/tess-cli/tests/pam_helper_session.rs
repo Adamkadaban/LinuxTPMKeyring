@@ -131,6 +131,8 @@ fn simulated_session_helper_unseals_and_unlocks_the_keyring() {
         metadata: tess_dir.join("metadata.json"),
         recovery: tess_dir.join("recovery.json"),
         lockout_owned: tess_dir.join("lockout-owned"),
+        metadata_face: tess_dir.join("metadata-face.json"),
+        face_key: tess_dir.join("face-unlock.key"),
     };
 
     let backend =
@@ -143,7 +145,16 @@ fn simulated_session_helper_unseals_and_unlocks_the_keyring() {
         // Scope the sealer so its TPM context is closed before the helper opens its own against the
         // single-client swtpm.
         let mut sealer = TpmSealer::open(&tcti).expect("open swtpm sealer");
-        enroll(&mut sealer, &backend, &paths, &old, &pin, &verify_item).expect("enroll");
+        enroll(
+            &mut sealer,
+            &backend,
+            &paths,
+            &old,
+            &pin,
+            &verify_item,
+            None,
+        )
+        .expect("enroll");
     }
     assert!(
         !backend.is_locked().unwrap(),

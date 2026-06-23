@@ -766,3 +766,37 @@ Gotchas worth remembering:
 ## 2026-06-22 — removed the auditd config (deferred per maintainer)
 **Resolution:** auditd ruleset was forensic-only (root can disable it), not a security boundary; dropped the `.deb` asset, CI assertion, README/threat-model sections, and PLAN deliverable. cargo-vet certification of critical crates deferred to #58. Earlier auditd mentions in this journal (the Phase 6 wave-2 entry and its gotchas) are **historical and superseded by this removal** — auditd no longer ships (the earlier entry's
 `deploy/auditd/tess.rules:1` citation is now a dead path, deleted here). `crates/tess-cli/Cargo.toml:84` · `.github/workflows/fuzz.yml:41` · #58
+
+## 2026-06-22 — Phase 5 wave 2: model-B face-or-PIN unlock (sealed `A_face`) (issue #60)
+**Resolution:** `tess enroll --face` seals the SAME keyring key `K` a second time under a fresh
+independent authValue `A_face` → `metadata-face.json`; `A_face` is stored 0600 at `face-unlock.key`
+and the face template lands in the mug store. `tess unlock --face` runs a bounded liveness-gated
+match (`mug::verify`) then unseals `K` via `A_face` with no PIN typed, falling back to the PIN on any
+face failure. `crates/mug/src/gate.rs:1` (`verify`/`FaceGate`) · `crates/tess-cli/src/enroll/mod.rs`
+(`commit_face`/`FaceEnroll`) · `crates/tess-cli/src/face.rs:1` · #60
+
+Key facts / gotchas:
+- **`A_face` is generated, never derived.** It's drawn from `sealer.generate_key()` (the same
+  getrandom+TPM-RNG mix as `K`), NOT from the PIN or recovery secret — a distinct on-disk credential.
+  The `a_face_is_independent_*` sim test asserts the face-sealed object does NOT unseal with the PIN
+  (only with `A_face`), and that both sealed copies recover the same `K`.
+- **Face is fully transactional, additive.** `commit_face` runs BEFORE the destructive keyring rekey
+  (capture template first → seal+verify+persist `metadata-face.json` → write `face-unlock.key` →
+  mug `store.save`), each step recorded in `Tx`; rollback removes the three face artifacts in reverse
+  (file + mug `store.remove`). A face-step failure therefore rolls back the whole enroll with the
+  keyring never touched (restored to `old`) — never stranded, never weakening the existing guarantees.
+- **`VirtualIrDevice` can't be both source and emitter at once** (`capture_liveness_pair` needs two
+  distinct `&mut`). Added `VirtualIrDevice::split{,_from_env}` → `(VirtualIrSource, VirtualIrEmitter)`
+  sharing an `Rc<Cell<bool>>`. Rc keeps `FaceGate` `!Send`, fine (single-threaded unlock/PAM thread).
+- **Reversed/rotated synth frames are NOT a reliable "wrong face"** at the default 0.34 match
+  threshold — a 180°-rotated live face still embeds at distance ~0.13 under the 64-dim mock (it IS a
+  match). The fallback sim test injects a `screen_pair` spoof instead: it fails LIVENESS → face gate
+  errors → PIN fallback unlocks. (A liveness-failed face is a valid "failed face" for the fallback.)
+- **mug is now a tess-cli `[dependencies]` AND `[dev-dependencies]`** (the latter so the integration
+  test can use `mug::liveness::synth` to write `.grey` fixtures). mug is a local path crate, so
+  Cargo.lock gains only a `+ mug` line under tess-cli's deps — `cargo deny`/`cargo vet --locked` stay
+  green, no new external crate.
+- **`current_username()` keys the mug store off `$USER`/`$LOGNAME`.** enroll and unlock must agree;
+  the sim suite pins `USER=tess-face-test` and `MUG_STORE_DIR`/`MUG_VIRTUAL_IR_DIR` to temp dirs.
+- PAM-session face integration is deliberately NOT in this PR (separate follow-up; PLAN wave-2 box
+  left unticked for it).

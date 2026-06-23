@@ -23,6 +23,11 @@ enum Command {
         /// a PIN passed here is visible in the process list and may land in shell history.
         #[arg(long)]
         pin: Option<String>,
+        /// Also enroll face-unlock: seal the same key under an independent face authValue and enroll
+        /// your face, so `tess unlock --face` releases the key with no PIN typed (the PIN stays the
+        /// fallback). Softens powered-off-theft resistance — see the README trade-off.
+        #[arg(long)]
+        face: bool,
     },
     /// Re-unlock using the recovery secret; with `--reseal`, also re-seal under a new PIN.
     Recover {
@@ -50,6 +55,10 @@ enum Command {
         /// a PIN passed here is visible in the process list and may land in shell history.
         #[arg(long)]
         pin: Option<String>,
+        /// Try a liveness-gated face match first (no PIN typed); falls back to the PIN on any face
+        /// failure, timeout, or when face-unlock is not enrolled.
+        #[arg(long)]
+        face: bool,
     },
     /// Dry-run the session unlock path (no changes) and report what would happen.
     Test,
@@ -80,11 +89,11 @@ enum Command {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Enroll { pin } => enroll::cli::run(pin)?,
+        Command::Enroll { pin, face } => enroll::cli::run(pin, face)?,
         Command::Recover { reseal, pin } => lifecycle::cli::run_recover(reseal, pin)?,
         Command::Unenroll { pin } => lifecycle::cli::run_unenroll(pin)?,
         Command::Status => lifecycle::cli::run_status()?,
-        Command::Unlock { pin } => lifecycle::cli::run_unlock(pin)?,
+        Command::Unlock { pin, face } => lifecycle::cli::run_unlock(pin, face)?,
         Command::Test => lifecycle::cli::run_test()?,
         Command::Doctor { post_install } => {
             let ready = doctor::run(post_install);

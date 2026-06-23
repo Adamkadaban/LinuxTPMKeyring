@@ -328,8 +328,10 @@ liveness check; enrollment is non-destructive.
 - [x] Brio IR: enumerate greyscale V4L2 nodes; one-time IR-emitter enable (wrap/learn from `linux-enable-ir-emitter`, also Rust); stable device-by-path
 - [x] Capture `Y8/Y16` IR frames; **IR-reflectance liveness** as the primary anti-spoof signal
 - [x] Pluggable face matcher in safe Rust: `EmbeddingExtractor` trait + cosine-distance matcher + deterministic model-free mock (no model ships; CI is model-free). The `ort` (ArcFace/SFace ONNX) backend is the documented drop-in, deferred to #56 (verify model licensing before shipping)
-- [ ] Async, timeout-bounded face verify as an `AuthGate`; never the sole factor (TPM PIN remains the gate)
-- [ ] `tess enroll --pin --fingerprint --face` multi-factor UX
+- [x] Bounded, non-blocking face verify as an `AuthGate` (`mug::verify` + `mug::FaceGate`, same `authorize(deadline_ms)` interface as the fingerprint gate)
+- [x] **Model B (face-or-PIN unlock):** a liveness-gated face match releases the keyring key with **no PIN typed** — the same key `K` is sealed in the TPM a second time under a fresh, independent on-disk authValue `A_face`; the **PIN stays the always-available fallback**. `K` is never on disk (disk-only theft stays fully protected); whole-laptop powered-off theft is softened vs PIN-only (mitigated by full-disk encryption). No TEE/VBS on Linux, so the face match is a userspace gate, not a cryptographic binding
+- [x] `tess enroll --face` + `tess unlock --face` face-or-PIN UX: transactional enroll (face steps roll back without stranding the keyring), PIN fallback on any face failure/timeout/no-enrollment, `tess unenroll` clears the face artifacts, `tess status` reports face-unlock
+- [ ] Wire face into the **PAM session** helper (the non-blocking login integration) — separate follow-up
 - [ ] (stretch) Slint-based pretty enroll/unlock UI (software renderer, greeter-friendly)
 
 | Wave | Worktree slug | Depends on | Tasks |
@@ -456,10 +458,13 @@ shipped FOSS analogue — makes the *same* concession ("root = exposure until re
 verified boot + TPM at-rest, which is precisely our position.
 
 **Consequences of this decision:** we **don't** build VBS, **don't** use any TEE, and **don't**
-modify fprintd/libfprint. The fingerprint/face leg is **host-trusted convenience**, never the sole
-gate; the PIN authValue carries the real hardware guarantee. Attested match-on-sensor biometrics
-(which would need libfprint + fprintd + sensor-vendor TEE changes) only defend the root adversary we
-scoped out, so they're deliberately out of scope, not a TODO.
+modify fprintd/libfprint. The **fingerprint** leg is host-trusted convenience, never the sole gate;
+the PIN authValue carries the real hardware guarantee. The **face** leg (model B) *can* release the
+key on its own via the on-disk `A_face` credential, with the PIN as the always-available fallback —
+softening at-rest theft resistance (documented in the threat model), not a runtime-root defense.
+Attested match-on-sensor biometrics (which would need libfprint + fprintd + sensor-vendor TEE
+changes) only defend the root adversary we scoped out, so they're deliberately out of scope, not a
+TODO.
 
 **Attack-class → control** (from the prior-vuln survey): bus-sniff → HMAC/encrypted sessions + no
 PCR-only; weak keygen (ROCA) → self-gen random blob + ECC; side channel (TPM-FAIL) → constant-time +

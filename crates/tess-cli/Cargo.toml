@@ -33,6 +33,7 @@ tess-core.workspace = true
 tess-tpm.workspace = true
 tess-keyring.workspace = true
 tess-fprint.workspace = true
+mug.workspace = true
 tss-esapi.workspace = true
 clap.workspace = true
 anyhow.workspace = true
@@ -53,6 +54,7 @@ secret-service = { workspace = true, optional = true }
 tempfile.workspace = true
 zbus.workspace = true
 nix.workspace = true
+mug.workspace = true
 
 [lints]
 workspace = true
