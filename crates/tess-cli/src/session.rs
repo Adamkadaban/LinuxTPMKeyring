@@ -101,9 +101,11 @@ fn read_pin_from_stdin() -> Result<SecretBytes> {
 /// keyring. Precedence: **face (model-B, releases the key with no PIN) → fingerprint (convenience)
 /// → PIN (the real TPM gate) → password fallthrough**. The face leg is host-trusted convenience that
 /// can release the key on its own, but any failure/timeout/not-enrolled degrades cleanly to the PIN;
-/// the fingerprint leg never substitutes for the PIN. The PIN is read *after* the (potentially
-/// multi-second) biometric attempts so its in-memory lifetime spans only the unseal. Returns an error
-/// (mapped by the binary to a non-zero exit) only on failure of the **PIN** path — the real gate.
+/// the fingerprint leg never substitutes for the PIN. The PIN is read after the face attempt but
+/// before the fingerprint verify, so an empty stdin short-circuits the pointless fingerprint verify;
+/// it is still read after the (potentially multi-second) face capture, keeping its in-memory lifetime
+/// near the unseal. Returns an error (mapped by the binary to a non-zero exit) only on failure of the
+/// **PIN** path — the real gate.
 pub fn run_pam_helper(fingerprint: bool, face: bool) -> Result<()> {
     let paths = Paths::for_user().context("resolve the tess data directory")?;
     let tcti = tcti_from_env();
