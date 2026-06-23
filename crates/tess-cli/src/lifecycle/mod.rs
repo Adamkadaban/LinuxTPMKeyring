@@ -112,7 +112,7 @@ pub fn unlock_with_face<S: KeySealer>(
     paths: &Paths,
 ) -> Result<()> {
     ensure!(
-        face_enrolled(paths),
+        paths.metadata_face.exists() && paths.face_key.exists(),
         "face-unlock is not enrolled ({} or {} is missing)",
         paths.metadata_face.display(),
         paths.face_key.display()

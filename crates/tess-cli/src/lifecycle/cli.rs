@@ -65,10 +65,13 @@ pub fn run_unlock(pin: Option<String>, face: bool) -> Result<()> {
 /// face authValue and unlock the keyring. Any error here is the caller's cue to fall back to the PIN.
 fn try_face_unlock(paths: &Paths) -> Result<()> {
     ensure!(
-        super::face_enrolled(paths),
+        paths.metadata_face.exists() && paths.face_key.exists(),
         "face-unlock is not enrolled on this machine"
     );
-    let enrollment = crate::face::load_enrollment()?
+    // Load the template once here (the verify step owns it); a store I/O/permission error surfaces
+    // to the caller's fallback message instead of being silently treated as "not enrolled".
+    let enrollment = crate::face::load_enrollment()
+        .context("load the face enrollment")?
         .ok_or_else(|| anyhow::anyhow!("no face enrollment for the current user"))?;
     crate::face::verify_from_env(&enrollment)?;
     let mut sealer = TpmSealer::open(&tcti::from_env()).context("open the TPM")?;
