@@ -112,6 +112,11 @@ const FACE_FLAG: &str = "--face";
 /// device for the right user. Not a secret; the username only selects whose enrolled finger fprintd
 /// matches against.
 const FPRINT_USER_ENV: &str = "TESS_FPRINT_USER";
+/// The environment variable carrying the login user to the helper for the face leg, so it consults
+/// the right user's mug enrollment. Like `FPRINT_USER_ENV`, the environment is not trusted in the
+/// privileged PAM context: the gate sets this to the PAM-resolved user or clears it, never trusting
+/// an inherited value.
+const FACE_USER_ENV: &str = "TESS_FACE_USER";
 
 /// The helper program the gate runs under the watchdog, plus whether the fingerprint front gate is
 /// enabled. A missing helper path fails open (auth → fall through, session → success), the correct
@@ -134,6 +139,10 @@ pub struct HelperSpec {
     /// the PIN authValue is the real TPM gate, and any face decline/timeout/not-enrolled degrades
     /// cleanly to the PIN — face never blocks login. Defaults off (PIN-only), the safe default.
     pub face: bool,
+    /// The login user passed to the helper for the face leg, so it consults the right user's mug
+    /// enrollment instead of an inherited `$USER`/`$LOGNAME` (`None` until the session phase resolves
+    /// `PAM_USER`). Only meaningful when `face` is true.
+    pub face_user: Option<String>,
 }
 
 impl HelperSpec {
@@ -144,6 +153,7 @@ impl HelperSpec {
             fingerprint: false,
             fingerprint_user: None,
             face: false,
+            face_user: None,
         }
     }
 
@@ -184,6 +194,12 @@ impl HelperSpec {
         self
     }
 
+    /// Set the login user used to select the face enrollment. No-op effect unless `face` is enabled.
+    pub fn with_face_user(mut self, user: Option<String>) -> Self {
+        self.face_user = user;
+        self
+    }
+
     pub fn command(&self) -> Command {
         let mut command = Command::new(&self.program);
         command.args(&self.args);
@@ -203,6 +219,16 @@ impl HelperSpec {
         }
         if self.face {
             command.arg(FACE_FLAG);
+            match &self.face_user {
+                Some(user) => {
+                    command.env(FACE_USER_ENV, user);
+                }
+                // Same untrusted-environment reasoning as the fingerprint user above: clear any
+                // inherited value so the helper uses only the PAM-resolved user.
+                None => {
+                    command.env_remove(FACE_USER_ENV);
+                }
+            }
         }
         command
     }
@@ -395,6 +421,33 @@ mod tests {
             !args.iter().any(|a| a == "--face"),
             "PIN-only helper must not get --face"
         );
+    }
+
+    #[test]
+    fn face_yes_passes_the_resolved_user() {
+        let spec = HelperSpec::resolve(&["face=yes"]).with_face_user(Some("alice".to_string()));
+        assert!(spec.face);
+        let user_env = spec
+            .command()
+            .get_envs()
+            .find(|(k, _)| *k == "TESS_FACE_USER")
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_owned());
+        assert_eq!(user_env, Some(OsString::from("alice")));
+    }
+
+    #[test]
+    fn face_without_user_clears_inherited_env() {
+        // Same untrusted-environment defense as fingerprint: with no PAM-resolved user the command
+        // must explicitly *remove* TESS_FACE_USER so a planted parent value can't select the
+        // enrollment consulted by the privileged helper.
+        let spec = HelperSpec::resolve(&["face=yes"]);
+        assert!(spec.face_user.is_none());
+        let removed = spec
+            .command()
+            .get_envs()
+            .any(|(k, v)| k == "TESS_FACE_USER" && v.is_none());
+        assert!(removed, "TESS_FACE_USER must be explicitly cleared");
     }
 
     #[test]

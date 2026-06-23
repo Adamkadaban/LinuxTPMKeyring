@@ -214,11 +214,22 @@ fn run_session_gate(pamh: *mut pam_handle_t, argc: c_int, argv: *const *const c_
         let env = GateEnv::detect(get_rhost(pamh).as_deref());
         // SAFETY: argc/argv are the arguments PAM passed straight into the entrypoint.
         let spec = unsafe { helper_spec(argc, argv) };
-        // The fingerprint front gate needs the login user for its fprintd claim. Both biometric
-        // legs (fingerprint swipe, face capture) are slow, so the watchdog budget widens to cover
-        // whichever are enabled ahead of the unseal; a PIN-only session keeps the default deadline.
-        let spec = if spec.fingerprint {
-            spec.with_fingerprint_user(get_user(pamh))
+        // Both biometric legs need the PAM-resolved login user (the fingerprint leg for its fprintd
+        // claim, the face leg to select the right mug enrollment) — the environment is not trusted
+        // here. Both legs are slow, so the watchdog budget widens to cover whichever are enabled
+        // ahead of the unseal; a PIN-only session keeps the default deadline.
+        let spec = if spec.fingerprint || spec.face {
+            let user = get_user(pamh);
+            let spec = if spec.fingerprint {
+                spec.with_fingerprint_user(user.clone())
+            } else {
+                spec
+            };
+            if spec.face {
+                spec.with_face_user(user)
+            } else {
+                spec
+            }
         } else {
             spec
         };

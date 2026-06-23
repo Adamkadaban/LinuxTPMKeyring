@@ -152,8 +152,9 @@ enum FaceRelease {
 /// Attempt the bounded, liveness-gated face release: confirm face is fully enrolled, run the
 /// match, and on success unseal the keyring key via the on-disk `A_face` authValue and unlock the
 /// keyring. The TPM context is scoped to this function so it is dropped before the PIN fallback opens
-/// its own (the swtpm transport used in tests is single-client). Never blocks past the capture
-/// deadline; the PAM module's watchdog is the outer wall-clock backstop.
+/// its own (the swtpm transport used in tests is single-client). The IR capture is bounded by the
+/// mug capture deadline; the subsequent TPM unseal and keyring unlock are not separately bounded, so
+/// the PAM module's watchdog is the outer wall-clock backstop for the whole leg.
 fn face_front_unlock(
     tcti: &TctiConfig,
     paths: &Paths,
