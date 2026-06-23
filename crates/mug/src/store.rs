@@ -237,10 +237,10 @@ impl EnrollStore {
         for entry in entries {
             let entry = entry.map_err(|e| MugError::Store(format!("dir entry: {e}")))?;
             let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "json") {
-                if let Some(stem) = path.file_stem() {
-                    users.push(stem.to_string_lossy().into_owned());
-                }
+            if path.extension().is_some_and(|ext| ext == "json")
+                && let Some(stem) = path.file_stem()
+            {
+                users.push(stem.to_string_lossy().into_owned());
             }
         }
         users.sort();
@@ -291,31 +291,7 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
-
-    /// Saves a process-global env var and restores its prior value (or unsets it) on drop, including
-    /// on panic, so the override never leaks into other tests in the same process.
-    struct EnvGuard {
-        key: &'static str,
-        prev: Option<OsString>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &Path) -> Self {
-            let prev = std::env::var_os(key);
-            std::env::set_var(key, value);
-            Self { key, prev }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match &self.prev {
-                Some(v) => std::env::set_var(self.key, v),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
+    use tess_testenv::EnvGuard;
 
     fn sample() -> FaceEnrollment {
         FaceEnrollment::new(
@@ -407,7 +383,7 @@ mod tests {
     #[test]
     fn default_location_honours_env() {
         let dir = tempfile::tempdir().unwrap();
-        let _guard = EnvGuard::set(EnrollStore::ENV_DIR, dir.path());
+        let _guard = EnvGuard::set_path(EnrollStore::ENV_DIR, dir.path());
         let store = EnrollStore::default_location().unwrap();
         assert_eq!(store.dir(), dir.path());
     }

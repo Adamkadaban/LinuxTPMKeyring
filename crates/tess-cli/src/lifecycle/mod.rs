@@ -7,14 +7,14 @@
 
 pub mod cli;
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use mug::EnrollStore;
 use tess_core::{KeyringBackend, SecretBytes};
-use tess_tpm::{persist, LockoutState, TctiConfig};
+use tess_tpm::{LockoutState, TctiConfig, persist};
 
 use crate::doctor::{lockout_summary, read_caps};
 use crate::enroll::sealer::KeySealer;
-use crate::enroll::{recovery, Paths};
+use crate::enroll::{Paths, recovery};
 
 /// Fail fast when there is no sealed enrollment to act on. Called by the CLI *before* prompting for
 /// a PIN or opening the TPM so a not-enrolled user gets the right message with no wasted prompt.
@@ -226,13 +226,13 @@ pub fn unenroll<S: KeySealer>(
     // The keyring is safely on the user password. Release the TPM lockout hierarchy back to empty so
     // uninstalling tess leaves the TPM as it was found. Best-effort: a failure here is not a keyring
     // lockout, so warn and continue to blob removal rather than failing the whole unenroll.
-    if let Some(recovery_secret) = recovery_secret {
-        if let Err(err) = release_lockout_auth(sealer, paths, recovery_secret) {
-            eprintln!(
-                "warning: could not reset the TPM lockout-hierarchy authValue to empty ({err:#}); \
+    if let Some(recovery_secret) = recovery_secret
+        && let Err(err) = release_lockout_auth(sealer, paths, recovery_secret)
+    {
+        eprintln!(
+            "warning: could not reset the TPM lockout-hierarchy authValue to empty ({err:#}); \
                  it remains bound to the recovery secret"
-            );
-        }
+        );
     }
 
     // The sealed/recovery blobs are now stale. Removing them is the final, non-destructive cleanup —
@@ -591,10 +591,12 @@ mod tests {
             keyring_locked: Some(Ok(true)),
         };
         assert!(!report.would_succeed());
-        assert!(report
-            .blocking_reasons()
-            .iter()
-            .any(|r| r.contains("lockout")));
+        assert!(
+            report
+                .blocking_reasons()
+                .iter()
+                .any(|r| r.contains("lockout"))
+        );
     }
 
     #[test]
@@ -606,9 +608,11 @@ mod tests {
             keyring_locked: Some(Ok(true)),
         };
         assert!(!report.would_succeed());
-        assert!(report
-            .blocking_reasons()
-            .iter()
-            .any(|r| r.contains("not loadable")));
+        assert!(
+            report
+                .blocking_reasons()
+                .iter()
+                .any(|r| r.contains("not loadable"))
+        );
     }
 }

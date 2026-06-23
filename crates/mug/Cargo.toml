@@ -21,6 +21,7 @@ nix = { workspace = true, features = ["ioctl"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+tess-testenv.workspace = true
 
 # This crate intentionally does NOT inherit the workspace `unsafe_code = "forbid"` lint. lib.rs sets
 # `#![deny(unsafe_code)]` and only the `sys` module is `#[allow(unsafe_code)]`, confining the raw

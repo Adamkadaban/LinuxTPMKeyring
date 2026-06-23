@@ -17,8 +17,8 @@ use std::path::Path;
 use tess_core::SecretBytes;
 use tess_tpm::persist::{from_metadata, load, save, to_metadata};
 use tess_tpm::{
-    create_primary, generate_sealing_key, read_lockout_state, read_tpm_version, seal, unseal,
-    Error, TctiConfig,
+    Error, TctiConfig, create_primary, generate_sealing_key, read_lockout_state, read_tpm_version,
+    seal, unseal,
 };
 
 const TPM_RM_PATH: &str = "/dev/tpmrm0";

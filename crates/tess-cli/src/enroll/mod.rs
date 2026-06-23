@@ -29,7 +29,7 @@ pub mod sealer;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{Context, Result, anyhow, ensure};
 use mug::{EnrollStore, FaceEnrollment};
 use tess_core::{KeyringBackend, SecretBytes};
 
@@ -161,12 +161,12 @@ impl Tx {
         old: &SecretBytes,
         face: Option<(&str, &EnrollStore)>,
     ) -> Rollback {
-        if let Some(new_key) = &self.new_key {
-            if let Err(e) = keyring.rekey(new_key, old) {
-                return Rollback::RestoreFailed(anyhow::Error::new(e).context(
-                    "could not restore the original keyring credential after a failed enrollment",
-                ));
-            }
+        if let Some(new_key) = &self.new_key
+            && let Err(e) = keyring.rekey(new_key, old)
+        {
+            return Rollback::RestoreFailed(anyhow::Error::new(e).context(
+                "could not restore the original keyring credential after a failed enrollment",
+            ));
         }
         // Restore the TPM lockout authValue to empty (the stock state for a TPM tess just bound).
         // Authorized by the recovery-derived value we set, so it cannot strand anyone; a failure
@@ -188,49 +188,48 @@ impl Tx {
         // The keyring is safe (on `old`, or never changed). Removing the orphaned blobs is
         // best-effort cleanup; a failure here leaves only stale files, never a lockout.
         let mut cleanup: Result<()> = Ok(());
-        if self.face_store_enrolled {
-            if let Some((username, store)) = face {
-                if let Err(e) = store.remove(username) {
-                    let err = anyhow!("remove face enrollment for {username} during rollback: {e}");
-                    cleanup = fold_cleanup(cleanup, err);
-                }
-            }
+        if self.face_store_enrolled
+            && let Some((username, store)) = face
+            && let Err(e) = store.remove(username)
+        {
+            let err = anyhow!("remove face enrollment for {username} during rollback: {e}");
+            cleanup = fold_cleanup(cleanup, err);
         }
-        if self.face_key_written {
-            if let Err(e) = remove_file(&paths.face_key) {
-                let err = anyhow::Error::new(e).context(format!(
-                    "remove face-unlock key {} during rollback",
-                    paths.face_key.display()
-                ));
-                cleanup = fold_cleanup(cleanup, err);
-            }
+        if self.face_key_written
+            && let Err(e) = remove_file(&paths.face_key)
+        {
+            let err = anyhow::Error::new(e).context(format!(
+                "remove face-unlock key {} during rollback",
+                paths.face_key.display()
+            ));
+            cleanup = fold_cleanup(cleanup, err);
         }
-        if self.face_metadata_written {
-            if let Err(e) = remove_file(&paths.metadata_face) {
-                let err = anyhow::Error::new(e).context(format!(
-                    "remove face sealed metadata {} during rollback",
-                    paths.metadata_face.display()
-                ));
-                cleanup = fold_cleanup(cleanup, err);
-            }
+        if self.face_metadata_written
+            && let Err(e) = remove_file(&paths.metadata_face)
+        {
+            let err = anyhow::Error::new(e).context(format!(
+                "remove face sealed metadata {} during rollback",
+                paths.metadata_face.display()
+            ));
+            cleanup = fold_cleanup(cleanup, err);
         }
-        if self.metadata_written {
-            if let Err(e) = remove_file(&paths.metadata) {
-                let err = anyhow::Error::new(e).context(format!(
-                    "remove sealed metadata {} during rollback",
-                    paths.metadata.display()
-                ));
-                cleanup = fold_cleanup(cleanup, err);
-            }
+        if self.metadata_written
+            && let Err(e) = remove_file(&paths.metadata)
+        {
+            let err = anyhow::Error::new(e).context(format!(
+                "remove sealed metadata {} during rollback",
+                paths.metadata.display()
+            ));
+            cleanup = fold_cleanup(cleanup, err);
         }
-        if self.recovery_written {
-            if let Err(e) = remove_file(&paths.recovery) {
-                let err = anyhow::Error::new(e).context(format!(
-                    "remove recovery blob {} during rollback",
-                    paths.recovery.display()
-                ));
-                cleanup = fold_cleanup(cleanup, err);
-            }
+        if self.recovery_written
+            && let Err(e) = remove_file(&paths.recovery)
+        {
+            let err = anyhow::Error::new(e).context(format!(
+                "remove recovery blob {} during rollback",
+                paths.recovery.display()
+            ));
+            cleanup = fold_cleanup(cleanup, err);
         }
         match cleanup {
             Ok(()) => Rollback::Restored,

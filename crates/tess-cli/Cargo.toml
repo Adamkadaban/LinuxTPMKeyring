@@ -54,6 +54,7 @@ secret-service = { workspace = true, optional = true }
 tempfile.workspace = true
 zbus.workspace = true
 nix.workspace = true
+tess-testenv.workspace = true
 
 [lints]
 workspace = true

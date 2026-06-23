@@ -1,0 +1,17 @@
+[package]
+name = "tess-testenv"
+description = "Test-only env-var RAII guard. Confines the one unsafe std::env mutation site so every shipping crate stays unsafe-free."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+# This crate intentionally does NOT inherit the workspace `unsafe_code = "forbid"` lint. lib.rs sets
+# `#![deny(unsafe_code)]` and only the `env` module is `#[allow(unsafe_code)]`, confining the one
+# `std::env::set_var`/`remove_var` call site (made `unsafe` in edition 2024) — mirroring how
+# `tess-pam` confines its PAM FFI and `mug` its V4L2 ioctls.
+[lints.clippy]
+all = { level = "warn", priority = -1 }

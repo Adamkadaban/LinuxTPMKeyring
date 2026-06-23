@@ -7,7 +7,7 @@ use tess_keyring::SecretServiceBackend;
 use zeroize::Zeroizing;
 
 use super::sealer::TpmSealer;
-use super::{enroll, FaceEnroll, Paths};
+use super::{FaceEnroll, Paths, enroll};
 use crate::face;
 use crate::tcti;
 

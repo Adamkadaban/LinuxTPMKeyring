@@ -14,7 +14,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use nix::sys::signal::{killpg, Signal};
+use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use tess_core::{AuthGate, Error};
 use tess_fprint::FprintClient;

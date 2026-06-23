@@ -4,8 +4,8 @@
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use pam_tess::gate::{classify, decide, GatePhase};
-use pam_tess::helper::{process_alive, run, Termination, Watchdog};
+use pam_tess::gate::{GatePhase, classify, decide};
+use pam_tess::helper::{Termination, Watchdog, process_alive, run};
 use pam_tess::ret;
 
 fn slow_but_ok() -> Command {
@@ -165,7 +165,7 @@ fn face_helper_runs_without_a_pin_and_can_authorize() {
     // even when no PIN is available (it passes an empty stdin). `true` ignores stdin and exits 0, so
     // the gate authorizes — proving the face leg is not short-circuited to Unavailable like the
     // PIN-only no-password case.
-    use pam_tess::{evaluate, GateEnv, GateResult, HelperSpec};
+    use pam_tess::{GateEnv, GateResult, HelperSpec, evaluate};
 
     let env = GateEnv {
         is_remote: false,
@@ -187,7 +187,7 @@ fn run_gate_with_pin_authorizes_when_helper_succeeds() {
     // This exercises run_gate directly with a PIN supplied. Note the real PAM auth entrypoint
     // (run_auth_gate) intentionally passes None so auth always falls through to the password
     // factor — this test is about run_gate's success path, not auth-phase policy.
-    use pam_tess::{run_gate, GateEnv, HelperSpec};
+    use pam_tess::{GateEnv, HelperSpec, run_gate};
 
     let env = GateEnv {
         is_remote: false,
@@ -207,7 +207,7 @@ fn run_gate_with_pin_authorizes_when_helper_succeeds() {
 
 #[test]
 fn gate_without_pin_falls_through_for_auth() {
-    use pam_tess::{run_gate, GateEnv, HelperSpec};
+    use pam_tess::{GateEnv, HelperSpec, run_gate};
 
     // No PIN available and not aborting: auth must fall through to the password factor without
     // spawning a helper that could not succeed.
@@ -228,7 +228,7 @@ fn gate_without_pin_falls_through_for_auth() {
 
 #[test]
 fn gate_aborts_without_running_helper_when_no_tpm() {
-    use pam_tess::{run_gate, GateEnv, HelperSpec};
+    use pam_tess::{GateEnv, HelperSpec, run_gate};
 
     let env = GateEnv {
         is_remote: false,
@@ -248,7 +248,7 @@ fn gate_aborts_without_running_helper_when_no_tpm() {
 
 #[test]
 fn session_abort_succeeds_rather_than_ignoring() {
-    use pam_tess::{run_gate, GateEnv, HelperSpec};
+    use pam_tess::{GateEnv, HelperSpec, run_gate};
 
     // A remote session has no gesture available, but a session open must never disturb login.
     let env = GateEnv {
@@ -268,7 +268,7 @@ fn session_abort_succeeds_rather_than_ignoring() {
 
 #[test]
 fn session_gate_unlocks_when_helper_succeeds() {
-    use pam_tess::{evaluate, GateEnv, GateResult, HelperSpec};
+    use pam_tess::{GateEnv, GateResult, HelperSpec, evaluate};
 
     // The session path classifies a clean helper exit as Authorized (keyring unlocked). `true`
     // ignores the PIN on stdin and exits 0.

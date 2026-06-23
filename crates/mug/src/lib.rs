@@ -58,12 +58,11 @@ mod gate;
 pub use error::{MugError, Result};
 
 pub use camera::{
-    capture_liveness_pair, FramePair, IrEmitter, IrFrame, IrSource, VirtualIrDevice,
-    VirtualIrEmitter, VirtualIrSource, BRIO_IR_HEIGHT, BRIO_IR_WIDTH, BRIO_PRODUCT_ID,
-    BRIO_VENDOR_ID,
+    BRIO_IR_HEIGHT, BRIO_IR_WIDTH, BRIO_PRODUCT_ID, BRIO_VENDOR_ID, FramePair, IrEmitter, IrFrame,
+    IrSource, VirtualIrDevice, VirtualIrEmitter, VirtualIrSource, capture_liveness_pair,
 };
 pub use config::MugConfig;
-pub use gate::{verify, FaceGate};
-pub use liveness::{analyze as analyze_liveness, LivenessConfig, LivenessFeatures, LivenessReport};
-pub use matcher::{cosine_distance, Embedding, EmbeddingExtractor, Matcher, PooledExtractor};
+pub use gate::{FaceGate, verify};
+pub use liveness::{LivenessConfig, LivenessFeatures, LivenessReport, analyze as analyze_liveness};
+pub use matcher::{Embedding, EmbeddingExtractor, Matcher, PooledExtractor, cosine_distance};
 pub use store::{EnrollStore, FaceEnrollment, LivenessCalibration};

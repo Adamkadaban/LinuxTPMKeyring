@@ -10,10 +10,11 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use common::GnomeKeyring;
-use secret_service::blocking::SecretService;
 use secret_service::EncryptionType;
+use secret_service::blocking::SecretService;
 use tess_core::{KeyringBackend, SecretBytes};
 use tess_keyring::SecretServiceBackend;
+use tess_testenv::EnvGuard;
 
 // `secret-service`'s client reads the bus address from `DBUS_SESSION_BUS_ADDRESS`, a process-global.
 // Serialize the daemon tests so each owns the env for its whole body and they never see each other's
@@ -47,7 +48,7 @@ fn rekey_preserves_items_and_lock_transitions() {
     let Some(keyring) = GnomeKeyring::start(old.as_slice()) else {
         return;
     };
-    std::env::set_var("DBUS_SESSION_BUS_ADDRESS", keyring.address());
+    let _bus = EnvGuard::set("DBUS_SESSION_BUS_ADDRESS", keyring.address());
 
     let service = SecretService::connect(EncryptionType::Dh).expect("connect Secret Service");
     let collection_path = login_collection_path(&service);
@@ -116,7 +117,7 @@ fn unlock_with_wrong_secret_fails() {
     let Some(keyring) = GnomeKeyring::start(correct.as_slice()) else {
         return;
     };
-    std::env::set_var("DBUS_SESSION_BUS_ADDRESS", keyring.address());
+    let _bus = EnvGuard::set("DBUS_SESSION_BUS_ADDRESS", keyring.address());
 
     let service = SecretService::connect(EncryptionType::Dh).expect("connect Secret Service");
     let collection_path = login_collection_path(&service);

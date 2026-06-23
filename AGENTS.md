@@ -341,11 +341,13 @@ Mirror the per-phase wave tables in [`PLAN.md`](./PLAN.md) §5. Current phase: *
   decrypts → commit; rollback on any failure). Never create a fresh empty keyring that shadows the
   old one. A test asserts N pre-existing secrets survive enroll/recover/unenroll (on throwaway
   keyrings only).
-- **`unsafe` is allowed only in `tess-pam`'s `ffi` module and `mug`'s `sys` module.** Every other
-  crate is `#![forbid(unsafe_code)]`; those two crates are `#![deny(unsafe_code)]` with a single
-  `#[allow(unsafe_code)]` module each (`tess-pam::ffi` for the PAM C ABI; `mug::sys` for the raw
-  V4L2/UVC ioctls that drive the Brio IR node + emitter — see `docs/adr/0012`). A PR adding `unsafe`
-  anywhere else is rejected.
+- **`unsafe` is allowed only in `tess-pam`'s `ffi` module, `mug`'s `sys` module, and the
+  `tess-testenv` crate's `env` module.** Every other crate is `#![forbid(unsafe_code)]`; those three
+  are `#![deny(unsafe_code)]` with a single `#[allow(unsafe_code)]` module each (`tess-pam::ffi` for
+  the PAM C ABI; `mug::sys` for the raw V4L2/UVC ioctls that drive the Brio IR node + emitter — see
+  `docs/adr/0012`; `tess-testenv::env` for the test-only `std::env::set_var`/`remove_var` calls that
+  edition 2024 made `unsafe` — see `docs/adr/0013`, test-support only, never shipped). A PR adding
+  `unsafe` anywhere else is rejected.
 - **The PAM module must never freeze login.** No blocking TPM/D-Bus/camera I/O on the PAM thread —
   fork a watchdog'd helper process, hard wall-clock timeout, on timeout return
   `PAM_AUTHINFO_UNAVAIL`/`PAM_IGNORE` and fall through to password (`[success=done default=ignore]`).

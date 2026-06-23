@@ -834,3 +834,6 @@ Key facts / gotchas:
 - **User resolution for the mug store stays `$USER`/`$LOGNAME`** (`current_username()`), which the sim
   suite pins. Threading the PAM-resolved login user through to the mug store for real greeters/$HOME
   is part of real-hardware capture (#63); the matcher model is #56.
+
+## 2026-06-23 — modernized to edition 2024 / Rust 1.96 + refreshed deps
+**Resolution:** edition 2021→2024, rust-version 1.82→1.96 (latest stable). Edition 2024 made `std::env::set_var`/`remove_var` unsafe; confined the test-only env mutation to a new `tess-testenv` crate (one `#[allow(unsafe_code)]` module) so every shipping crate stays `forbid`/`deny(unsafe_code)`. Bumped nix 0.29→0.31, hkdf 0.12→0.13, sha2 0.10→0.11 (recovery crypto; deny/vet green, no dup digest). Kept tss-esapi 7.7 (8.0 alpha; RUSTSEC-pinned) and chacha20poly1305 0.10 (0.11 RC). `crates/tess-testenv/src/env.rs:1` · `docs/adr/0013`

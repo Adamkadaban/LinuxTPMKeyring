@@ -10,13 +10,12 @@
 mod common;
 
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::path::Path;
 use std::sync::Mutex;
 
 use common::{GnomeKeyring, Swtpm};
-use secret_service::blocking::SecretService;
 use secret_service::EncryptionType;
+use secret_service::blocking::SecretService;
 use tess_core::{KeyringBackend, SecretBytes};
 use tess_keyring::SecretServiceBackend;
 use tess_tpm::TctiConfig;
@@ -24,8 +23,9 @@ use tess_tpm::TctiConfig;
 use mug::camera::VirtualIrDevice;
 use mug::liveness::synth;
 use tess_cli::enroll::sealer::{KeySealer, TpmSealer};
-use tess_cli::enroll::{enroll, recovery, FaceEnroll, Paths};
+use tess_cli::enroll::{FaceEnroll, Paths, enroll, recovery};
 use tess_cli::lifecycle::{unenroll, unlock, unlock_with_face};
+use tess_testenv::EnvGuard;
 
 const OLD_PASSWORD: &[u8] = b"old-keyring-password";
 const NEW_PASSWORD: &[u8] = b"restored-keyring-password";
@@ -40,33 +40,6 @@ const ITEMS: [(&str, &[u8]); 3] = [
 // `secret-service`, the mug store dir, the virtual IR dir, and `$USER` are all process-global, so
 // serialize the suite and let each test own them for its whole body.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-struct EnvGuard {
-    key: &'static str,
-    prev: Option<OsString>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: &str) -> Self {
-        let prev = std::env::var_os(key);
-        std::env::set_var(key, value);
-        Self { key, prev }
-    }
-    fn set_path(key: &'static str, value: &Path) -> Self {
-        let prev = std::env::var_os(key);
-        std::env::set_var(key, value);
-        Self { key, prev }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match &self.prev {
-            Some(v) => std::env::set_var(self.key, v),
-            None => std::env::remove_var(self.key),
-        }
-    }
-}
 
 fn login_collection_path(service: &SecretService<'_>) -> String {
     service

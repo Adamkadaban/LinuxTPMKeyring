@@ -5,7 +5,7 @@
 //! an ONNX matcher model are a tracked follow-up (issue #56); until then a non-virtual environment
 //! reports the factor unavailable and the caller degrades to the PIN.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use mug::{
     EnrollStore, FaceEnrollment, LivenessCalibration, LivenessConfig, Matcher, MugConfig,
     PooledExtractor, VirtualIrDevice,
@@ -13,7 +13,7 @@ use mug::{
 use tess_core::SecretBytes;
 
 use crate::enroll::sealer::KeySealer;
-use crate::enroll::{recovery, FaceTemplateSource, Paths};
+use crate::enroll::{FaceTemplateSource, Paths, recovery};
 
 /// Embedding dimensionality for the model-free CI matcher. The real ONNX matcher's dimensionality
 /// comes from the loaded network; this only governs the deterministic mock path.

@@ -12,11 +12,11 @@
 use std::time::{Duration, Instant};
 
 use async_io::Timer;
-use futures_util::future::{select, Either};
+use futures_util::future::{Either, select};
 use futures_util::stream::StreamExt;
 use tess_core::{AuthGate, Error, Result};
 use zbus::zvariant::OwnedObjectPath;
-use zbus::{proxy, Connection};
+use zbus::{Connection, proxy};
 
 /// The fprintd D-Bus service name.
 pub const FPRINT_BUS_NAME: &str = "net.reactivated.Fprint";
@@ -228,13 +228,13 @@ async fn wait_for_outcome(
                     VerifyOutcome::Match => return Ok(()),
                     VerifyOutcome::NoMatch => return Err(Error::Auth(NO_MATCH_REASON.to_owned())),
                     VerifyOutcome::Failed(token) => {
-                        return Err(Error::Auth(format!("fprintd verification failed: {token}")))
+                        return Err(Error::Auth(format!("fprintd verification failed: {token}")));
                     }
                     VerifyOutcome::Retry => continue,
                 }
             }
             Either::Left((None, _)) => {
-                return Err(Error::Auth("VerifyStatus stream closed".to_owned()))
+                return Err(Error::Auth("VerifyStatus stream closed".to_owned()));
             }
             Either::Right((_, _)) => return Err(Error::Timeout(deadline_ms)),
         }

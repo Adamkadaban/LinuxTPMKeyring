@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::Path;
 
-use tess_cli::install::{config, install, uninstall, InstallPlan};
+use tess_cli::install::{InstallPlan, config, install, uninstall};
 
 const FIXTURE: &str = "\
 session [default=1] pam_permit.so

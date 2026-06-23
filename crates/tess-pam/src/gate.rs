@@ -274,6 +274,7 @@ mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
     use std::process::ExitStatus;
+    use tess_testenv::EnvGuard;
 
     fn reaped(termination: Termination) -> std::io::Result<RunOutcome> {
         Ok(RunOutcome {
@@ -331,21 +332,27 @@ mod tests {
 
     #[test]
     fn gate_env_aborts_mirror_the_decision() {
-        assert!(GateEnv {
-            is_remote: true,
-            tpm_present: true
-        }
-        .aborts());
-        assert!(GateEnv {
-            is_remote: false,
-            tpm_present: false
-        }
-        .aborts());
-        assert!(!GateEnv {
-            is_remote: false,
-            tpm_present: true
-        }
-        .aborts());
+        assert!(
+            GateEnv {
+                is_remote: true,
+                tpm_present: true
+            }
+            .aborts()
+        );
+        assert!(
+            GateEnv {
+                is_remote: false,
+                tpm_present: false
+            }
+            .aborts()
+        );
+        assert!(
+            !GateEnv {
+                is_remote: false,
+                tpm_present: true
+            }
+            .aborts()
+        );
     }
 
     #[test]
@@ -501,21 +508,7 @@ mod tests {
     fn helper_spec_release_ignores_env_override() {
         // RAII restore so a panicking assertion can't leak the mutation into other tests.
         // (HELPER_PATH_ENV only exists under debug_assertions, so the var name is a literal here.)
-        struct EnvGuard {
-            prev: Option<OsString>,
-        }
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                match &self.prev {
-                    Some(value) => std::env::set_var("TESS_PAM_HELPER", value),
-                    None => std::env::remove_var("TESS_PAM_HELPER"),
-                }
-            }
-        }
-        let _guard = EnvGuard {
-            prev: std::env::var_os("TESS_PAM_HELPER"),
-        };
-        std::env::set_var("TESS_PAM_HELPER", "/env/should/be/ignored");
+        let _guard = EnvGuard::set("TESS_PAM_HELPER", "/env/should/be/ignored");
 
         // In release builds resolution never consults the environment.
         assert_eq!(
@@ -534,23 +527,10 @@ mod tests {
         // Restore any pre-existing value on the way out, even if an assertion panics, so this test
         // neither leaks global state into others nor breaks when CI pre-sets the variable. This is
         // the only test that touches HELPER_PATH_ENV, so no concurrent reader observes the mutation.
-        struct EnvGuard {
-            prev: Option<OsString>,
-        }
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                match &self.prev {
-                    Some(value) => std::env::set_var(HELPER_PATH_ENV, value),
-                    None => std::env::remove_var(HELPER_PATH_ENV),
-                }
-            }
-        }
-        let _guard = EnvGuard {
-            prev: std::env::var_os(HELPER_PATH_ENV),
-        };
 
-        // A root-controlled PAM argument wins over the environment and the default.
-        std::env::set_var(HELPER_PATH_ENV, "/env/helper");
+        // A root-controlled PAM argument wins over the environment and the default. The outer guard
+        // captures the original value and restores it when the test ends.
+        let _restore = EnvGuard::set(HELPER_PATH_ENV, "/env/helper");
         assert_eq!(
             HelperSpec::resolve(&["helper=/etc/tess/helper", "debug"]).program,
             PathBuf::from("/etc/tess/helper")
@@ -562,21 +542,23 @@ mod tests {
             PathBuf::from("/env/helper")
         );
 
-        // No PAM argument, no env: the compiled install path.
-        std::env::remove_var(HELPER_PATH_ENV);
-        assert_eq!(
-            HelperSpec::resolve(&[]).program,
-            PathBuf::from(DEFAULT_HELPER_PATH)
-        );
+        {
+            // No PAM argument, no env: the compiled install path.
+            let _no_env = EnvGuard::remove(HELPER_PATH_ENV);
+            assert_eq!(
+                HelperSpec::resolve(&[]).program,
+                PathBuf::from(DEFAULT_HELPER_PATH)
+            );
 
-        // A relative (or empty) helper path is rejected; resolution falls back to the default.
-        assert_eq!(
-            HelperSpec::resolve(&["helper=relative/helper"]).program,
-            PathBuf::from(DEFAULT_HELPER_PATH)
-        );
-        assert_eq!(
-            HelperSpec::resolve(&["helper="]).program,
-            PathBuf::from(DEFAULT_HELPER_PATH)
-        );
+            // A relative (or empty) helper path is rejected; resolution falls back to the default.
+            assert_eq!(
+                HelperSpec::resolve(&["helper=relative/helper"]).program,
+                PathBuf::from(DEFAULT_HELPER_PATH)
+            );
+            assert_eq!(
+                HelperSpec::resolve(&["helper="]).program,
+                PathBuf::from(DEFAULT_HELPER_PATH)
+            );
+        }
     }
 }

@@ -4,8 +4,8 @@
 
 use std::str::FromStr;
 
-use tss_esapi::tcti_ldr::{DeviceConfig, NetworkTPMConfig, TctiNameConf};
 use tss_esapi::Context;
+use tss_esapi::tcti_ldr::{DeviceConfig, NetworkTPMConfig, TctiNameConf};
 
 mod caps;
 mod esapi;
@@ -13,15 +13,15 @@ mod lockout;
 pub mod persist;
 mod seal;
 
-pub use caps::{read_tpm_version, TpmVersion};
+pub use caps::{TpmVersion, read_tpm_version};
 pub use esapi::{
-    create_primary, ecc_storage_primary_template, start_salted_hmac_session, Error, Result,
+    Error, Result, create_primary, ecc_storage_primary_template, start_salted_hmac_session,
 };
 pub use lockout::{
-    lockout_auth_is_set, pin_holder_recover, read_lockout_state, reset_lockout, set_lockout_auth,
-    LockoutState,
+    LockoutState, lockout_auth_is_set, pin_holder_recover, read_lockout_state, reset_lockout,
+    set_lockout_auth,
 };
-pub use seal::{generate_sealing_key, seal, unseal, SealedObject};
+pub use seal::{SealedObject, generate_sealing_key, seal, unseal};
 
 /// Selects the TPM transport: a software TPM (swtpm) for dev and CI, or the kernel resource
 /// manager (`/dev/tpmrm0`) for a real / virtual hardware TPM.

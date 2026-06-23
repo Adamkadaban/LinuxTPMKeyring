@@ -96,10 +96,10 @@ fn marker_byte_span(content: &str) -> Option<(usize, usize)> {
             // Reset to the most recent BEGIN so a later END pairs with it, never with a stray
             // earlier unmatched BEGIN — that would delete a large unintended span of the stack.
             begin = Some(offset);
-        } else if trimmed == END_MARKER {
-            if let Some(start) = begin {
-                return Some((start, offset + line.len()));
-            }
+        } else if trimmed == END_MARKER
+            && let Some(start) = begin
+        {
+            return Some((start, offset + line.len()));
         }
         offset += line.len();
     }
@@ -114,10 +114,10 @@ fn marker_line_indices(content: &str) -> Option<(usize, usize)> {
         let trimmed = line.trim_end().trim_end_matches('\r').trim_end();
         if trimmed == BEGIN_MARKER {
             begin = Some(idx);
-        } else if trimmed == END_MARKER {
-            if let Some(start) = begin {
-                return Some((start, idx));
-            }
+        } else if trimmed == END_MARKER
+            && let Some(start) = begin
+        {
+            return Some((start, idx));
         }
     }
     None

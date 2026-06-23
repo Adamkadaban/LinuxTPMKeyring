@@ -12,9 +12,9 @@ use std::cell::RefCell;
 
 use tess_core::AuthGate;
 
-use crate::camera::{capture_liveness_pair, IrEmitter, IrSource};
+use crate::camera::{IrEmitter, IrSource, capture_liveness_pair};
 use crate::error::{MugError, Result};
-use crate::liveness::{analyze, LivenessConfig};
+use crate::liveness::{LivenessConfig, analyze};
 use crate::matcher::{EmbeddingExtractor, Matcher};
 use crate::store::FaceEnrollment;
 
