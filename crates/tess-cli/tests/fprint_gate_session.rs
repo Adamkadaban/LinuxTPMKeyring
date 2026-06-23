@@ -18,7 +18,6 @@
 mod common;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use common::{FprintMock, GnomeKeyring, Swtpm, fprint_harness_available, run_pam_helper_fprint};
@@ -40,7 +39,6 @@ const ITEMS: [(&str, &[u8]); 3] = [
 ];
 
 // `secret-service`'s client reads the bus address from `DBUS_SESSION_BUS_ADDRESS`, a process-global.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn login_collection_path(service: &SecretService<'_>) -> String {
     service
@@ -156,7 +154,7 @@ fn fingerprint_front_gate_precedence_match_nomatch_stall() {
         eprintln!("skipping: python3-dbusmock / dbus-run-session not available");
         return;
     }
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _lock = tess_testenv::env_lock();
 
     let Some((swtpm, tcti)) = Swtpm::start() else {
         return;

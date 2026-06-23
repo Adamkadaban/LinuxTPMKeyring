@@ -11,7 +11,6 @@ mod common;
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
 
 use common::{GnomeKeyring, Swtpm};
 use secret_service::EncryptionType;
@@ -39,7 +38,6 @@ const ITEMS: [(&str, &[u8]); 3] = [
 
 // `secret-service`, the mug store dir, the virtual IR dir, and `$USER` are all process-global, so
 // serialize the suite and let each test own them for its whole body.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn login_collection_path(service: &SecretService<'_>) -> String {
     service
@@ -114,7 +112,7 @@ fn write_frames(dir: &Path, pair: &mug::FramePair) {
 fn with_face_fixture(
     body: impl FnOnce(&SecretService<'_>, &str, &str, &TctiConfig, &Paths, &Path),
 ) {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _lock = tess_testenv::env_lock();
     let Some((_swtpm, tcti)) = Swtpm::start() else {
         return;
     };

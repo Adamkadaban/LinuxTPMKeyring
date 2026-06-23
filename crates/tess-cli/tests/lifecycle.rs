@@ -9,7 +9,6 @@
 mod common;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use common::{GnomeKeyring, Swtpm};
 use secret_service::EncryptionType;
@@ -35,7 +34,6 @@ const ITEMS: [(&str, &[u8]); 3] = [
 
 // `secret-service`'s client reads the bus address from `DBUS_SESSION_BUS_ADDRESS`, a process-global.
 // Serialize the suite so each test owns the env for its whole body.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn login_collection_path(service: &SecretService<'_>) -> String {
     service
@@ -92,7 +90,7 @@ fn lock_login(service: &SecretService<'_>, collection_path: &str) {
 /// Hold the env lock, bring up swtpm + a throwaway keyring seeded with [`ITEMS`], and run `body`.
 /// Skips cleanly (no panic) when swtpm or the keyring daemons are unavailable.
 fn with_fixture(body: impl FnOnce(&SecretService<'_>, &str, &str, &TctiConfig)) {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _lock = tess_testenv::env_lock();
     let Some((_swtpm, tcti)) = Swtpm::start() else {
         return;
     };

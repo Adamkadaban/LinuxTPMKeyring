@@ -18,7 +18,6 @@
 mod common;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use common::{GnomeKeyring, Swtpm, run_pam_helper};
 use secret_service::EncryptionType;
@@ -50,7 +49,6 @@ const ITEMS: [(&str, &[u8]); 5] = [
 ];
 
 // `secret-service`'s client reads the bus address from `DBUS_SESSION_BUS_ADDRESS`, a process-global.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn login_collection_path(service: &SecretService<'_>) -> String {
     service
@@ -127,7 +125,7 @@ fn lock_login(service: &SecretService<'_>, collection_path: &str) {
 /// daemons are unavailable.
 #[test]
 fn full_phase3_cycle_preserves_all_items() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _lock = tess_testenv::env_lock();
 
     let Some((swtpm, tcti)) = Swtpm::start() else {
         return;
