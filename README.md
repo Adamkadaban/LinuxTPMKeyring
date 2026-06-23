@@ -238,11 +238,15 @@ module's watchdog, so a wedged camera can never freeze login. Enroll the factor 
 `tess enroll --face`. Precedence with everything enabled: **face → fingerprint → PIN → password
 fallthrough**.
 
-If you wire tess into the **auth** stack as well, use a fail-open control flag so a declined or
-timed-out factor falls through to the password:
+The face/fingerprint/PIN keyring unlock runs in the **session** phase (where the keyring is opened),
+so the `face=yes` / `fingerprint=yes` module arguments take effect there. The **auth**-phase module
+is only an optional fail-open *gate*: it always declines and falls through to the password (it does
+not itself perform the face/PIN unlock), so use a fail-open control flag and don't expect `face=yes`
+to act as an auth factor:
 
 ```pam
-auth [success=done default=ignore] pam_tess.so face=yes
+session optional pam_tess.so face=yes
+auth [success=done default=ignore] pam_tess.so
 ```
 
 > The PAM install logic is exercised in tests against throwaway fixtures only — it never edits a real
