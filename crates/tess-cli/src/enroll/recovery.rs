@@ -242,6 +242,27 @@ pub fn save_blob(blob: &RecoveryBlob, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Durably create an empty marker file at `path` (atomic temp-write + rename + parent-dir fsync,
+/// mode 0600), so a crash right after enrollment can't lose it. The marker carries no data — only
+/// its presence is meaningful — but it must survive power loss to stay consistent with the TPM
+/// lockout authValue whose tess-ownership it records.
+pub(crate) fn write_durable_marker(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
+        }
+    }
+    let tmp = temp_sibling(path);
+    write_private(&tmp, &[]).with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        anyhow!("rename {} -> {}: {e}", tmp.display(), path.display())
+    })?;
+    sync_parent_dir(path).with_context(|| format!("sync parent dir of {}", path.display()))?;
+    Ok(())
+}
+
 /// Read and parse a recovery blob from `path`.
 pub fn load_blob(path: &Path) -> Result<RecoveryBlob> {
     let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;

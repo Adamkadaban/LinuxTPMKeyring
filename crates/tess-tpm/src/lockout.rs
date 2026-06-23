@@ -141,12 +141,17 @@ pub fn set_lockout_auth(
 
     let session = start_salted_hmac_session(context, primary)?;
     let changed = context.execute_with_session(Some(session), |ctx| {
-        ctx.hierarchy_change_auth(AuthHandle::Lockout, new_auth)
+        ctx.hierarchy_change_auth(AuthHandle::Lockout, new_auth.clone())
     });
     let session_flushed = flush(context, SessionHandle::from(session).into());
 
     changed.map_err(|e| Error::LockoutAuth(e.to_string()))?;
     session_flushed?;
+    // Keep the context's cached auth for the lockout handle in sync with the change we just made, so
+    // a later command on the same Context authorizes with the new value rather than the stale one.
+    context
+        .tr_set_auth(ObjectHandle::Lockout, new_auth)
+        .map_err(|e| Error::LockoutAuth(e.to_string()))?;
     Ok(())
 }
 
@@ -166,8 +171,8 @@ fn lockout_auth_value(secret: &SecretBytes) -> Result<Auth> {
 const RESET_TIMEOUT: Duration = Duration::from_secs(30);
 const RESET_POLL: Duration = Duration::from_millis(50);
 
-/// Kills and reaps the wrapped child on drop unless [`Self::disarm`]ed, so no early return (a failed
-/// stdin write, a timeout) can leak a live `tpm2_dictionarylockout` process.
+/// Kills and reaps the wrapped child on drop, so no early return (a failed stdin write, a timeout)
+/// can leak a live `tpm2_dictionarylockout` process.
 struct ReapOnDrop(Option<Child>);
 
 impl ReapOnDrop {
@@ -203,7 +208,7 @@ pub fn reset_lockout(tcti: &TctiConfig, lockout_auth: &SecretBytes) -> Result<()
         .arg("file:-")
         .env("TPM2TOOLS_TCTI", tcti.tpm2_tools_tcti())
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| match e.kind() {

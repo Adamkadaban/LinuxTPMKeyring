@@ -327,13 +327,10 @@ fn commit<S: KeySealer>(
             .context("bind the TPM lockout hierarchy to the recovery secret")?;
         tx.lockout_auth = Some(lockout_auth);
         // Record that tess (not a foreign owner) bound the lockout auth, so unenroll knows it may
-        // safely release it. Written after the bind so the marker never claims ownership tess lacks.
-        std::fs::write(&paths.lockout_owned, []).with_context(|| {
-            format!(
-                "write the lockout-ownership marker {}",
-                paths.lockout_owned.display()
-            )
-        })?;
+        // safely release it. Durable (fsync) so a crash after enroll can't lose the marker while the
+        // TPM authValue stays set. Written after the bind so the marker never claims absent ownership.
+        recovery::write_durable_marker(&paths.lockout_owned)
+            .context("write the lockout-ownership marker")?;
     }
 
     // Step 5: rekey in place (destructive). The old credential was already proven to open the
