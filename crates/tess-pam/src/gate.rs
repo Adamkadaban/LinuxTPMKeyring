@@ -134,10 +134,12 @@ pub struct HelperSpec {
     /// resolves `PAM_USER`). Only meaningful when `fingerprint` is true.
     pub fingerprint_user: Option<String>,
     /// When true, the helper attempts a bounded, liveness-gated face match *before* the PIN unseal
-    /// and, on success, releases the keyring key via the independent on-disk `A_face` authValue with
-    /// no PIN typed (model-B unlock). Face is host-trusted convenience that never replaces the PIN:
-    /// the PIN authValue is the real TPM gate, and any face decline/timeout/not-enrolled degrades
-    /// cleanly to the PIN — face never blocks login. Defaults off (PIN-only), the safe default.
+    /// and, on success, releases the keyring key via the independent on-disk `A_face` authValue, so
+    /// the user need not type the PIN on that login (model-B unlock). This adds a release path; it
+    /// does not weaken the PIN: the key is still independently sealed under the PIN authValue, which
+    /// remains the real TPM gate and the always-available fallback, and any face
+    /// decline/timeout/not-enrolled degrades cleanly to it — face never blocks login. Defaults off
+    /// (PIN-only), the safe default.
     pub face: bool,
     /// The login user passed to the helper for the face leg, so it consults the right user's mug
     /// enrollment instead of an inherited `$USER`/`$LOGNAME` (`None` until the session phase resolves

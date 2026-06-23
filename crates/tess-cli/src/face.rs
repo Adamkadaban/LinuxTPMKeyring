@@ -33,7 +33,7 @@ pub fn current_username() -> Result<String> {
         }
     }
     Err(anyhow!(
-        "cannot resolve the current username (none of $TESS_FACE_USER, $USER, $LOGNAME is set)"
+        "cannot resolve the current username (none of $TESS_FACE_USER, $USER, $LOGNAME are set)"
     ))
 }
 
