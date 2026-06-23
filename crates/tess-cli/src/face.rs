@@ -259,8 +259,8 @@ fn build_matcher(cfg: &MugConfig) -> Result<Matcher<Box<dyn EmbeddingExtractor>>
     #[cfg(not(feature = "face-model"))]
     if model_path.is_some() {
         eprintln!(
-            "mug: {ENV_MODEL_PATH}/model_path is set but this build lacks the `face-model` feature; \
-             using the model-free mock matcher"
+            "tess: {ENV_MODEL_PATH}/model_path is set but this build lacks the `face-model` \
+             feature; using the model-free mock matcher"
         );
     }
 

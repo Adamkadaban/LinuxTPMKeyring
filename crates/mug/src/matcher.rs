@@ -1,8 +1,9 @@
 //! Pluggable IR face matcher.
 //!
 //! tess ships **no** face model. The embedding extractor is abstracted behind
-//! [`EmbeddingExtractor`] so the real backend (an ArcFace/SFace ONNX network run via `ort`, operating
-//! on the GREY IR crop, Hello-style) is a drop-in whose model path comes from configuration — and so
+//! [`EmbeddingExtractor`] so the real backend (an ArcFace/SFace ONNX network run via `tract`,
+//! operating on the GREY IR crop, Hello-style) is a drop-in whose model path comes from
+//! configuration — and so
 //! the headless test suite needs no model at all, driving a deterministic mock instead. When no
 //! extractor is configured the face factor is simply unavailable and the caller degrades to the PIN.
 //!
@@ -197,21 +198,44 @@ fn l2_normalize(emb: &mut [f32]) -> Result<()> {
     Ok(())
 }
 
-/// Nearest-neighbour resize of a GREY frame to `dst_w` x `dst_h`.
+/// Nearest-neighbour resize of a GREY frame to `dst_w` x `dst_h`. Returns an empty `Vec` (rejected
+/// by the caller) if the destination area overflows `usize` or the source frame is too small for its
+/// declared geometry, so a hostile model's dimensions can never panic the unlock path.
 #[cfg(feature = "face-model")]
 fn resize_gray(frame: &IrFrame, dst_w: usize, dst_h: usize) -> Vec<u8> {
     let (sw, sh) = (frame.width() as usize, frame.height() as usize);
     let src = frame.as_bytes();
-    let mut out = vec![0u8; dst_w * dst_h];
+    let out_len = match dst_w.checked_mul(dst_h) {
+        Some(n) => n,
+        None => return Vec::new(),
+    };
+    if sw == 0 || sh == 0 || src.len() < sw.saturating_mul(sh) {
+        return Vec::new();
+    }
+    let mut out = vec![0u8; out_len];
     for y in 0..dst_h {
-        let sy = if dst_h == 1 { 0 } else { y * sh / dst_h };
+        let sy = if dst_h == 1 {
+            0
+        } else {
+            (y as u64 * sh as u64 / dst_h as u64) as usize
+        };
         for x in 0..dst_w {
-            let sx = if dst_w == 1 { 0 } else { x * sw / dst_w };
+            let sx = if dst_w == 1 {
+                0
+            } else {
+                (x as u64 * sw as u64 / dst_w as u64) as usize
+            };
             out[y * dst_w + x] = src[sy.min(sh - 1) * sw + sx.min(sw - 1)];
         }
     }
     out
 }
+
+/// Upper bound on a model's input element count (`C * H * W`). Any realistic face network is far
+/// smaller (e.g. `3 * 112 * 112`); rejecting larger shapes at load time keeps a hostile or
+/// misconfigured model from triggering a giant allocation — and a process abort — on the unlock path.
+#[cfg(feature = "face-model")]
+const MAX_INPUT_ELEMS: usize = 16 * 1024 * 1024;
 
 /// A `tract`-backed ONNX face-embedding extractor (self-contained inference; no native ONNX Runtime,
 /// though `tract` builds some SIMD kernels via `cc`, so a build-time C toolchain is required).
@@ -263,6 +287,23 @@ impl TractExtractor {
             )));
         }
         let (channels, height, width) = (input_shape[1], input_shape[2], input_shape[3]);
+        let input_elems = channels
+            .checked_mul(height)
+            .and_then(|n| n.checked_mul(width))
+            .ok_or_else(|| {
+                MugError::MatcherUnavailable("model input dimensions overflow usize".into())
+            })?;
+        if input_elems == 0 {
+            return Err(MugError::MatcherUnavailable(format!(
+                "model input [1, {channels}, {height}, {width}] has a zero-sized dimension"
+            )));
+        }
+        if input_elems > MAX_INPUT_ELEMS {
+            return Err(MugError::MatcherUnavailable(format!(
+                "model input [1, {channels}, {height}, {width}] = {input_elems} elements exceeds \
+                 the {MAX_INPUT_ELEMS}-element cap"
+            )));
+        }
 
         let dim = {
             let out_shape = typed
@@ -316,7 +357,6 @@ impl EmbeddingExtractor for TractExtractor {
         if frame.as_bytes().is_empty() {
             return Err(MugError::InvalidFrame("empty frame".into()));
         }
-        let plane = resize_gray(frame, self.width, self.height);
         let plane_len = self
             .height
             .checked_mul(self.width)
@@ -325,6 +365,13 @@ impl EmbeddingExtractor for TractExtractor {
             .channels
             .checked_mul(plane_len)
             .ok_or_else(|| MugError::MatcherUnavailable("input C*H*W overflows usize".into()))?;
+        let plane = resize_gray(frame, self.width, self.height);
+        if plane.len() != plane_len {
+            return Err(MugError::MatcherUnavailable(format!(
+                "resized input plane has {} bytes, expected {plane_len}",
+                plane.len()
+            )));
+        }
         let mut input = vec![0f32; input_len];
         for (i, &p) in plane.iter().enumerate() {
             let v = (p as f32 - 127.5) / 127.5;
@@ -429,5 +476,21 @@ mod tests {
             Err(MugError::MatcherUnavailable(_)) => {}
             other => panic!("expected MatcherUnavailable, got {:?}", other.map(|_| ())),
         }
+    }
+
+    #[cfg(feature = "face-model")]
+    #[test]
+    fn resize_gray_returns_empty_on_overflowing_destination() {
+        let frame = on_frame(synth::live_pair(64, 64));
+        // A destination area that overflows usize must yield an empty plane (the caller rejects it),
+        // not a panic on the unlock path.
+        assert!(resize_gray(&frame, usize::MAX, 2).is_empty());
+    }
+
+    #[cfg(feature = "face-model")]
+    #[test]
+    fn resize_gray_produces_expected_length() {
+        let frame = on_frame(synth::live_pair(64, 64));
+        assert_eq!(resize_gray(&frame, 32, 16).len(), 32 * 16);
     }
 }
