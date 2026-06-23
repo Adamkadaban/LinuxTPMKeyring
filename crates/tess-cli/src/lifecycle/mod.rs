@@ -198,7 +198,7 @@ pub fn unenroll<S: KeySealer>(
     // uninstalling tess leaves the TPM as it was found. Best-effort: a failure here is not a keyring
     // lockout, so warn and continue to blob removal rather than failing the whole unenroll.
     if let Some(recovery_secret) = recovery_secret {
-        if let Err(err) = release_lockout_auth(sealer, recovery_secret) {
+        if let Err(err) = release_lockout_auth(sealer, paths, recovery_secret) {
             eprintln!(
                 "warning: could not reset the TPM lockout-hierarchy authValue to empty ({err:#}); \
                  it remains bound to the recovery secret"
@@ -213,28 +213,36 @@ pub fn unenroll<S: KeySealer>(
 }
 
 /// Reset the TPM lockout-hierarchy authValue from the recovery-derived value back to empty. A no-op
-/// (with no error) when tess does not own the lockout hierarchy, so a managed machine — where enroll
-/// skipped the binding — unenrolls cleanly.
-fn release_lockout_auth<S: KeySealer>(sealer: &mut S, recovery_secret: &SecretBytes) -> Result<()> {
-    if !sealer
-        .lockout_auth_is_set()
-        .context("read the TPM lockout-auth state")?
-    {
+/// (with no error) when tess does not own the lockout hierarchy — gated on the `lockout_owned`
+/// marker written at enroll, NOT on the TPM's `lockoutAuthSet` bit (which is also set by a foreign
+/// owner). On a managed machine where enroll skipped binding, the marker is absent, so unenroll
+/// never authorizes a wrong reset that would self-lock the lockout hierarchy.
+fn release_lockout_auth<S: KeySealer>(
+    sealer: &mut S,
+    paths: &Paths,
+    recovery_secret: &SecretBytes,
+) -> Result<()> {
+    if !paths.lockout_owned.exists() {
         return Ok(());
     }
     let lockout_auth = recovery::derive_lockout_auth(recovery_secret)
         .context("derive the lockout authValue from the recovery secret")?;
     sealer
         .set_lockout_auth(&lockout_auth, &SecretBytes::new(Vec::new()))
-        .context("reset the TPM lockout-hierarchy authValue to empty")
+        .context("reset the TPM lockout-hierarchy authValue to empty")?;
+    crate::enroll::remove_file(&paths.lockout_owned)
+        .with_context(|| format!("remove {}", paths.lockout_owned.display()))
 }
 
-/// Remove the sealed metadata and recovery blob, idempotently (an already-absent file is success).
+/// Remove the sealed metadata, recovery blob, and lockout-ownership marker, idempotently (an
+/// already-absent file is success).
 fn remove_blobs(paths: &Paths) -> Result<()> {
     crate::enroll::remove_file(&paths.metadata)
         .with_context(|| format!("remove {}", paths.metadata.display()))?;
     crate::enroll::remove_file(&paths.recovery)
         .with_context(|| format!("remove {}", paths.recovery.display()))?;
+    crate::enroll::remove_file(&paths.lockout_owned)
+        .with_context(|| format!("remove {}", paths.lockout_owned.display()))?;
     Ok(())
 }
 

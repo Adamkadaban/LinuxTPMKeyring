@@ -7,8 +7,9 @@
 //! counter lets callers warn before lockout; mapping the TPM's lockout response code to a distinct
 //! error lets callers tell "locked out" apart from "wrong PIN".
 
-use std::io::Write as _;
-use std::process::{Command, Stdio};
+use std::io::{Read as _, Write as _};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use tess_core::SecretBytes;
 use tss_esapi::constants::{CapabilityType, PropertyTag};
@@ -161,6 +162,29 @@ fn lockout_auth_value(secret: &SecretBytes) -> Result<Auth> {
     Auth::try_from(secret.as_slice()).map_err(|e| Error::LockoutAuth(e.to_string()))
 }
 
+/// Wall-clock cap on the `tpm2_dictionarylockout` subprocess so a hung TPM/TCTI can't hang recovery.
+const RESET_TIMEOUT: Duration = Duration::from_secs(30);
+const RESET_POLL: Duration = Duration::from_millis(50);
+
+/// Kills and reaps the wrapped child on drop unless [`Self::disarm`]ed, so no early return (a failed
+/// stdin write, a timeout) can leak a live `tpm2_dictionarylockout` process.
+struct ReapOnDrop(Option<Child>);
+
+impl ReapOnDrop {
+    fn child(&mut self) -> &mut Child {
+        self.0.as_mut().expect("child present until dropped")
+    }
+}
+
+impl Drop for ReapOnDrop {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 /// Privileged dictionary-attack reset: run `TPM2_DictionaryAttackLockReset` so the global
 /// `lockoutCounter` returns to zero even from a *hard* lockout, authorized by the lockout-hierarchy
 /// authValue. The pinned `tss-esapi` 7.7 exposes no safe wrapper for this command, so it runs via
@@ -168,11 +192,12 @@ fn lockout_auth_value(secret: &SecretBytes) -> Result<Auth> {
 ///
 /// `lockout_auth` is the raw authValue (recovery-derived, set by [`set_lockout_auth`]). It is fed on
 /// the subprocess **stdin** (`--auth file:-`), never argv, so it does not leak via `/proc`.
-/// `TPM2TOOLS_TCTI` is set to the same transport tess uses so tpm2-tools targets the same TPM. A
-/// wrong authValue (or a still-locked lockout hierarchy) makes tpm2-tools exit non-zero, surfaced as
-/// [`Error::LockoutReset`].
+/// `TPM2TOOLS_TCTI` is set to the same transport tess uses so tpm2-tools targets the same TPM. The
+/// child is bounded by [`RESET_TIMEOUT`] and reaped on every exit path (failure, timeout, success).
+/// A wrong authValue (or a still-locked lockout hierarchy) makes tpm2-tools exit non-zero, surfaced
+/// as [`Error::LockoutReset`].
 pub fn reset_lockout(tcti: &TctiConfig, lockout_auth: &SecretBytes) -> Result<()> {
-    let mut child = Command::new("tpm2_dictionarylockout")
+    let child = Command::new("tpm2_dictionarylockout")
         .arg("--clear-lockout")
         .arg("--auth")
         .arg("file:-")
@@ -188,25 +213,52 @@ pub fn reset_lockout(tcti: &TctiConfig, lockout_auth: &SecretBytes) -> Result<()
             ),
             _ => Error::LockoutReset(format!("spawn tpm2_dictionarylockout: {e}")),
         })?;
+    // From here every early return drops `guard`, which kills + reaps the child.
+    let mut guard = ReapOnDrop(Some(child));
 
-    let mut stdin = child.stdin.take().ok_or_else(|| {
-        Error::LockoutReset("tpm2_dictionarylockout stdin unavailable".to_string())
-    })?;
-    let written = stdin.write_all(lockout_auth.as_slice());
-    drop(stdin); // EOF so tpm2-tools stops reading the authValue.
-    written.map_err(|e| Error::LockoutReset(format!("write authValue to stdin: {e}")))?;
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| Error::LockoutReset(format!("wait for tpm2_dictionarylockout: {e}")))?;
-    if !output.status.success() {
-        return Err(Error::LockoutReset(format!(
-            "tpm2_dictionarylockout exited with {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
+    {
+        let mut stdin = guard.child().stdin.take().ok_or_else(|| {
+            Error::LockoutReset("tpm2_dictionarylockout stdin unavailable".to_string())
+        })?;
+        stdin
+            .write_all(lockout_auth.as_slice())
+            .map_err(|e| Error::LockoutReset(format!("write authValue to stdin: {e}")))?;
+        // stdin dropped here → EOF so tpm2-tools stops reading the authValue.
     }
-    Ok(())
+
+    let deadline = Instant::now() + RESET_TIMEOUT;
+    loop {
+        let status = guard
+            .child()
+            .try_wait()
+            .map_err(|e| Error::LockoutReset(format!("wait for tpm2_dictionarylockout: {e}")))?;
+        match status {
+            Some(status) => {
+                let mut stderr = String::new();
+                if let Some(mut handle) = guard.child().stderr.take() {
+                    let _ = handle.read_to_string(&mut stderr);
+                }
+                // `try_wait` already reaped the exited child; `guard` drops harmlessly here.
+                if !status.success() {
+                    return Err(Error::LockoutReset(format!(
+                        "tpm2_dictionarylockout exited with {}: {}",
+                        status,
+                        stderr.trim()
+                    )));
+                }
+                return Ok(());
+            }
+            None => {
+                if Instant::now() >= deadline {
+                    return Err(Error::LockoutReset(format!(
+                        "tpm2_dictionarylockout timed out after {}s",
+                        RESET_TIMEOUT.as_secs()
+                    )));
+                }
+                std::thread::sleep(RESET_POLL);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

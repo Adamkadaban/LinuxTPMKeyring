@@ -130,6 +130,7 @@ fn simulated_session_helper_unseals_and_unlocks_the_keyring() {
     let paths = Paths {
         metadata: tess_dir.join("metadata.json"),
         recovery: tess_dir.join("recovery.json"),
+        lockout_owned: tess_dir.join("lockout-owned"),
     };
 
     let backend =

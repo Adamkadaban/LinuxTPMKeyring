@@ -173,6 +173,7 @@ fn paths_in(dir: &std::path::Path) -> Paths {
     Paths {
         metadata: dir.join("metadata.json"),
         recovery: dir.join("recovery.json"),
+        lockout_owned: dir.join("lockout-owned"),
     }
 }
 
@@ -331,6 +332,7 @@ fn rollback_on_persist_failure_never_touches_the_keyring() {
         let paths = Paths {
             metadata: block.join("metadata.json"),
             recovery: dir.path().join("recovery.json"),
+            lockout_owned: dir.path().join("lockout-owned"),
         };
         let mut sealer = TpmSealer::open(tcti).expect("open swtpm sealer");
         let backend = ObservingBackend::new(

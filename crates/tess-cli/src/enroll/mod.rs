@@ -41,6 +41,10 @@ pub struct Paths {
     pub metadata: PathBuf,
     /// Recovery blob (`recovery::RecoveryBlob`).
     pub recovery: PathBuf,
+    /// Marker (empty file): present iff tess bound the TPM lockout-hierarchy authValue at enroll, so
+    /// unenroll knows it owns the auth and may safely release it. Absent on a machine where enroll
+    /// skipped binding (a foreign lockout owner) — so unenroll never authorizes a wrong reset there.
+    pub lockout_owned: PathBuf,
 }
 
 impl Paths {
@@ -51,6 +55,7 @@ impl Paths {
         Ok(Self {
             metadata: dir.join("metadata.json"),
             recovery: dir.join("recovery.json"),
+            lockout_owned: dir.join("lockout-owned"),
         })
     }
 
@@ -139,6 +144,11 @@ impl Tx {
                 eprintln!(
                     "warning: could not restore the TPM lockout authValue to empty during rollback \
                      ({e:#}); it remains bound to the recovery secret"
+                );
+            } else if let Err(e) = remove_file(&paths.lockout_owned) {
+                // Auth is back to empty, so the ownership marker must not linger.
+                eprintln!(
+                    "warning: could not remove the lockout-ownership marker during rollback ({e:#})"
                 );
             }
         }
@@ -316,6 +326,14 @@ fn commit<S: KeySealer>(
             .set_lockout_auth(&SecretBytes::new(Vec::new()), &lockout_auth)
             .context("bind the TPM lockout hierarchy to the recovery secret")?;
         tx.lockout_auth = Some(lockout_auth);
+        // Record that tess (not a foreign owner) bound the lockout auth, so unenroll knows it may
+        // safely release it. Written after the bind so the marker never claims ownership tess lacks.
+        std::fs::write(&paths.lockout_owned, []).with_context(|| {
+            format!(
+                "write the lockout-ownership marker {}",
+                paths.lockout_owned.display()
+            )
+        })?;
     }
 
     // Step 5: rekey in place (destructive). The old credential was already proven to open the
@@ -430,6 +448,7 @@ mod tests {
         Paths {
             metadata: dir.join("metadata.json"),
             recovery: dir.join("recovery.json"),
+            lockout_owned: dir.join("lockout-owned"),
         }
     }
 

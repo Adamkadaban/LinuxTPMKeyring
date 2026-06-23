@@ -197,6 +197,7 @@ fn fingerprint_front_gate_precedence_match_nomatch_stall() {
     let paths = Paths {
         metadata: tess_dir.join("metadata.json"),
         recovery: tess_dir.join("recovery.json"),
+        lockout_owned: tess_dir.join("lockout-owned"),
     };
 
     let backend =

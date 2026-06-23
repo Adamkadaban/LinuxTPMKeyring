@@ -132,6 +132,7 @@ fn paths_in(dir: &std::path::Path) -> Paths {
     Paths {
         metadata: dir.join("metadata.json"),
         recovery: dir.join("recovery.json"),
+        lockout_owned: dir.join("lockout-owned"),
     }
 }
 

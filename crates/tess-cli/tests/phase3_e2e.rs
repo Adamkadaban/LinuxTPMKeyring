@@ -171,6 +171,7 @@ fn full_phase3_cycle_preserves_all_items() {
     let paths = Paths {
         metadata: tess_dir.join("metadata.json"),
         recovery: tess_dir.join("recovery.json"),
+        lockout_owned: tess_dir.join("lockout-owned"),
     };
 
     let backend =
