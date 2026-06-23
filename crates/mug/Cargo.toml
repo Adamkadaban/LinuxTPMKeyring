@@ -18,7 +18,7 @@ libc.workspace = true
 # `ioctl` adds the safe ioctl-number macros; the generated wrappers are still `unsafe fn`, confined
 # to the single `sys` module so the rest of the crate stays `deny(unsafe_code)`.
 nix = { workspace = true, features = ["ioctl"] }
-# Pure-Rust ONNX inference (no native ONNX Runtime download/link) for the optional real face
+# Self-contained ONNX inference (no native ONNX Runtime; builds SIMD kernels via cc) for the real face
 # matcher. Off by default so the CI/default build stays model-free (the deterministic mock); the
 # user supplies the model at runtime — none ships with tess.
 tract-onnx = { version = "0.23.3", optional = true }

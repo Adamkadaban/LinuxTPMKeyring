@@ -203,8 +203,9 @@ MUG_IR_BACKEND=hardware tess unlock --face            # hold up a printed photo 
 ```
 
 A pass is: live face unlocks with no PIN typed; the photo/screen is rejected by liveness and the PIN
-fallback engages. (Real *identity* discrimination — rejecting a different live person — requires the
-`ort` matcher model from #56; with the mock matcher this smoke proves capture + liveness only.)
+fallback engages. (Real *identity* discrimination — rejecting a different live person — requires a
+real model: build with `--features face-model` and set `MUG_MODEL_PATH`; with the default mock
+matcher this smoke proves capture + liveness only.)
 
 
 **Honest at-rest trade-off — read before enrolling `--face`.** With a typed PIN, *nothing* that

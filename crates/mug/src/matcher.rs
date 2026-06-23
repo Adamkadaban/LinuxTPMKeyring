@@ -264,15 +264,32 @@ impl TractExtractor {
         }
         let (channels, height, width) = (input_shape[1], input_shape[2], input_shape[3]);
 
-        let dim = typed
-            .output_fact(0)
-            .map_err(|e| MugError::MatcherUnavailable(format!("read model output fact: {e}")))?
-            .shape
-            .as_concrete()
-            .and_then(|s| s.last().copied())
-            .ok_or_else(|| {
-                MugError::MatcherUnavailable("model output dimensionality is not concrete".into())
-            })?;
+        let dim = {
+            let out_shape = typed
+                .output_fact(0)
+                .map_err(|e| MugError::MatcherUnavailable(format!("read model output fact: {e}")))?
+                .shape
+                .as_concrete()
+                .ok_or_else(|| {
+                    MugError::MatcherUnavailable("model output shape is not concrete".into())
+                })?
+                .to_vec();
+            // The embedding is the flattened output; its length is the product of every output
+            // dimension (so `[1, D]` and `[1, D, 1, 1]` both give D). Checked so a hostile model with
+            // huge dims can't overflow.
+            let mut n: usize = 1;
+            for d in &out_shape {
+                n = n.checked_mul(*d).ok_or_else(|| {
+                    MugError::MatcherUnavailable("model output dimensions overflow usize".into())
+                })?;
+            }
+            if n == 0 {
+                return Err(MugError::MatcherUnavailable(
+                    "model output has a zero-length dimension".into(),
+                ));
+            }
+            n
+        };
 
         let model = typed
             .into_runnable()
@@ -300,8 +317,15 @@ impl EmbeddingExtractor for TractExtractor {
             return Err(MugError::InvalidFrame("empty frame".into()));
         }
         let plane = resize_gray(frame, self.width, self.height);
-        let mut input = vec![0f32; self.channels * self.height * self.width];
-        let plane_len = self.height * self.width;
+        let plane_len = self
+            .height
+            .checked_mul(self.width)
+            .ok_or_else(|| MugError::MatcherUnavailable("input H*W overflows usize".into()))?;
+        let input_len = self
+            .channels
+            .checked_mul(plane_len)
+            .ok_or_else(|| MugError::MatcherUnavailable("input C*H*W overflows usize".into()))?;
+        let mut input = vec![0f32; input_len];
         for (i, &p) in plane.iter().enumerate() {
             let v = (p as f32 - 127.5) / 127.5;
             for c in 0..self.channels {

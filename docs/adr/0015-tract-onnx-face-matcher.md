@@ -1,4 +1,4 @@
-# 0015 — Pure-Rust `tract` ONNX face matcher (supersedes the `ort` deferral in ADR-0014)
+# 0015 — Self-contained `tract` ONNX face matcher (supersedes the `ort` deferral in ADR-0014)
 
 ## Status
 
