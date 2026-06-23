@@ -58,8 +58,9 @@ mod gate;
 pub use error::{MugError, Result};
 
 pub use camera::{
-    BRIO_IR_HEIGHT, BRIO_IR_WIDTH, BRIO_PRODUCT_ID, BRIO_VENDOR_ID, FramePair, IrEmitter, IrFrame,
-    IrSource, VirtualIrDevice, VirtualIrEmitter, VirtualIrSource, capture_liveness_pair,
+    BRIO_EMITTER_SELECTOR, BRIO_EMITTER_UNIT, BRIO_IR_HEIGHT, BRIO_IR_WIDTH, BRIO_PRODUCT_ID,
+    BRIO_VENDOR_ID, BrioEmitter, FramePair, IrEmitter, IrFrame, IrSource, V4l2IrDevice,
+    VirtualIrDevice, VirtualIrEmitter, VirtualIrSource, capture_liveness_pair, find_brio_ir_node,
 };
 pub use config::MugConfig;
 pub use gate::{FaceGate, verify};

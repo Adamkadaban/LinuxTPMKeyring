@@ -160,9 +160,48 @@ time under a fresh, independent random authValue `A_face`; that authValue is sto
 image). `tess unlock --face` captures an IR frame pair, runs the active-illumination **liveness**
 check, matches your face, and — on success — reads `A_face` and unseals `K` with **no PIN typed**.
 Any face failure, timeout, or missing enrollment falls back to the PIN. The PIN always works; face is
-the convenience path. (Today the face pipeline is wired to a **virtual IR substrate**
-(`MUG_VIRTUAL_IR_DIR`) with a model-free mock matcher — used by CI and for trying the flow. Real
-Logitech Brio capture plus an IR matcher model are a tracked follow-up ([#56](https://github.com/Adamkadaban/LinuxTPMKeyring/issues/56)); no face model ships with tess.)
+the convenience path.
+
+**Capture backends.** The face pipeline picks an IR capture backend from `MUG_IR_BACKEND`
+(`auto` — the default — `virtual`, or `hardware`):
+
+- **virtual substrate** (`MUG_VIRTUAL_IR_DIR`, holding `ir_off.grey`/`ir_on.grey`) — the CI/default
+  path and the way to try the flow without a camera; `auto` selects it whenever that dir is set.
+- **real Logitech Brio** — opt-in with `MUG_IR_BACKEND=hardware` (or auto-selected when no virtual
+  dir is set and a Brio GREY IR node is discoverable). It drives the by-id GREY IR node and the
+  UVC extension-unit IR emitter. When no camera (or model) is present the factor reports unavailable
+  and unlock degrades to the PIN. The Brio emitter SET_CUR payloads default to a starting value and
+  are overridable with `MUG_IR_EMITTER_ON_HEX` / `MUG_IR_EMITTER_OFF_HEX` (hex, e.g. `0x01`); a wrong
+  value fails safe (the emitter stays off, liveness can't pass, the factor degrades to the PIN).
+
+**No model ships — face *matching* needs a user-supplied model.** Identity matching is a deterministic
+model-free **mock** today (the security-critical *liveness* gate is real on both backends). A real
+ArcFace/SFace ONNX matcher backend via `ort` (model path from `MUG_MODEL_PATH`, no model bundled) is
+tracked in [#56](https://github.com/Adamkadaban/LinuxTPMKeyring/issues/56) and **not yet wired** — no
+stable `ort` is currently published. Until then, real-hardware capture pairs the live IR frames with
+the mock matcher: liveness is enforced, but identity discrimination is weak. Treat face-on-real-Brio
+as a liveness-gated convenience pending the matcher model.
+
+#### Manual real-Brio smoke (maintainer, on the host — never CI)
+
+The hardware path is validated by a manual smoke on a machine with the Brio attached (CI never touches
+a camera):
+
+```sh
+# 1. Enroll against the real camera (look at the Brio; the IR emitter toggles during capture).
+MUG_IR_BACKEND=hardware tess enroll --face
+# (If the emitter does not light, tune MUG_IR_EMITTER_ON_HEX/OFF_HEX to the device's SET_CUR bytes.)
+
+# 2. Liveness/photo-rejection check: a live face unlocks; a flat printed photo or a phone screen
+#    held to the lens must be REJECTED (emitter-on/off IR differential), falling back to the PIN.
+MUG_IR_BACKEND=hardware tess unlock --face            # live face → unlock, no PIN typed
+MUG_IR_BACKEND=hardware tess unlock --face            # hold up a printed photo → rejected → PIN
+```
+
+A pass is: live face unlocks with no PIN typed; the photo/screen is rejected by liveness and the PIN
+fallback engages. (Real *identity* discrimination — rejecting a different live person — requires the
+`ort` matcher model from #56; with the mock matcher this smoke proves capture + liveness only.)
+
 
 **Honest at-rest trade-off — read before enrolling `--face`.** With a typed PIN, *nothing* that
 unlocks the key is ever stored, so a powered-off stolen laptop yields nothing: **disk-only theft

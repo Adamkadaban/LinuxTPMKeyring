@@ -837,3 +837,36 @@ Key facts / gotchas:
 
 ## 2026-06-23 — modernized to edition 2024 / Rust 1.96 + refreshed deps
 **Resolution:** edition 2021→2024, rust-version 1.82→1.96 (latest stable). Edition 2024 made `std::env::set_var`/`remove_var` unsafe; confined the test-only env mutation to a new `tess-testenv` crate (one `#[allow(unsafe_code)]` module) so every shipping crate stays `forbid`/`deny(unsafe_code)`. Bumped nix 0.29→0.31, hkdf 0.12→0.13, sha2 0.10→0.11 (recovery crypto; deny/vet green, no dup digest). Kept tss-esapi 7.7 (8.0 alpha; RUSTSEC-pinned) and chacha20poly1305 0.10 (0.11 RC). `crates/tess-testenv/src/env.rs:1` · `docs/adr/0013`
+
+## 2026-06-23 — Phase 5: wire real Brio IR capture (#63); `ort` matcher (#56) reported BLOCKED
+**Resolution:** `tess-cli::face` now selects an IR capture backend via `MUG_IR_BACKEND`
+(`auto`/`virtual`/`hardware`) through a pure, unit-tested `resolve_backend`; hardware builds
+`V4l2IrDevice::open_brio` + `BrioEmitter` (no new unsafe — all behind `mug::sys`, ADR-0012), virtual
+substrate stays the CI/default path, both symmetric across enroll/unlock. `crates/tess-cli/src/face.rs`
+(`resolve_backend`/`build_hardware_backend`/`select_backend`) · `docs/adr/0014` · #63
+
+Key facts / gotchas:
+- **#56 (`ort` matcher) is BLOCKED, not landed — deliberately no `ort` dep, no `face-model` feature.**
+  crates.io has NO stable `ort`: `max_stable_version=null`; the whole `1.x` line is *yanked* (→ fails
+  `cargo deny` `yanked = "deny"`) and `2.x` is `rc`-only (task forbids alpha/rc). On top of that `ort`
+  2.x's default features include `download-binaries`, which fetches a prebuilt native ONNX Runtime at
+  build time → non-hermetic, un-vettable. Per the issue's own escape hatch: left as trait + mock,
+  reported for a maintainer decision. `cargo check -p mug --features face-model` therefore errors
+  "does not contain this feature" — expected.
+- **Selection is hardware-independent in tests.** `resolve_backend(requested, virtual_set, brio_probe)`
+  takes the camera probe as a closure, so the 9 face unit tests never read `/dev/v4l/by-id` (the one
+  env-driven test only exercises the Virtual branch, which never probes) — deterministic on CI and on
+  a dev host that happens to have a camera. `MUG_VIRTUAL_IR_DIR` set ⇒ Virtual without reading the dir
+  contents (split_from_env only reads the env var), so `template_source_from_env()` is `Ok` with no
+  fixtures.
+- **Brio emitter SET_CUR payloads are env-tunable** (`MUG_IR_EMITTER_ON_HEX`/`_OFF_HEX`, hex with
+  `0x`/`:`/`,`/space tolerated; default `01`/`00`). Exact bytes are device-confirmed in the manual
+  smoke; a wrong value fails safe (emitter stays off → liveness can't pass → degrade to PIN), so a
+  placeholder default is acceptable for the opt-in, manually-validated path.
+- **Real face *matching* still needs #56's model.** With the mock matcher on real Brio frames,
+  liveness (the security core) is real but identity discrimination is weak — documented honestly in
+  README + architecture.md. Real-Brio capture/photo-rejection is a documented manual host smoke, never
+  CI (hardware never runs in CI/Azure).
+- **No `Cargo.lock` churn:** mug gained zero deps, tess-cli gained zero deps. `cargo deny check` and
+  `cargo vet --locked` (186 exempted) stay green. fmt/clippy(`-D warnings`)/check/test(workspace)/
+  release build all green; sim suites compile (`--no-run`) — run in CI, not on host.
