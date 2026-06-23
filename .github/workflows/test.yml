@@ -26,6 +26,8 @@ jobs:
           #   build-essential/pkg-config/libclang-dev/libtss2-dev — C + bindgen
           #     toolchain and tpm2-tss libs the tss-esapi FFI links against (Phase 1).
           #   swtpm/swtpm-tools — software-TPM substrate CI tests run against (no hardware).
+          #   tpm2-tools — `tpm2_dictionarylockout` for the privileged DA-lockout reset the
+          #     hard-lockout recovery tests exercise (Phase 1 #16); runtime dep for `tess recover`.
           #   dbus-x11/gnome-keyring — session bus + keyring daemon for Secret
           #     Service tests (Phase 2).
           #   python3-dbusmock — mocks fprintd over D-Bus for headless verify tests (Phase 2).
@@ -34,6 +36,7 @@ jobs:
             build-essential pkg-config libclang-dev \
             libtss2-dev \
             swtpm swtpm-tools \
+            tpm2-tools \
             dbus-x11 gnome-keyring \
             python3-dbusmock \
             libpam0g-dev

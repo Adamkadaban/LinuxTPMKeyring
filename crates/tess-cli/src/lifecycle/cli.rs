@@ -58,13 +58,28 @@ pub fn run_recover(reseal_flag: bool, pin: Option<String>) -> Result<()> {
         );
         recovery::decode(&entered).context("parse the recovery secret")?
     };
+
+    // If the TPM is hard-locked, clear it with the recovery secret first so the PIN-unseal path (and
+    // any `--reseal` below) works again. A failure here is surfaced but does not block keyring
+    // recovery, which is TPM-independent.
+    let tcti = tcti::from_env();
+    match super::reset_hard_lockout(&tcti, &recovery_secret) {
+        Ok(true) => println!(
+            "TPM was hard-locked; reset the dictionary-attack lockout with the recovery secret."
+        ),
+        Ok(false) => {}
+        Err(e) => eprintln!(
+            "warning: could not check or reset the TPM lockout ({e:#}); continuing with recovery"
+        ),
+    }
+
     let keyring = SecretServiceBackend::connect().context("connect to the Secret Service")?;
     recover(&keyring, &paths, &recovery_secret)?;
     println!("Keyring access restored via the recovery secret.");
 
     if reseal_flag {
         let new_pin = pin_or_prompt(pin, "New PIN to re-seal the keyring key under: ")?;
-        let mut sealer = TpmSealer::open(&tcti::from_env()).context("open the TPM")?;
+        let mut sealer = TpmSealer::open(&tcti).context("open the TPM")?;
         reseal(&mut sealer, &paths, &recovery_secret, &new_pin)?;
         println!(
             "Re-sealed the keyring key under the new PIN; the normal PIN-unlock path is restored."
@@ -78,14 +93,44 @@ pub fn run_unenroll(pin: Option<String>) -> Result<()> {
     let paths = Paths::for_user().context("resolve tess data directory")?;
     super::ensure_enrolled(&paths)?;
     let pin = pin_or_prompt(pin, "PIN to unseal the keyring key: ")?;
+    let recovery_secret = prompt_optional_recovery_secret()?;
     let new_password = prompt_new_password()?;
     let mut sealer = TpmSealer::open(&tcti::from_env()).context("open the TPM")?;
     let keyring = SecretServiceBackend::connect().context("connect to the Secret Service")?;
-    unenroll(&mut sealer, &keyring, &paths, &pin, &new_password)?;
+    unenroll(
+        &mut sealer,
+        &keyring,
+        &paths,
+        &pin,
+        &new_password,
+        recovery_secret.as_ref(),
+    )?;
     println!(
         "Unenrolled. The login keyring is back on a password and the sealed blobs were removed."
     );
     Ok(())
+}
+
+/// Prompt (without echo) for the recovery secret used to release the TPM lockout hierarchy at
+/// unenroll. Optional: an empty entry skips the release (the lockout authValue stays bound, with a
+/// warning), so a user who lost the secret can still unenroll the keyring.
+fn prompt_optional_recovery_secret() -> Result<Option<SecretBytes>> {
+    let entered = Zeroizing::new(
+        rpassword::prompt_password(
+            "Recovery secret (to release the TPM lockout hierarchy; press Enter to skip): ",
+        )
+        .context("read recovery secret")?,
+    );
+    if entered.trim().is_empty() {
+        eprintln!(
+            "warning: no recovery secret entered — the TPM lockout-hierarchy authValue stays bound \
+             to tess. Re-run `tess unenroll` with the recovery secret to fully release it."
+        );
+        return Ok(None);
+    }
+    Ok(Some(
+        recovery::decode(&entered).context("parse the recovery secret")?,
+    ))
 }
 
 /// Prompt for the new keyring password twice (without echo) and confirm the two entries match.

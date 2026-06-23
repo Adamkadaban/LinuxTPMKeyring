@@ -17,7 +17,10 @@ pub use caps::{read_tpm_version, TpmVersion};
 pub use esapi::{
     create_primary, ecc_storage_primary_template, start_salted_hmac_session, Error, Result,
 };
-pub use lockout::{pin_holder_recover, read_lockout_state, LockoutState};
+pub use lockout::{
+    lockout_auth_is_set, pin_holder_recover, read_lockout_state, reset_lockout, set_lockout_auth,
+    LockoutState,
+};
 pub use seal::{generate_sealing_key, seal, unseal, SealedObject};
 
 /// Selects the TPM transport: a software TPM (swtpm) for dev and CI, or the kernel resource
@@ -103,6 +106,17 @@ impl TctiConfig {
     pub fn open_context(&self) -> Result<Context> {
         Context::new(self.tcti_name_conf()?).map_err(|e| Error::Context(e.to_string()))
     }
+
+    /// The `TPM2TOOLS_TCTI` string that points tpm2-tools at the *same* TPM tess uses: the `swtpm`
+    /// TCTI for the software emulator (matching the command/control port pair), or the `device` TCTI
+    /// for the kernel resource manager. Used by the privileged DA-lockout reset, which shells out to
+    /// `tpm2_dictionarylockout` (the pinned `tss-esapi` exposes no safe wrapper for that command).
+    pub fn tpm2_tools_tcti(&self) -> String {
+        match self {
+            Self::Swtpm { host, port } => format!("swtpm:host={host},port={port}"),
+            Self::DeviceManager { path } => format!("device:{path}"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -172,6 +186,20 @@ mod tests {
             path: "/dev/tpmrm0".to_string(),
         };
         assert!(cfg.swtpm_socket_addr().is_none());
+    }
+
+    #[test]
+    fn tpm2_tools_tcti_matches_transport() {
+        let swtpm = TctiConfig::Swtpm {
+            host: "127.0.0.1".to_string(),
+            port: 2321,
+        };
+        assert_eq!(swtpm.tpm2_tools_tcti(), "swtpm:host=127.0.0.1,port=2321");
+
+        let device = TctiConfig::DeviceManager {
+            path: "/dev/tpmrm0".to_string(),
+        };
+        assert_eq!(device.tpm2_tools_tcti(), "device:/dev/tpmrm0");
     }
 
     /// Phase 0 reachability smoke test: bring up swtpm via `testing/swtpm/run.sh`, confirm the

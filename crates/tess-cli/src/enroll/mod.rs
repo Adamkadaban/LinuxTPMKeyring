@@ -41,6 +41,10 @@ pub struct Paths {
     pub metadata: PathBuf,
     /// Recovery blob (`recovery::RecoveryBlob`).
     pub recovery: PathBuf,
+    /// Marker (empty file): present iff tess bound the TPM lockout-hierarchy authValue at enroll, so
+    /// unenroll knows it owns the auth and may safely release it. Absent on a machine where enroll
+    /// skipped binding (a foreign lockout owner) — so unenroll never authorizes a wrong reset there.
+    pub lockout_owned: PathBuf,
 }
 
 impl Paths {
@@ -51,6 +55,7 @@ impl Paths {
         Ok(Self {
             metadata: dir.join("metadata.json"),
             recovery: dir.join("recovery.json"),
+            lockout_owned: dir.join("lockout-owned"),
         })
     }
 
@@ -91,6 +96,9 @@ impl std::fmt::Debug for EnrollOutcome {
 struct Tx {
     recovery_written: bool,
     metadata_written: bool,
+    /// `Some(derived_auth)` once enrollment changed the TPM lockout authValue from empty to the
+    /// recovery-derived value; rollback restores it to empty using that same value.
+    lockout_auth: Option<SecretBytes>,
     /// `Some` once the keyring credential has actually been changed to this key; rollback rekeys it
     /// back to the original credential. `None` means the keyring was never touched.
     new_key: Option<SecretBytes>,
@@ -113,12 +121,35 @@ impl Tx {
     /// once it is safely back on `old` are the on-disk blobs removed. The three outcomes
     /// ([`Rollback`]) let the caller tell a true lockout risk ([`Rollback::RestoreFailed`]) apart
     /// from a benign leftover-file error ([`Rollback::CleanupFailed`]).
-    fn rollback(&self, keyring: &dyn KeyringBackend, paths: &Paths, old: &SecretBytes) -> Rollback {
+    fn rollback<S: KeySealer>(
+        &self,
+        sealer: &mut S,
+        keyring: &dyn KeyringBackend,
+        paths: &Paths,
+        old: &SecretBytes,
+    ) -> Rollback {
         if let Some(new_key) = &self.new_key {
             if let Err(e) = keyring.rekey(new_key, old) {
                 return Rollback::RestoreFailed(anyhow::Error::new(e).context(
                     "could not restore the original keyring credential after a failed enrollment",
                 ));
+            }
+        }
+        // Restore the TPM lockout authValue to empty (the stock state for a TPM tess just bound).
+        // Authorized by the recovery-derived value we set, so it cannot strand anyone; a failure
+        // here leaves only a tess-owned lockout authValue, recoverable with the recovery secret, so
+        // it is logged rather than escalated to a keyring-lockout outcome.
+        if let Some(derived) = &self.lockout_auth {
+            if let Err(e) = sealer.set_lockout_auth(derived, &SecretBytes::new(Vec::new())) {
+                eprintln!(
+                    "warning: could not restore the TPM lockout authValue to empty during rollback \
+                     ({e:#}); it remains bound to the recovery secret"
+                );
+            } else if let Err(e) = remove_file(&paths.lockout_owned) {
+                // Auth is back to empty, so the ownership marker must not linger.
+                eprintln!(
+                    "warning: could not remove the lockout-ownership marker during rollback ({e:#})"
+                );
             }
         }
         // The keyring is safe (on `old`, or never changed). Removing the orphaned blobs is
@@ -204,7 +235,7 @@ pub fn enroll<S: KeySealer>(
         Ok(()) => Ok(EnrollOutcome {
             recovery_secret_display: display,
         }),
-        Err(err) => match tx.rollback(keyring, paths, old) {
+        Err(err) => match tx.rollback(sealer, keyring, paths, old) {
             Rollback::Restored => {
                 Err(err.context("enrollment failed and was rolled back to the original keyring"))
             }
@@ -275,6 +306,33 @@ fn commit<S: KeySealer>(
     tess_tpm::persist::save(&metadata, &paths.metadata).context("persist the sealed metadata")?;
     tx.metadata_written = true;
 
+    // Step 4.5: bind the TPM lockout hierarchy to the recovery secret so a future hard lockout is
+    // resettable by the recovery-secret holder (the privileged DA reset). Skipped — with a warning,
+    // not an error — when the lockout hierarchy already carries an authValue tess did not set, so a
+    // managed machine still enrolls (only the privileged reset is unavailable there).
+    if sealer
+        .lockout_auth_is_set()
+        .context("read the TPM lockout-auth state before binding it")?
+    {
+        eprintln!(
+            "warning: the TPM lockout hierarchy already has an authValue tess did not set; not \
+             binding it. Privileged dictionary-attack reset via the recovery secret is unavailable \
+             on this machine."
+        );
+    } else {
+        let lockout_auth = recovery::derive_lockout_auth(recovery_secret)
+            .context("derive the lockout authValue from the recovery secret")?;
+        sealer
+            .set_lockout_auth(&SecretBytes::new(Vec::new()), &lockout_auth)
+            .context("bind the TPM lockout hierarchy to the recovery secret")?;
+        tx.lockout_auth = Some(lockout_auth);
+        // Record that tess (not a foreign owner) bound the lockout auth, so unenroll knows it may
+        // safely release it. Durable (fsync) so a crash after enroll can't lose the marker while the
+        // TPM authValue stays set. Written after the bind so the marker never claims absent ownership.
+        recovery::write_durable_marker(&paths.lockout_owned)
+            .context("write the lockout-ownership marker")?;
+    }
+
     // Step 5: rekey in place (destructive). The old credential was already proven to open the
     // keyring in `enroll` before any blob was written.
     keyring
@@ -311,6 +369,37 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use tess_core::{Error, Result as CoreResult};
+
+    /// A `KeySealer` that performs no TPM work, for the rollback-state-machine unit tests (which
+    /// never exercise sealing). `set_lockout_auth` is a no-op so a rollback that restores the
+    /// lockout authValue stays exercisable without a TPM.
+    struct NoopSealer;
+
+    impl sealer::KeySealer for NoopSealer {
+        fn generate_key(&mut self) -> Result<SecretBytes> {
+            unreachable!("rollback tests never generate a key")
+        }
+        fn seal(
+            &mut self,
+            _pin: &SecretBytes,
+            _key: &SecretBytes,
+        ) -> Result<tess_tpm::SealedObject> {
+            unreachable!("rollback tests never seal")
+        }
+        fn unseal(
+            &mut self,
+            _sealed: &tess_tpm::SealedObject,
+            _pin: &SecretBytes,
+        ) -> Result<SecretBytes> {
+            unreachable!("rollback tests never unseal")
+        }
+        fn lockout_auth_is_set(&mut self) -> Result<bool> {
+            Ok(false)
+        }
+        fn set_lockout_auth(&mut self, _current: &SecretBytes, _new: &SecretBytes) -> Result<()> {
+            Ok(())
+        }
+    }
 
     /// A minimal in-memory keyring for unit-testing the rollback state machine without a daemon.
     struct MockKeyring {
@@ -356,6 +445,7 @@ mod tests {
         Paths {
             metadata: dir.join("metadata.json"),
             recovery: dir.join("recovery.json"),
+            lockout_owned: dir.join("lockout-owned"),
         }
     }
 
@@ -400,10 +490,16 @@ mod tests {
         let tx = Tx {
             recovery_written: true,
             metadata_written: true,
+            lockout_auth: None,
             new_key: None,
         };
         assert!(matches!(
-            tx.rollback(&keyring, &p, &SecretBytes::new(b"old".to_vec())),
+            tx.rollback(
+                &mut NoopSealer,
+                &keyring,
+                &p,
+                &SecretBytes::new(b"old".to_vec())
+            ),
             Rollback::Restored
         ));
 
@@ -427,10 +523,16 @@ mod tests {
         let tx = Tx {
             recovery_written: true,
             metadata_written: true,
+            lockout_auth: None,
             new_key: Some(SecretBytes::new(b"new".to_vec())),
         };
         assert!(matches!(
-            tx.rollback(&keyring, &p, &SecretBytes::new(b"old".to_vec())),
+            tx.rollback(
+                &mut NoopSealer,
+                &keyring,
+                &p,
+                &SecretBytes::new(b"old".to_vec())
+            ),
             Rollback::Restored
         ));
 
@@ -460,9 +562,15 @@ mod tests {
         let tx = Tx {
             recovery_written: true,
             metadata_written: true,
+            lockout_auth: None,
             new_key: Some(SecretBytes::new(b"new".to_vec())),
         };
-        let outcome = tx.rollback(&keyring, &p, &SecretBytes::new(b"old".to_vec()));
+        let outcome = tx.rollback(
+            &mut NoopSealer,
+            &keyring,
+            &p,
+            &SecretBytes::new(b"old".to_vec()),
+        );
 
         let Rollback::RestoreFailed(err) = outcome else {
             panic!("expected RestoreFailed");
@@ -488,9 +596,15 @@ mod tests {
         let tx = Tx {
             recovery_written: true,
             metadata_written: true,
+            lockout_auth: None,
             new_key: Some(SecretBytes::new(b"new".to_vec())),
         };
-        let outcome = tx.rollback(&keyring, &p, &SecretBytes::new(b"old".to_vec()));
+        let outcome = tx.rollback(
+            &mut NoopSealer,
+            &keyring,
+            &p,
+            &SecretBytes::new(b"old".to_vec()),
+        );
 
         let Rollback::CleanupFailed(err) = outcome else {
             panic!("expected CleanupFailed");

@@ -697,3 +697,28 @@ Gotchas worth remembering:
   ruleset can't enumerate per-user paths, and they're already inert without TPM+PIN / recovery
   secret). Shipped to `/usr/share/tess`, never `/etc/audit/rules.d` — opt-in only; root can disable
   auditd, so it's forensic-only. Framing duplicated in the file header, `threat-model.md`, README.
+
+## 2026-06-22 — privileged DA-lockout reset bound to the recovery secret (issue #16)
+
+**Resolution:** lockout authValue = `HKDF-SHA256(R, salt="", info="tess-lockout-auth-v1")` set via the
+safe `Context::hierarchy_change_auth(AuthHandle::Lockout, …)` under the salted-HMAC/param-enc session;
+reset shells out to `tpm2_dictionarylockout --clear-lockout --auth file:-`. `crates/tess-tpm/src/lockout.rs:204` (reset_lockout) · `set_lockout_auth:129` · #16
+
+- **tpm2-tools auth via stdin, not argv.** `--auth file:-` reads the **raw** authValue bytes from
+  stdin, which exactly match the raw `TPM2B_AUTH` set by `hierarchy_change_auth` (no `hex:`/`str:`
+  needed). Feeding it on stdin keeps the secret off `/proc/<pid>/cmdline`. `TPM2TOOLS_TCTI` (env, not
+  secret) points tpm2-tools at the same TPM: `swtpm:host=…,port=…` in tests, `device:/dev/tpmrm0` in
+  prod (`TctiConfig::tpm2_tools_tcti`). Exit 0 = success; wrong auth → non-zero (saw exit 3, rc 0x98e).
+- **swtpm is single-client; drop the ESAPI `Context` before shelling out.** A held tss-esapi
+  connection blocks a second client — the `tpm2_dictionarylockout` subprocess hangs until the context
+  is dropped. swtpm does **not** exit on client disconnect (no `--terminate`), so the sim test closes
+  the context (inner scope), runs the reset, then reopens + re-derives the deterministic primary.
+- **A wrong lockout-auth attempt self-locks the lockout hierarchy** for `lockoutRecovery` (1000s on
+  swtpm) and returns `TPM_RC_LOCKOUT` (0x921) — fine for the "wrong secret fails" test (each test uses
+  its own swtpm). Hammering the *PIN* (object userAuth) trips the DA counter but does **not** lock the
+  lockout hierarchy, so the correct-auth reset still works after a PIN-hammer hard lockout.
+- **Detect a pre-existing lockout owner without spending a DA attempt:** read `TPMA_PERMANENT`
+  (`PropertyTag::Permanent`) and test the `lockoutAuthSet` bit (0x4) — a read, not a trial auth. Enroll
+  skips binding (warns) when it's already set; unenroll only clears when it owns it.
+- tpm2-tools is now a CI system dep (`.github/workflows/test.yml`) and a documented runtime dep for
+  the hard-lockout recovery path. Supersedes ADR-0008 → ADR-0011.

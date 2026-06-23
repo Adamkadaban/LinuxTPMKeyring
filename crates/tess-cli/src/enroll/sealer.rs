@@ -7,7 +7,10 @@
 
 use anyhow::{Context as _, Result};
 use tess_core::SecretBytes;
-use tess_tpm::{create_primary, generate_sealing_key, seal, unseal, SealedObject, TctiConfig};
+use tess_tpm::{
+    create_primary, generate_sealing_key, lockout_auth_is_set, seal, set_lockout_auth, unseal,
+    SealedObject, TctiConfig,
+};
 use tss_esapi::handles::KeyHandle;
 use tss_esapi::Context;
 
@@ -20,6 +23,11 @@ pub trait KeySealer {
     fn seal(&mut self, pin: &SecretBytes, key: &SecretBytes) -> Result<SealedObject>;
     /// Unseal a previously sealed object with `pin`, recovering the key.
     fn unseal(&mut self, sealed: &SealedObject, pin: &SecretBytes) -> Result<SecretBytes>;
+    /// Whether the TPM lockout hierarchy already carries an authValue (someone else owns it).
+    fn lockout_auth_is_set(&mut self) -> Result<bool>;
+    /// Change the TPM lockout-hierarchy authValue from `current` to `new` (empty `SecretBytes` =
+    /// the empty authValue). Enrollment sets `empty -> derived`; unenroll restores `derived -> empty`.
+    fn set_lockout_auth(&mut self, current: &SecretBytes, new: &SecretBytes) -> Result<()>;
 }
 
 /// Production [`KeySealer`] over a live TPM (swtpm in tests, `/dev/tpmrm0` otherwise).
@@ -60,5 +68,14 @@ impl KeySealer for TpmSealer {
 
     fn unseal(&mut self, sealed: &SealedObject, pin: &SecretBytes) -> Result<SecretBytes> {
         unseal(&mut self.context, self.primary, sealed, pin).context("unseal key with PIN")
+    }
+
+    fn lockout_auth_is_set(&mut self) -> Result<bool> {
+        lockout_auth_is_set(&mut self.context).context("read TPM lockout-auth state")
+    }
+
+    fn set_lockout_auth(&mut self, current: &SecretBytes, new: &SecretBytes) -> Result<()> {
+        set_lockout_auth(&mut self.context, self.primary, current, new)
+            .context("set TPM lockout-hierarchy authValue")
     }
 }
