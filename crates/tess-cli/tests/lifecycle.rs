@@ -9,19 +9,18 @@
 mod common;
 
 use std::collections::HashMap;
-use std::ffi::OsString;
-use std::sync::Mutex;
 
 use common::{GnomeKeyring, Swtpm};
-use secret_service::blocking::SecretService;
 use secret_service::EncryptionType;
+use secret_service::blocking::SecretService;
 use tess_core::{KeyringBackend, SecretBytes};
 use tess_keyring::SecretServiceBackend;
 use tess_tpm::TctiConfig;
 
 use tess_cli::enroll::sealer::{KeySealer, TpmSealer};
-use tess_cli::enroll::{enroll, Paths};
+use tess_cli::enroll::{Paths, enroll};
 use tess_cli::lifecycle::{gather_status, recover, reseal, unenroll, unlock};
+use tess_testenv::EnvGuard;
 
 const OLD_PASSWORD: &[u8] = b"old-keyring-password";
 const NEW_PASSWORD: &[u8] = b"restored-keyring-password";
@@ -35,29 +34,6 @@ const ITEMS: [(&str, &[u8]); 3] = [
 
 // `secret-service`'s client reads the bus address from `DBUS_SESSION_BUS_ADDRESS`, a process-global.
 // Serialize the suite so each test owns the env for its whole body.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-struct EnvGuard {
-    key: &'static str,
-    prev: Option<OsString>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: &str) -> Self {
-        let prev = std::env::var_os(key);
-        std::env::set_var(key, value);
-        Self { key, prev }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match &self.prev {
-            Some(v) => std::env::set_var(self.key, v),
-            None => std::env::remove_var(self.key),
-        }
-    }
-}
 
 fn login_collection_path(service: &SecretService<'_>) -> String {
     service
@@ -114,7 +90,7 @@ fn lock_login(service: &SecretService<'_>, collection_path: &str) {
 /// Hold the env lock, bring up swtpm + a throwaway keyring seeded with [`ITEMS`], and run `body`.
 /// Skips cleanly (no panic) when swtpm or the keyring daemons are unavailable.
 fn with_fixture(body: impl FnOnce(&SecretService<'_>, &str, &str, &TctiConfig)) {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _lock = tess_testenv::env_lock();
     let Some((_swtpm, tcti)) = Swtpm::start() else {
         return;
     };

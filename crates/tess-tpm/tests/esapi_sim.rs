@@ -9,7 +9,7 @@ mod common;
 use common::Swtpm;
 use tess_core::SecretBytes;
 use tess_tpm::{
-    create_primary, generate_sealing_key, seal, start_salted_hmac_session, unseal, Error,
+    Error, create_primary, generate_sealing_key, seal, start_salted_hmac_session, unseal,
 };
 
 #[test]

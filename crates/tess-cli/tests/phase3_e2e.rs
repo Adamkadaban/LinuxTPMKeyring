@@ -18,18 +18,17 @@
 mod common;
 
 use std::collections::HashMap;
-use std::ffi::OsString;
-use std::sync::Mutex;
 
-use common::{run_pam_helper, GnomeKeyring, Swtpm};
-use secret_service::blocking::SecretService;
+use common::{GnomeKeyring, Swtpm, run_pam_helper};
 use secret_service::EncryptionType;
+use secret_service::blocking::SecretService;
 use tess_core::{KeyringBackend, SecretBytes};
 use tess_keyring::SecretServiceBackend;
 
 use tess_cli::enroll::sealer::TpmSealer;
-use tess_cli::enroll::{enroll, recovery, Paths};
+use tess_cli::enroll::{Paths, enroll, recovery};
 use tess_cli::lifecycle::{recover, reseal, unenroll};
+use tess_testenv::EnvGuard;
 
 const OLD_PASSWORD: &[u8] = b"old-keyring-password";
 const RESTORED_PASSWORD: &[u8] = b"restored-keyring-password";
@@ -50,29 +49,6 @@ const ITEMS: [(&str, &[u8]); 5] = [
 ];
 
 // `secret-service`'s client reads the bus address from `DBUS_SESSION_BUS_ADDRESS`, a process-global.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-struct EnvGuard {
-    key: &'static str,
-    prev: Option<OsString>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: &str) -> Self {
-        let prev = std::env::var_os(key);
-        std::env::set_var(key, value);
-        Self { key, prev }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match &self.prev {
-            Some(v) => std::env::set_var(self.key, v),
-            None => std::env::remove_var(self.key),
-        }
-    }
-}
 
 fn login_collection_path(service: &SecretService<'_>) -> String {
     service
@@ -149,7 +125,7 @@ fn lock_login(service: &SecretService<'_>, collection_path: &str) {
 /// daemons are unavailable.
 #[test]
 fn full_phase3_cycle_preserves_all_items() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _lock = tess_testenv::env_lock();
 
     let Some((swtpm, tcti)) = Swtpm::start() else {
         return;

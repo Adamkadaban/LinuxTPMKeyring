@@ -14,8 +14,8 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use nix::errno::Errno;
-use nix::sys::memfd::{memfd_create, MemFdCreateFlag};
-use nix::sys::signal::{kill, Signal};
+use nix::sys::memfd::{MFdFlags, memfd_create};
+use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
 /// Upper bound on the secret handed to a child via [`run_with_input`]. The PIN is far smaller; the
@@ -112,7 +112,7 @@ pub fn run_with_input(
             "helper input exceeds the maximum length",
         ));
     }
-    let mut backing: File = memfd_create(c"tess-pam-input", MemFdCreateFlag::MFD_CLOEXEC)
+    let mut backing: File = memfd_create(c"tess-pam-input", MFdFlags::MFD_CLOEXEC)
         .map(File::from)
         .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
     backing.write_all(input)?;

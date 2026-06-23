@@ -1,14 +1,14 @@
 //! Wiring for the lifecycle subcommands: gather PINs / passwords / the recovery secret (without
 //! echo), build the real TPM and Secret Service collaborators, and run the core flows in [`super`].
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use tess_core::{KeyringBackend, SecretBytes};
 use tess_keyring::SecretServiceBackend;
 use zeroize::Zeroizing;
 
+use crate::enroll::Paths;
 use crate::enroll::recovery;
 use crate::enroll::sealer::TpmSealer;
-use crate::enroll::Paths;
 use crate::tcti;
 
 use super::{

@@ -4,7 +4,7 @@
 //! camera, no model, and no `unsafe`.
 
 use mug::camera::VirtualIrDevice;
-use mug::liveness::{analyze, synth, LivenessConfig};
+use mug::liveness::{LivenessConfig, analyze, synth};
 use mug::{FramePair, IrEmitter, IrSource};
 
 const W: u32 = 96;

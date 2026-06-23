@@ -279,15 +279,17 @@ fn session_deadline(spec: &HelperSpec) -> std::time::Duration {
 /// NUL-terminated C string that stays valid for the duration of the call — the contract PAM
 /// guarantees for the arguments passed to `pam_sm_*`.
 unsafe fn module_args(argc: c_int, argv: *const *const c_char) -> Vec<String> {
-    if argv.is_null() || argc <= 0 {
-        return Vec::new();
+    unsafe {
+        if argv.is_null() || argc <= 0 {
+            return Vec::new();
+        }
+        let raw = std::slice::from_raw_parts(argv, argc as usize);
+        raw.iter()
+            .filter(|entry| !entry.is_null())
+            .filter_map(|&entry| CStr::from_ptr(entry).to_str().ok())
+            .map(str::to_owned)
+            .collect()
     }
-    let raw = std::slice::from_raw_parts(argv, argc as usize);
-    raw.iter()
-        .filter(|entry| !entry.is_null())
-        .filter_map(|&entry| CStr::from_ptr(entry).to_str().ok())
-        .map(str::to_owned)
-        .collect()
 }
 
 #[unsafe(no_mangle)]

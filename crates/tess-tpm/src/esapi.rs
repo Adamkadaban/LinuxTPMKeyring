@@ -2,6 +2,7 @@
 //! creation under the owner hierarchy, and the salted HMAC + parameter-encryption session that
 //! protects the PIN authValue and unsealed key against TPM bus interposers.
 
+use tss_esapi::Context;
 use tss_esapi::attributes::session::{SessionAttributes, SessionAttributesMask};
 use tss_esapi::attributes::{ObjectAttributesBuilder, SessionAttributesBuilder};
 use tss_esapi::constants::SessionType;
@@ -14,7 +15,6 @@ use tss_esapi::structures::{
     CreatePrimaryKeyResult, EccPoint, Public, PublicBuilder, PublicEccParametersBuilder,
     SymmetricDefinition, SymmetricDefinitionObject,
 };
-use tss_esapi::Context;
 
 /// Errors from the `tess-tpm` ESAPI layer. Wrap the underlying `tss-esapi` error as a string so the
 /// detail is preserved without leaking the crate's types across the public boundary. At the crate

@@ -15,7 +15,7 @@ pub mod ffi;
 pub mod gate;
 pub mod helper;
 
-pub use gate::{classify, decide, should_abort, GateEnv, GatePhase, GateResult, HelperSpec};
+pub use gate::{GateEnv, GatePhase, GateResult, HelperSpec, classify, decide, should_abort};
 pub use helper::Watchdog;
 
 /// PAM return codes used by this module (subset).

@@ -25,6 +25,7 @@ secret-service = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
+tess-testenv.workspace = true
 
 [lints]
 workspace = true

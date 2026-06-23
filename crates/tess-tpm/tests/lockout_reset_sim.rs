@@ -12,8 +12,8 @@ use std::process::Command;
 use common::Swtpm;
 use tess_core::SecretBytes;
 use tess_tpm::{
-    create_primary, generate_sealing_key, lockout_auth_is_set, read_lockout_state, reset_lockout,
-    seal, set_lockout_auth, unseal, Error, SealedObject,
+    Error, SealedObject, create_primary, generate_sealing_key, lockout_auth_is_set,
+    read_lockout_state, reset_lockout, seal, set_lockout_auth, unseal,
 };
 use tss_esapi::Context;
 

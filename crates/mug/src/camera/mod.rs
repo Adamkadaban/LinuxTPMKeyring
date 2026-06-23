@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use crate::error::{MugError, Result};
 
 pub use hw::{
-    find_brio_ir_node, BrioEmitter, V4l2IrDevice, BRIO_EMITTER_SELECTOR, BRIO_EMITTER_UNIT,
+    BRIO_EMITTER_SELECTOR, BRIO_EMITTER_UNIT, BrioEmitter, V4l2IrDevice, find_brio_ir_node,
 };
 
 /// Brio USB vendor id (Logitech).

@@ -20,9 +20,9 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{anyhow, ensure, Context, Result};
-use base64::engine::general_purpose::STANDARD;
+use anyhow::{Context, Result, anyhow, ensure};
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use chacha20poly1305::aead::Aead;
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce};
 use hkdf::Hkdf;
@@ -224,11 +224,10 @@ fn decode_exact(value: &str, expected: usize, field: &str) -> Result<Vec<u8>> {
 /// rename), mode `0600` on Unix. The blob holds no plaintext secret, but it is not world-business.
 pub fn save_blob(blob: &RecoveryBlob, path: &Path) -> Result<()> {
     let json = serde_json::to_vec_pretty(blob).context("serialize recovery blob")?;
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create {}", parent.display()))?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     let tmp = temp_sibling(path);
     write_private(&tmp, &json).with_context(|| format!("write {}", tmp.display()))?;
@@ -247,11 +246,10 @@ pub fn save_blob(blob: &RecoveryBlob, path: &Path) -> Result<()> {
 /// its presence is meaningful — but it must survive power loss to stay consistent with the TPM
 /// lockout authValue whose tess-ownership it records.
 pub(crate) fn write_durable_marker(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create {}", parent.display()))?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     let tmp = temp_sibling(path);
     write_private(&tmp, &[]).with_context(|| format!("write {}", tmp.display()))?;
@@ -268,11 +266,10 @@ pub(crate) fn write_durable_marker(path: &Path) -> Result<()> {
 /// authValue (`A_face`): unlike the recovery blob it is the raw credential, so it never reaches disk
 /// in any form other than this private file.
 pub(crate) fn write_secret_file(path: &Path, secret: &SecretBytes) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create {}", parent.display()))?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     let tmp = temp_sibling(path);
     write_private(&tmp, secret.as_slice()).with_context(|| format!("write {}", tmp.display()))?;

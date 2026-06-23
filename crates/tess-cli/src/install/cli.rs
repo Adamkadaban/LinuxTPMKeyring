@@ -3,9 +3,9 @@
 
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 
-use super::{config, detect_module_dir, install, uninstall, InstallPlan, DEFAULT_SERVICE_FILE};
+use super::{DEFAULT_SERVICE_FILE, InstallPlan, config, detect_module_dir, install, uninstall};
 
 /// Parsed `install` subcommand options.
 #[derive(Debug, Clone, Default)]

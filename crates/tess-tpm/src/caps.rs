@@ -1,8 +1,8 @@
 //! Read-only TPM identity properties for diagnostics (`tess doctor`). No authorization, no session,
 //! no secret material — just `TPM2_GetCapability` on fixed-property tags.
 
-use tss_esapi::constants::PropertyTag;
 use tss_esapi::Context;
+use tss_esapi::constants::PropertyTag;
 
 use crate::esapi::Result;
 use crate::lockout::read_property;

@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use tess_tpm::{
-    persist, read_lockout_state, read_tpm_version, LockoutState, TctiConfig, TpmVersion,
+    LockoutState, TctiConfig, TpmVersion, persist, read_lockout_state, read_tpm_version,
 };
 
 use crate::enroll;

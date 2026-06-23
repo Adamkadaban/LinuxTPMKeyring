@@ -8,14 +8,14 @@
 use std::io::Read;
 use std::path::Path;
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use tess_core::{Error as CoreError, KeyringBackend, SecretBytes};
 use tess_fprint::FprintClient;
 use tess_keyring::SecretServiceBackend;
-use tess_tpm::{persist, TctiConfig};
+use tess_tpm::{TctiConfig, persist};
 
-use crate::enroll::sealer::{KeySealer, TpmSealer};
 use crate::enroll::Paths;
+use crate::enroll::sealer::{KeySealer, TpmSealer};
 
 /// Upper bound on the PIN read from stdin, so a misbehaving caller cannot make the helper read an
 /// unbounded amount. A real PIN is far smaller; the TPM authValue layer rejects anything over its
@@ -216,10 +216,10 @@ fn fingerprint_deadline_ms() -> u64 {
 /// environment, so a caller cannot point the privileged helper at an attacker-controlled bus.
 fn connect_fprint(user: &str) -> tess_core::Result<FprintClient> {
     #[cfg(debug_assertions)]
-    if let Ok(address) = std::env::var(FPRINT_BUS_ADDRESS_ENV) {
-        if !address.is_empty() {
-            return FprintClient::connect_address(&address, user);
-        }
+    if let Ok(address) = std::env::var(FPRINT_BUS_ADDRESS_ENV)
+        && !address.is_empty()
+    {
+        return FprintClient::connect_address(&address, user);
     }
     FprintClient::system(user)
 }

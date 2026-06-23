@@ -13,8 +13,8 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use tess_core::{Error, Metadata, Policy, Result};
 use tss_esapi::structures::{Private, Public};
 use tss_esapi::traits::{Marshall, UnMarshall};
@@ -75,11 +75,11 @@ pub fn save(metadata: &Metadata, path: &Path) -> Result<()> {
     let json = serde_json::to_vec_pretty(metadata)
         .map_err(|e| Error::Metadata(format!("serializing metadata: {e}")))?;
 
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| Error::Io(format!("creating {}: {e}", parent.display())))?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::Io(format!("creating {}: {e}", parent.display())))?;
     }
 
     // Create a brand-new temp file, retrying with a fresh unique name only on a name collision so a

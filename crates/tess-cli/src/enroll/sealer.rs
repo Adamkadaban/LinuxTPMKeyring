@@ -8,11 +8,11 @@
 use anyhow::{Context as _, Result};
 use tess_core::SecretBytes;
 use tess_tpm::{
-    create_primary, generate_sealing_key, lockout_auth_is_set, seal, set_lockout_auth, unseal,
-    SealedObject, TctiConfig,
+    SealedObject, TctiConfig, create_primary, generate_sealing_key, lockout_auth_is_set, seal,
+    set_lockout_auth, unseal,
 };
-use tss_esapi::handles::KeyHandle;
 use tss_esapi::Context;
+use tss_esapi::handles::KeyHandle;
 
 /// Seal/unseal of the keyring's random key under a PIN. The transaction generates the key, seals it,
 /// and verifies it unseals before doing anything destructive to the keyring.

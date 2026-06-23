@@ -7,18 +7,17 @@
 mod common;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use common::GnomeKeyring;
-use secret_service::blocking::SecretService;
 use secret_service::EncryptionType;
+use secret_service::blocking::SecretService;
 use tess_core::{KeyringBackend, SecretBytes};
 use tess_keyring::SecretServiceBackend;
+use tess_testenv::EnvGuard;
 
 // `secret-service`'s client reads the bus address from `DBUS_SESSION_BUS_ADDRESS`, a process-global.
 // Serialize the daemon tests so each owns the env for its whole body and they never see each other's
 // private bus.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn login_collection_path(service: &SecretService<'_>) -> String {
     service
@@ -41,13 +40,13 @@ fn deterministic_new_key() -> SecretBytes {
 
 #[test]
 fn rekey_preserves_items_and_lock_transitions() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = tess_testenv::env_lock();
 
     let old = SecretBytes::new(b"old-keyring-password".to_vec());
     let Some(keyring) = GnomeKeyring::start(old.as_slice()) else {
         return;
     };
-    std::env::set_var("DBUS_SESSION_BUS_ADDRESS", keyring.address());
+    let _bus = EnvGuard::set("DBUS_SESSION_BUS_ADDRESS", keyring.address());
 
     let service = SecretService::connect(EncryptionType::Dh).expect("connect Secret Service");
     let collection_path = login_collection_path(&service);
@@ -110,13 +109,13 @@ fn rekey_preserves_items_and_lock_transitions() {
 
 #[test]
 fn unlock_with_wrong_secret_fails() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = tess_testenv::env_lock();
 
     let correct = SecretBytes::new(b"correct-keyring-password".to_vec());
     let Some(keyring) = GnomeKeyring::start(correct.as_slice()) else {
         return;
     };
-    std::env::set_var("DBUS_SESSION_BUS_ADDRESS", keyring.address());
+    let _bus = EnvGuard::set("DBUS_SESSION_BUS_ADDRESS", keyring.address());
 
     let service = SecretService::connect(EncryptionType::Dh).expect("connect Secret Service");
     let collection_path = login_collection_path(&service);

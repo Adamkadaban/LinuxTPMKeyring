@@ -4,6 +4,7 @@
 
 use getrandom::fill as getrandom_fill;
 use tess_core::SecretBytes;
+use tss_esapi::Context;
 use tss_esapi::attributes::ObjectAttributesBuilder;
 use tss_esapi::constants::{SessionType, Tss2ResponseCodeKind};
 use tss_esapi::handles::{KeyHandle, ObjectHandle, SessionHandle};
@@ -13,9 +14,8 @@ use tss_esapi::structures::{
     Auth, Digest, KeyedHashScheme, Private, Public, PublicBuilder, PublicKeyedHashParameters,
     SensitiveData, SymmetricDefinition,
 };
-use tss_esapi::Context;
 
-use crate::esapi::{encrypted_session_attributes, start_salted_hmac_session, Error, Result};
+use crate::esapi::{Error, Result, encrypted_session_attributes, start_salted_hmac_session};
 
 /// Bytes of the random sealing key and the SHA-256 name hash that bounds the PIN authValue length.
 const SEALED_KEY_LEN: usize = 32;

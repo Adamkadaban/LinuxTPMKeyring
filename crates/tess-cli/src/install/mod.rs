@@ -24,7 +24,7 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 
 /// Default Debian 13 session stack tess wires into. Other login services include this file.
 pub const DEFAULT_SERVICE_FILE: &str = "/etc/pam.d/common-session";
@@ -249,13 +249,13 @@ fn install_module(plan: &InstallPlan) -> Result<()> {
     // `--module-dir` is user-controllable and this runs as root: refuse to write through a symlink
     // planted at the destination, then install atomically via an unpredictable temp + rename so a
     // copy is never partially visible and never follows a pre-created path.
-    if let Ok(meta) = fs::symlink_metadata(&dst) {
-        if meta.file_type().is_symlink() {
-            bail!(
-                "refusing to install the module over a symlink at {}",
-                dst.display()
-            );
-        }
+    if let Ok(meta) = fs::symlink_metadata(&dst)
+        && meta.file_type().is_symlink()
+    {
+        bail!(
+            "refusing to install the module over a symlink at {}",
+            dst.display()
+        );
     }
     let bytes = fs::read(&plan.module_src)
         .with_context(|| format!("read module source {}", plan.module_src.display()))?;

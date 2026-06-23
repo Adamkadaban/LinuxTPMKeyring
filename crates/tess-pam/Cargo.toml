@@ -21,6 +21,9 @@ nix.workspace = true
 # they are wiped from this module's memory on drop; the sealed key never enters this crate.
 zeroize.workspace = true
 
+[dev-dependencies]
+tess-testenv.workspace = true
+
 # This crate intentionally does NOT inherit the workspace `unsafe_code = "forbid"` lint. Instead
 # lib.rs sets `#![deny(unsafe_code)]` and only the `ffi` module is `#[allow(unsafe_code)]`, confining
 # unsafe to the FFI boundary.

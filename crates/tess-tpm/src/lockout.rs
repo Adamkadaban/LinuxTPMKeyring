@@ -12,14 +12,14 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use tess_core::SecretBytes;
+use tss_esapi::Context;
 use tss_esapi::constants::{CapabilityType, PropertyTag};
 use tss_esapi::handles::{AuthHandle, KeyHandle, ObjectHandle, SessionHandle};
 use tss_esapi::structures::{Auth, CapabilityData};
-use tss_esapi::Context;
 
-use crate::esapi::{start_salted_hmac_session, Error, Result};
-use crate::seal::{flush, unseal, SealedObject};
 use crate::TctiConfig;
+use crate::esapi::{Error, Result, start_salted_hmac_session};
+use crate::seal::{SealedObject, flush, unseal};
 
 /// `TPMA_PERMANENT.lockoutAuthSet` (bit 2): set once the lockout-hierarchy authValue is non-empty.
 /// Read via `TPM2_GetCapability` on `TPM2_PT_PERMANENT` — a read-only probe that, unlike trying a

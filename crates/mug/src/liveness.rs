@@ -318,7 +318,7 @@ pub mod synth {
                 refl += 70.0 * gaussian(fx - cx, fy - cy * 1.15, sigma * 0.18); // nose
                 refl -= 55.0 * gaussian(fx - cx * 0.62, fy - hf * 0.40, sigma * 0.16); // L eye
                 refl -= 55.0 * gaussian(fx - cx * 1.38, fy - hf * 0.40, sigma * 0.16); // R eye
-                                                                                       // High-frequency skin texture — the key to gradient energy / relief.
+                // High-frequency skin texture — the key to gradient energy / relief.
                 refl += rng.noise(10.0);
                 // A couple of small specular highlights (nose tip, forehead).
                 refl += 200.0 * gaussian(fx - cx, fy - cy * 1.05, sigma * 0.05);

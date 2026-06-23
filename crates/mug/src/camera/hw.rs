@@ -7,7 +7,7 @@ use std::io::Read;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
-use crate::camera::{IrEmitter, IrFrame, IrSource, BRIO_IR_HEIGHT, BRIO_IR_WIDTH};
+use crate::camera::{BRIO_IR_HEIGHT, BRIO_IR_WIDTH, IrEmitter, IrFrame, IrSource};
 use crate::error::{MugError, Result};
 use crate::sys;
 
