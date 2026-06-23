@@ -103,8 +103,8 @@ fn select_backend() -> Result<CaptureBackend> {
 /// Pure backend-selection logic, factored out of [`select_backend`] so it is unit-testable without
 /// touching the process environment or any real camera. `probe_brio` returns `Ok(())` when a usable
 /// Brio GREY node is present, `Err(MugError::NoIrNode)` when none is attached, or another error when
-/// a Brio-like node exists but can't be used (e.g. permission denied) — the last is surfaced rather
-/// than collapsed into "no camera".
+/// the probe itself failed (e.g. `/dev/v4l/by-id` unreadable, or a Brio-like node that can't be
+/// opened) — the last is surfaced rather than collapsed into "no camera".
 fn resolve_backend(
     requested: Option<&str>,
     virtual_set: bool,
@@ -135,9 +135,8 @@ fn resolve_backend(
                         VirtualIrDevice::ENV_DIR
                     )),
                     Err(e) => Err(anyhow!(
-                        "a Logitech Brio node is present but unusable ({e}); fix it or set {} for the \
-                         virtual IR substrate. The face factor is unavailable and the caller degrades \
-                         to the PIN",
+                        "the Brio IR probe failed ({e}); fix it or set {} for the virtual IR \
+                         substrate. The face factor is unavailable and the caller degrades to the PIN",
                         VirtualIrDevice::ENV_DIR
                     )),
                 }
@@ -450,7 +449,7 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(
-            err.contains("present but unusable") && err.contains("permission denied"),
+            err.contains("Brio IR probe failed") && err.contains("permission denied"),
             "unexpected message: {err}"
         );
     }
