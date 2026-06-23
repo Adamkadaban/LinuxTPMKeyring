@@ -128,10 +128,11 @@ recover immediately, run `tess recover` and enter your **recovery secret**: enro
 lockout hierarchy to a key derived from that secret, so `tess recover` can run the privileged
 `TPM2_DictionaryAttackLockReset` (via `tpm2_dictionarylockout`) to clear the counter, then restore
 keyring access. Only the recovery-secret holder can do this — a PIN-guessing attacker who trips the
-lockout cannot clear it, so anti-hammering is preserved. Given the recovery secret, `tess unenroll`
-(and `tess recover`) releases the lockout hierarchy back to its stock (empty) state; if you skip the
-recovery secret at unenroll, the authValue stays bound (a warning is printed) and a later unenroll
-with the secret releases it.
+lockout cannot clear it, so anti-hammering is preserved. `tess recover` (with the recovery secret)
+resets the DA counter and restores keyring access but keeps the authValue bound. Given the recovery
+secret, `tess unenroll` releases the lockout hierarchy back to its stock (empty) state; if you skip
+the recovery secret at unenroll, the authValue stays bound (a warning is printed) and a later
+unenroll with the secret releases it.
 
 ## Use
 
