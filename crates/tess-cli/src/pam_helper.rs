@@ -9,10 +9,17 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     // The PAM module appends `--fingerprint` / `--face` when its `fingerprint=yes` / `face=yes`
-    // arguments enable those legs. Absent both, the helper runs the PIN-only path.
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let fingerprint = args.iter().any(|arg| arg == "--fingerprint");
-    let face = args.iter().any(|arg| arg == "--face");
+    // arguments enable those legs. Absent both, the helper runs the PIN-only path. Scan argv once
+    // rather than allocating a Vec — this is the login-time path.
+    let mut fingerprint = false;
+    let mut face = false;
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--fingerprint" => fingerprint = true,
+            "--face" => face = true,
+            _ => {}
+        }
+    }
     match tess_cli::session::run_pam_helper(fingerprint, face) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

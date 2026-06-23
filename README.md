@@ -228,7 +228,10 @@ session optional pam_tess.so fingerprint=yes face=yes
 ```
 
 With `face=yes` the session helper first attempts a **bounded, liveness-gated face match**. Unlike
-the fingerprint gate, a successful face match **releases the keyring key with no password typed**:
+the fingerprint gate, a successful face match **can release the keyring key without a PIN** — when
+PAM supplies no password token (e.g. autologin, or a greeter that doesn't hand the password to the
+session) the keyring unlocks on the face match alone; when a token *is* supplied it serves as the PIN
+fallback. Mechanically:
 the same key is sealed a second time in the TPM under an independent on-disk authValue (`A_face`,
 mode 0600), and a live, matching face unseals it. Face is **host-trusted convenience, never the sole
 gate** — the PIN authValue stays the real TPM gate, and **any** face outcome (no enrollment, no

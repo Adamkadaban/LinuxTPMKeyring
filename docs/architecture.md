@@ -528,9 +528,11 @@ The module argument `face=yes` enables a **model-B** face release ahead of the P
 PIN-only** and it may be combined with `fingerprint=yes`. When enabled, the module hands the helper a
 `--face` flag and widens the watchdog deadline (`Watchdog::FACE_DEADLINE`, 9 s; with both biometrics
 the budget is the sum, the backstop for both running sequentially). Because face — unlike the
-fingerprint front gate — can release the key with **no PIN typed**, the session gate runs the helper
-even when no password was supplied: it hands an empty stdin so the face path can try while the PIN
-fallback simply finds nothing to unseal with. Inside the helper the precedence is **face → fingerprint
+fingerprint front gate — can release the key without requiring a PIN, the session gate runs the
+helper even when PAM supplies no password token: it hands an empty stdin so the face path can try
+while the PIN fallback simply finds nothing to unseal with. (This is specifically the no-token case —
+when PAM does supply a token it is passed as the PIN; the module does not suppress PAM's own
+prompting.) Inside the helper the precedence is **face → fingerprint
 (if enabled) → PIN → password fallthrough**: the helper attempts a bounded, liveness-gated
 `mug::verify`; on a pass it unseals the keyring key via the independent on-disk authValue `A_face`
 (mode 0600) and unlocks the keyring, then exits successfully with the PIN never read. On **any** face
