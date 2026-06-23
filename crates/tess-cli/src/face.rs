@@ -157,6 +157,16 @@ pub fn load_enrollment() -> Result<Option<FaceEnrollment>> {
         .map_err(|e| anyhow!("load the face enrollment for {username}: {e}"))
 }
 
+/// Whether the current user has a face template on disk, without creating/chmod-ing the store dir
+/// (so read-only status probes never mutate the filesystem). `false` when the store/username can't
+/// be resolved.
+pub fn template_present() -> bool {
+    match (enroll_store(), current_username()) {
+        (Ok(store), Ok(username)) => store.is_enrolled(&username).unwrap_or(false),
+        _ => false,
+    }
+}
+
 /// Read the face authValue (`A_face`) from disk and unseal the keyring key from the face-sealed
 /// metadata. Assumes the face gate already passed; the caller unlocks the keyring with the result.
 pub fn unseal_with_face<S: KeySealer>(sealer: &mut S, paths: &Paths) -> Result<SecretBytes> {

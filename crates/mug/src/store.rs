@@ -156,6 +156,13 @@ impl EnrollStore {
         Ok(())
     }
 
+    /// Whether `username` has an enrollment on disk, without creating or chmod-ing the store dir.
+    /// For read-only probes (e.g. status) that must not mutate the filesystem; prefer [`load`] when
+    /// the template contents are needed.
+    pub fn is_enrolled(&self, username: &str) -> Result<bool> {
+        Ok(self.user_path(username)?.is_file())
+    }
+
     /// Load a user's enrollment, or `None` if they are not enrolled.
     pub fn load(&self, username: &str) -> Result<Option<FaceEnrollment>> {
         self.ensure_dir()?;
