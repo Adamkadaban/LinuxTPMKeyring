@@ -170,7 +170,7 @@ the convenience path.
 - **real Logitech Brio** — opt-in with `MUG_IR_BACKEND=hardware` (or auto-selected when no virtual
   dir is set and a Brio GREY IR node is discoverable). It drives the by-id GREY IR node and the
   UVC extension-unit IR emitter. When no camera is present the factor reports unavailable and unlock
-  degrades to the PIN. (Identity matching uses the model-free mock by default; the real pure-Rust `tract` ONNX matcher is opt-in via the `face-model` feature + `MUG_MODEL_PATH`.) The Brio emitter SET_CUR payloads default to a starting value and
+  degrades to the PIN. (Identity matching uses the model-free mock by default; the real `tract` ONNX matcher (self-contained; build-time C toolchain) is opt-in via the `face-model` feature + `MUG_MODEL_PATH`.) The Brio emitter SET_CUR payloads default to a starting value and
   are overridable with `MUG_IR_EMITTER_ON_HEX` / `MUG_IR_EMITTER_OFF_HEX` (hex, e.g. `0x01`); a wrong
   value fails safe (the emitter stays off, liveness can't pass, the factor degrades to the PIN).
 

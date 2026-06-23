@@ -213,7 +213,8 @@ fn resize_gray(frame: &IrFrame, dst_w: usize, dst_h: usize) -> Vec<u8> {
     out
 }
 
-/// A `tract`-backed ONNX face-embedding extractor (pure-Rust inference; no native runtime).
+/// A `tract`-backed ONNX face-embedding extractor (self-contained inference; no native ONNX Runtime,
+/// though `tract` builds some SIMD kernels via `cc`, so a build-time C toolchain is required).
 ///
 /// Loads a user-supplied fixed-shape NCHW model (e.g. ArcFace/SFace) and runs it on the GREY IR
 /// crop. **No model ships with tess** — the path is supplied at runtime; when absent the caller
