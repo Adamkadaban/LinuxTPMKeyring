@@ -27,6 +27,9 @@ path = "src/pam_helper.rs"
 # survive.
 sim = []
 daemon-tests = ["dep:secret-service"]
+# Enables the real `tract` ONNX face matcher (`mug/face-model`). Off by default → the model-free
+# mock; a user-supplied model is loaded at runtime via `MUG_MODEL_PATH`/config.
+face-model = ["mug/face-model"]
 
 [dependencies]
 tess-core.workspace = true

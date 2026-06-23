@@ -167,6 +167,174 @@ impl EmbeddingExtractor for PooledExtractor {
     }
 }
 
+/// Lets a `Matcher` hold a boxed trait object, so a caller can pick the mock or a real backend at
+/// runtime behind one `Matcher<Box<dyn EmbeddingExtractor>>` type.
+impl EmbeddingExtractor for Box<dyn EmbeddingExtractor> {
+    fn dim(&self) -> usize {
+        (**self).dim()
+    }
+    fn extract(&self, frame: &IrFrame) -> Result<Embedding> {
+        (**self).extract(frame)
+    }
+}
+
+/// L2-normalize in place; returns an error if the vector has (near-)zero norm.
+#[cfg(feature = "face-model")]
+fn l2_normalize(emb: &mut [f32]) -> Result<()> {
+    let norm = emb
+        .iter()
+        .map(|v| (*v as f64) * (*v as f64))
+        .sum::<f64>()
+        .sqrt();
+    if norm <= f64::EPSILON {
+        return Err(MugError::MatcherUnavailable(
+            "model produced a zero-norm embedding".into(),
+        ));
+    }
+    for v in emb.iter_mut() {
+        *v = (*v as f64 / norm) as f32;
+    }
+    Ok(())
+}
+
+/// Nearest-neighbour resize of a GREY frame to `dst_w` x `dst_h`.
+#[cfg(feature = "face-model")]
+fn resize_gray(frame: &IrFrame, dst_w: usize, dst_h: usize) -> Vec<u8> {
+    let (sw, sh) = (frame.width() as usize, frame.height() as usize);
+    let src = frame.as_bytes();
+    let mut out = vec![0u8; dst_w * dst_h];
+    for y in 0..dst_h {
+        let sy = if dst_h == 1 { 0 } else { y * sh / dst_h };
+        for x in 0..dst_w {
+            let sx = if dst_w == 1 { 0 } else { x * sw / dst_w };
+            out[y * dst_w + x] = src[sy.min(sh - 1) * sw + sx.min(sw - 1)];
+        }
+    }
+    out
+}
+
+/// A `tract`-backed ONNX face-embedding extractor (pure-Rust inference; no native runtime).
+///
+/// Loads a user-supplied fixed-shape NCHW model (e.g. ArcFace/SFace) and runs it on the GREY IR
+/// crop. **No model ships with tess** — the path is supplied at runtime; when absent the caller
+/// uses the deterministic mock and face is a liveness-gated convenience. Pixels are mapped to
+/// `(p - 127.5) / 127.5` (the common ArcFace/SFace input scaling); a multi-channel model receives
+/// the grayscale plane replicated across channels.
+#[cfg(feature = "face-model")]
+pub struct TractExtractor {
+    model: std::sync::Arc<tract_onnx::prelude::TypedRunnableModel>,
+    channels: usize,
+    height: usize,
+    width: usize,
+    dim: usize,
+}
+
+#[cfg(feature = "face-model")]
+impl TractExtractor {
+    /// Load and optimize the ONNX model at `path`, deriving the input geometry and embedding
+    /// dimensionality from the model's own input/output facts (which must be fully concrete).
+    pub fn from_path(path: &str) -> Result<Self> {
+        use tract_onnx::prelude::*;
+
+        let typed = tract_onnx::onnx()
+            .model_for_path(path)
+            .map_err(|e| MugError::MatcherUnavailable(format!("load ONNX model {path}: {e}")))?
+            .into_optimized()
+            .map_err(|e| {
+                MugError::MatcherUnavailable(format!("optimize ONNX model {path}: {e}"))
+            })?;
+
+        let input_shape = typed
+            .input_fact(0)
+            .map_err(|e| MugError::MatcherUnavailable(format!("read model input fact: {e}")))?
+            .shape
+            .as_concrete()
+            .ok_or_else(|| {
+                MugError::MatcherUnavailable(
+                    "model input shape is not fully concrete; supply a fixed-shape face model"
+                        .into(),
+                )
+            })?
+            .to_vec();
+        if input_shape.len() != 4 || input_shape[0] != 1 {
+            return Err(MugError::MatcherUnavailable(format!(
+                "expected an NCHW input of shape [1, C, H, W], got {input_shape:?}"
+            )));
+        }
+        let (channels, height, width) = (input_shape[1], input_shape[2], input_shape[3]);
+
+        let dim = typed
+            .output_fact(0)
+            .map_err(|e| MugError::MatcherUnavailable(format!("read model output fact: {e}")))?
+            .shape
+            .as_concrete()
+            .and_then(|s| s.last().copied())
+            .ok_or_else(|| {
+                MugError::MatcherUnavailable("model output dimensionality is not concrete".into())
+            })?;
+
+        let model = typed
+            .into_runnable()
+            .map_err(|e| MugError::MatcherUnavailable(format!("make ONNX model runnable: {e}")))?;
+        Ok(Self {
+            model,
+            channels,
+            height,
+            width,
+            dim,
+        })
+    }
+}
+
+#[cfg(feature = "face-model")]
+impl EmbeddingExtractor for TractExtractor {
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    fn extract(&self, frame: &IrFrame) -> Result<Embedding> {
+        use tract_onnx::prelude::*;
+
+        if frame.as_bytes().is_empty() {
+            return Err(MugError::InvalidFrame("empty frame".into()));
+        }
+        let plane = resize_gray(frame, self.width, self.height);
+        let mut input = vec![0f32; self.channels * self.height * self.width];
+        let plane_len = self.height * self.width;
+        for (i, &p) in plane.iter().enumerate() {
+            let v = (p as f32 - 127.5) / 127.5;
+            for c in 0..self.channels {
+                input[c * plane_len + i] = v;
+            }
+        }
+        let tensor: Tensor = tract_ndarray::Array4::from_shape_vec(
+            (1, self.channels, self.height, self.width),
+            input,
+        )
+        .map_err(|e| MugError::MatcherUnavailable(format!("build input tensor: {e}")))?
+        .into();
+        let result = self
+            .model
+            .run(tvec!(tensor.into()))
+            .map_err(|e| MugError::MatcherUnavailable(format!("run ONNX inference: {e}")))?;
+        let out = result[0].clone().into_tensor();
+        let plain = out
+            .try_as_plain()
+            .map_err(|e| MugError::MatcherUnavailable(format!("view model output: {e}")))?;
+        let slice = plain
+            .as_slice::<f32>()
+            .map_err(|e| MugError::MatcherUnavailable(format!("read model output as f32: {e}")))?;
+        let mut emb: Vec<f32> = slice.to_vec();
+        if emb.is_empty() {
+            return Err(MugError::MatcherUnavailable(
+                "model produced an empty embedding".into(),
+            ));
+        }
+        l2_normalize(&mut emb)?;
+        Ok(emb)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +383,17 @@ mod tests {
     #[test]
     fn zero_dim_extractor_is_recoverable() {
         match PooledExtractor::new(0) {
+            Err(MugError::MatcherUnavailable(_)) => {}
+            other => panic!("expected MatcherUnavailable, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    #[cfg(feature = "face-model")]
+    #[test]
+    fn tract_extractor_missing_model_errors_cleanly() {
+        // A bad/absent model path must surface a MatcherUnavailable error (the caller degrades to the
+        // PIN), never panic.
+        match TractExtractor::from_path("/nonexistent/model.onnx") {
             Err(MugError::MatcherUnavailable(_)) => {}
             other => panic!("expected MatcherUnavailable, got {:?}", other.map(|_| ())),
         }

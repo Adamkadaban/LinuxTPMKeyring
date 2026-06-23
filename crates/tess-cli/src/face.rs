@@ -17,8 +17,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow};
 use mug::{
-    EnrollStore, FaceEnrollment, IrEmitter, IrSource, LivenessCalibration, LivenessConfig, Matcher,
-    MugConfig, PooledExtractor, VirtualIrDevice,
+    EmbeddingExtractor, EnrollStore, FaceEnrollment, IrEmitter, IrSource, LivenessCalibration,
+    LivenessConfig, Matcher, MugConfig, PooledExtractor, VirtualIrDevice,
 };
 use tess_core::SecretBytes;
 
@@ -228,11 +228,40 @@ fn build_hardware_backend(node: Option<PathBuf>) -> Result<(mug::V4l2IrDevice, m
     Ok((source, emitter))
 }
 
-/// Build the model-free CI/default matcher. The real ONNX matcher backend is a tracked follow-up; no
-/// model ships, so identity matching is the deterministic mock today.
-fn build_mock_matcher(cfg: &MugConfig) -> Result<Matcher<PooledExtractor>> {
+/// The env var pointing at a user-supplied ONNX face-embedding model. Only consulted when mug is
+/// built with the `face-model` feature; no model ships with tess.
+const ENV_MODEL_PATH: &str = "MUG_MODEL_PATH";
+
+/// Build the identity matcher. With the `face-model` feature and a configured model path, this is the
+/// real `tract` ONNX matcher; otherwise it is the deterministic model-free mock (the CI/default), so
+/// face stays a liveness-gated convenience. Returns a boxed extractor so both share one matcher type.
+fn build_matcher(cfg: &MugConfig) -> Result<Matcher<Box<dyn EmbeddingExtractor>>> {
+    let model_path = cfg
+        .model_path
+        .clone()
+        .or_else(|| std::env::var(ENV_MODEL_PATH).ok());
+
+    #[cfg(feature = "face-model")]
+    if let Some(path) = model_path.as_deref() {
+        let extractor = mug::TractExtractor::from_path(path)
+            .map_err(|e| anyhow!("load the ONNX face model {path}: {e}"))?;
+        return Ok(Matcher::new(
+            Box::new(extractor) as Box<dyn EmbeddingExtractor>,
+            cfg.match_threshold,
+        ));
+    }
+    #[cfg(not(feature = "face-model"))]
+    if model_path.is_some() {
+        eprintln!(
+            "mug: {ENV_MODEL_PATH}/model_path is set but this build lacks the `face-model` feature; \
+             using the model-free mock matcher"
+        );
+    }
+
+    let mock =
+        PooledExtractor::new(MOCK_DIM).map_err(|e| anyhow!("build the mock matcher: {e}"))?;
     Ok(Matcher::new(
-        PooledExtractor::new(MOCK_DIM).map_err(|e| anyhow!("build the mock matcher: {e}"))?,
+        Box::new(mock) as Box<dyn EmbeddingExtractor>,
         cfg.match_threshold,
     ))
 }
@@ -283,12 +312,13 @@ where
     }
 }
 
-/// Assemble a [`MugTemplateSource`] for the given source/emitter with the model-free matcher.
+/// Assemble a [`MugTemplateSource`] for the given source/emitter with the configured matcher (the
+/// real `tract` ONNX backend when built and configured, otherwise the model-free mock).
 fn mug_template_source<S, E>(
     source: S,
     emitter: E,
     cfg: &MugConfig,
-) -> Result<MugTemplateSource<S, E, PooledExtractor>>
+) -> Result<MugTemplateSource<S, E, Box<dyn EmbeddingExtractor>>>
 where
     S: IrSource,
     E: IrEmitter,
@@ -296,7 +326,7 @@ where
     Ok(MugTemplateSource {
         source,
         emitter,
-        matcher: build_mock_matcher(cfg)?,
+        matcher: build_matcher(cfg)?,
         liveness_cfg: cfg.liveness_config(),
         match_threshold: cfg.match_threshold,
         deadline_ms: cfg.capture_deadline_ms,
@@ -332,7 +362,7 @@ where
     S: IrSource,
     E: IrEmitter,
 {
-    let matcher = build_mock_matcher(cfg)?;
+    let matcher = build_matcher(cfg)?;
     mug::verify(
         source,
         emitter,

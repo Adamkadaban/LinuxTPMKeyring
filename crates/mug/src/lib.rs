@@ -66,4 +66,7 @@ pub use config::MugConfig;
 pub use gate::{FaceGate, verify};
 pub use liveness::{LivenessConfig, LivenessFeatures, LivenessReport, analyze as analyze_liveness};
 pub use matcher::{Embedding, EmbeddingExtractor, Matcher, PooledExtractor, cosine_distance};
+
+#[cfg(feature = "face-model")]
+pub use matcher::TractExtractor;
 pub use store::{EnrollStore, FaceEnrollment, LivenessCalibration};

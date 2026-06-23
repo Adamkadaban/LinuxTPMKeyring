@@ -170,18 +170,18 @@ the convenience path.
 - **real Logitech Brio** — opt-in with `MUG_IR_BACKEND=hardware` (or auto-selected when no virtual
   dir is set and a Brio GREY IR node is discoverable). It drives the by-id GREY IR node and the
   UVC extension-unit IR emitter. When no camera is present the factor reports unavailable and unlock
-  degrades to the PIN. (Identity matching uses the model-free mock today; the real ONNX matcher is a
-  tracked follow-up, so face is a liveness-gated convenience until then.) The Brio emitter SET_CUR payloads default to a starting value and
+  degrades to the PIN. (Identity matching uses the model-free mock by default; the real pure-Rust `tract` ONNX matcher is opt-in via the `face-model` feature + `MUG_MODEL_PATH`.) The Brio emitter SET_CUR payloads default to a starting value and
   are overridable with `MUG_IR_EMITTER_ON_HEX` / `MUG_IR_EMITTER_OFF_HEX` (hex, e.g. `0x01`); a wrong
   value fails safe (the emitter stays off, liveness can't pass, the factor degrades to the PIN).
 
 **No model ships — face *matching* needs a user-supplied model.** Identity matching is a deterministic
-model-free **mock** today (the security-critical *liveness* gate is real on both backends). A real
-ArcFace/SFace ONNX matcher backend via `ort` (model path from `MUG_MODEL_PATH`, no model bundled) is
-tracked in [#56](https://github.com/Adamkadaban/LinuxTPMKeyring/issues/56) and **not yet wired** — no
-stable `ort` is currently published. Until then, real-hardware capture pairs the live IR frames with
-the mock matcher: liveness is enforced, but identity discrimination is weak. Treat face-on-real-Brio
-as a liveness-gated convenience pending the matcher model.
+model-free **mock** by default (the security-critical *liveness* gate is real on both backends). A real
+ArcFace/SFace ONNX matcher is available behind the **`face-model`** cargo feature, implemented with the
+pure-Rust [`tract`](https://github.com/sonos/tract) inference engine (no native ONNX Runtime). Build
+with `--features face-model` and point `MUG_MODEL_PATH` at a fixed-shape NCHW model (none is bundled);
+absent the feature or the model, the mock is used and face degrades to the PIN. The default/CI build
+stays model-free. (See [ADR-0015](docs/adr/0015-tract-onnx-face-matcher.md); `tract` was chosen over
+`ort`, whose only releases are yanked or pre-release with a non-hermetic native download.)
 
 #### Manual real-Brio smoke (maintainer, dedicated test machine — never CI)
 

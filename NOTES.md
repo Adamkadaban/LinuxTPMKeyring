@@ -870,3 +870,6 @@ Key facts / gotchas:
 - **No `Cargo.lock` churn:** mug gained zero deps, tess-cli gained zero deps. `cargo deny check` and
   `cargo vet --locked` (186 exempted) stay green. fmt/clippy(`-D warnings`)/check/test(workspace)/
   release build all green; sim suites compile (`--no-run`) — run in CI, not on host.
+
+## 2026-06-23 — wired the real ONNX face matcher with pure-Rust tract (#56)
+**Resolution:** `ort` was unusable (1.x yanked, 2.x rc-only + non-hermetic native download — fails deny/the no-prerelease rule). Used `tract-onnx` (pure Rust, hermetic, stable) behind the off-by-default `face-model` feature instead; `Matcher<Box<dyn EmbeddingExtractor>>` picks mock vs `TractExtractor` (model from `MUG_MODEL_PATH`, none ships). tract Tensor data access is `into_tensor().try_as_plain()?.as_slice::<f32>()` (no `to_array_view`/`as_slice` on the codegenerated Tensor). deny ok; vet regenerated (271 exempted). `crates/mug/src/matcher.rs` · `docs/adr/0015` · #56
