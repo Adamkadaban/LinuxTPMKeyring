@@ -841,7 +841,7 @@ Key facts / gotchas:
 ## 2026-06-23 — Phase 5: wire real Brio IR capture (#63); `ort` matcher (#56) reported BLOCKED
 **Resolution:** `tess-cli::face` now selects an IR capture backend via `MUG_IR_BACKEND`
 (`auto`/`virtual`/`hardware`) through a pure, unit-tested `resolve_backend`; hardware builds
-`V4l2IrDevice::open_brio` + `BrioEmitter` (no new unsafe — all behind `mug::sys`, ADR-0012), virtual
+`find_brio_ir_node()` then `V4l2IrDevice::open(&node, …)` + a `BrioEmitter` bound to the same node (no new unsafe — all behind `mug::sys`, ADR-0012), virtual
 substrate stays the CI/default path, both symmetric across enroll/unlock. `crates/tess-cli/src/face.rs`
 (`resolve_backend`/`build_hardware_backend`/`select_backend`) · `docs/adr/0014` · #63
 

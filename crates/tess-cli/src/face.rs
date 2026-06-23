@@ -170,7 +170,10 @@ fn parse_hex_payload(raw: &str) -> std::result::Result<Vec<u8>, String> {
 fn emitter_payload(var: &str, default: &[u8]) -> Result<Vec<u8>> {
     match std::env::var(var) {
         Ok(value) => parse_hex_payload(&value).map_err(|e| anyhow!("{var}: {e}")),
-        Err(_) => Ok(default.to_vec()),
+        Err(std::env::VarError::NotPresent) => Ok(default.to_vec()),
+        Err(std::env::VarError::NotUnicode(_)) => Err(anyhow!(
+            "{var} is set but is not valid UTF-8; expected hex bytes (e.g. 01ff) or unset it for the default"
+        )),
     }
 }
 
