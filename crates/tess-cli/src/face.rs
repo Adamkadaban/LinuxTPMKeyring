@@ -1,23 +1,57 @@
 //! CLI-facing face-factor plumbing: resolve the current user, build the mug enroll store, and
 //! construct the IR capture pipeline (template capture at enroll, bounded verify at unlock) from the
-//! environment. The only capture backend wired today is the virtual IR substrate + model-free mock
-//! matcher, selected via `MUG_VIRTUAL_IR_DIR` (used by CI and to try the flow). Real Brio capture +
-//! an ONNX matcher model are a tracked follow-up (issue #56); until then a non-virtual environment
-//! reports the factor unavailable and the caller degrades to the PIN.
+//! environment.
+//!
+//! Two capture backends are wired, selected by [`select_backend`]:
+//!
+//! - the headless **virtual IR substrate** (`MUG_VIRTUAL_IR_DIR`), used by CI and to try the flow; and
+//! - the real **Logitech Brio** IR path (the GREY IR node + the UVC-XU emitter), opt-in and validated
+//!   only by a manual smoke on a dedicated test machine (throwaway keyring/TPM) — never the daily-driver host, never in CI.
+//!
+//! Both run the same liveness gate and, today, the same model-free mock matcher: tess ships no face
+//! model, so identity matching stays a deterministic mock until an ONNX matcher backend lands. When
+//! no backend is available (no substrate, no camera) the factor reports unavailable and the caller
+//! degrades to the PIN.
+
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow};
 use mug::{
-    EnrollStore, FaceEnrollment, LivenessCalibration, LivenessConfig, Matcher, MugConfig,
-    PooledExtractor, VirtualIrDevice,
+    EnrollStore, FaceEnrollment, IrEmitter, IrSource, LivenessCalibration, LivenessConfig, Matcher,
+    MugConfig, PooledExtractor, VirtualIrDevice,
 };
 use tess_core::SecretBytes;
 
 use crate::enroll::sealer::KeySealer;
 use crate::enroll::{FaceTemplateSource, Paths, recovery};
 
-/// Embedding dimensionality for the model-free CI matcher. The real ONNX matcher's dimensionality
+/// Embedding dimensionality for the model-free CI matcher. A real ONNX matcher's dimensionality
 /// comes from the loaded network; this only governs the deterministic mock path.
 const MOCK_DIM: usize = 64;
+
+/// Selects the IR capture backend (`auto` | `virtual` | `hardware`).
+const ENV_BACKEND: &str = "MUG_IR_BACKEND";
+/// Hex-encoded UVC SET_CUR payload that turns the Brio IR emitter on (overrides the default).
+const ENV_EMITTER_ON: &str = "MUG_IR_EMITTER_ON_HEX";
+/// Hex-encoded UVC SET_CUR payload that turns the Brio IR emitter off (overrides the default).
+const ENV_EMITTER_OFF: &str = "MUG_IR_EMITTER_OFF_HEX";
+
+/// Default Brio IR-emitter payloads. The exact bytes are device-confirmed during the manual smoke;
+/// a wrong value fails safe (the emitter stays off, the liveness differential cannot pass, the face
+/// factor degrades to the PIN), so these defaults are only a starting point, overridable via env.
+const DEFAULT_EMITTER_ON: &[u8] = &[0x01];
+const DEFAULT_EMITTER_OFF: &[u8] = &[0x00];
+
+/// The selected IR capture backend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CaptureBackend {
+    /// File-backed synthetic substrate (`MUG_VIRTUAL_IR_DIR`): CI and headless flow trials.
+    Virtual,
+    /// The real Logitech Brio IR capture node + UVC-XU emitter. Carries the GREY IR node when it was
+    /// already discovered during `auto` selection (reused so the auth path scans `/dev/v4l/by-id`
+    /// once); `None` for an explicit `hardware` request, where the builder discovers it.
+    Hardware(Option<PathBuf>),
+}
 
 /// Resolve the current login user, used as the mug-store key. Prefers `$TESS_FACE_USER` (the
 /// authoritative PAM-plumbed user in the helper), then falls back to `$USER`, then `$LOGNAME`.
@@ -43,9 +77,164 @@ pub fn enroll_store() -> Result<EnrollStore> {
     EnrollStore::default_location().map_err(|e| anyhow!("resolve the mug enroll store: {e}"))
 }
 
-/// Whether the headless virtual IR substrate is selected (CI / sim runs).
+/// Whether the headless virtual IR substrate is configured (CI / sim runs).
 fn virtual_substrate() -> bool {
     std::env::var_os(VirtualIrDevice::ENV_DIR).is_some()
+}
+
+/// Choose the capture backend from the environment.
+///
+/// Precedence:
+/// 1. `MUG_IR_BACKEND=hardware` forces the Brio path (explicit opt-in wins).
+/// 2. `MUG_IR_BACKEND=virtual` selects the substrate, erroring if `MUG_VIRTUAL_IR_DIR` is unset.
+/// 3. `auto`/unset: the substrate when `MUG_VIRTUAL_IR_DIR` is set (the CI/default path), otherwise
+///    the Brio when a GREY IR node is discoverable, otherwise unavailable (degrade to the PIN).
+fn select_backend() -> Result<CaptureBackend> {
+    let requested = match std::env::var(ENV_BACKEND) {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(anyhow!(
+                "{ENV_BACKEND} is set but is not valid UTF-8 (expected auto, virtual, or hardware)"
+            ));
+        }
+    };
+    resolve_backend(
+        requested.as_deref(),
+        virtual_substrate(),
+        mug::find_brio_ir_node,
+    )
+}
+
+/// Pure backend-selection logic, factored out of [`select_backend`] so it is unit-testable without
+/// touching the process environment or any real camera. `probe_brio` returns `Ok(node)` with the
+/// discovered GREY node, `Err(MugError::NoIrNode)` when none is attached, or another error when the
+/// probe itself failed (e.g. `/dev/v4l/by-id` unreadable, or a Brio-like node that can't be opened)
+/// — the last is surfaced rather than collapsed into "no camera". A node discovered here is carried
+/// in `Hardware(Some(..))` so the builder reuses it instead of re-scanning.
+fn resolve_backend(
+    requested: Option<&str>,
+    virtual_set: bool,
+    probe_brio: impl FnOnce() -> mug::Result<PathBuf>,
+) -> Result<CaptureBackend> {
+    match requested.map(str::trim) {
+        Some("hardware") => Ok(CaptureBackend::Hardware(None)),
+        Some("virtual") => {
+            if virtual_set {
+                Ok(CaptureBackend::Virtual)
+            } else {
+                Err(anyhow!(
+                    "{ENV_BACKEND}=virtual but {} is not set (point it at a directory of synthetic GREY frames)",
+                    VirtualIrDevice::ENV_DIR
+                ))
+            }
+        }
+        Some("auto") | Some("") | None => {
+            if virtual_set {
+                Ok(CaptureBackend::Virtual)
+            } else {
+                match probe_brio() {
+                    Ok(node) => Ok(CaptureBackend::Hardware(Some(node))),
+                    Err(mug::MugError::NoIrNode) => Err(anyhow!(
+                        "no face capture backend available: set {} for the virtual IR substrate, or \
+                         attach a Logitech Brio (GREY IR node) — auto-detected when present. The face \
+                         factor is unavailable and the caller degrades to the PIN",
+                        VirtualIrDevice::ENV_DIR
+                    )),
+                    Err(e) => Err(anyhow!(
+                        "the Brio IR probe failed ({e}); fix it or set {} for the virtual IR \
+                         substrate. The face factor is unavailable and the caller degrades to the PIN",
+                        VirtualIrDevice::ENV_DIR
+                    )),
+                }
+            }
+        }
+        Some(other) => Err(anyhow!(
+            "unknown {ENV_BACKEND}={other:?} (expected auto, virtual, or hardware)"
+        )),
+    }
+}
+
+/// Parse a hex-encoded emitter payload, tolerating `0x` prefixes and `:`/`,`/whitespace separators.
+fn parse_hex_payload(raw: &str) -> std::result::Result<Vec<u8>, String> {
+    // Brio SET_CUR payloads are a handful of bytes; bound the input up front so a hostile env var
+    // can't force a large allocation on the auth path.
+    const MAX_INPUT_LEN: usize = 256;
+    if raw.len() > MAX_INPUT_LEN {
+        return Err(format!(
+            "payload too long ({} bytes; max {MAX_INPUT_LEN})",
+            raw.len()
+        ));
+    }
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != ':' && *c != ',')
+        .collect();
+    let hex = cleaned
+        .strip_prefix("0x")
+        .or_else(|| cleaned.strip_prefix("0X"))
+        .unwrap_or(&cleaned);
+    if hex.is_empty() {
+        return Err("empty payload".into());
+    }
+    if !hex.len().is_multiple_of(2) {
+        return Err(format!("odd hex length {}", hex.len()));
+    }
+    // Guard before byte-slicing below: reject any non-ASCII-hex character (including multi-byte
+    // UTF-8) up front, so `&hex[i..i + 2]` can never split a char boundary and panic.
+    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("non-hex characters in payload {raw:?}"));
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&hex[i..i + 2], 16)
+                .map_err(|e| format!("invalid hex byte {:?}: {e}", &hex[i..i + 2]))
+        })
+        .collect()
+}
+
+/// Resolve a single emitter payload from `var`, falling back to `default`.
+fn emitter_payload(var: &str, default: &[u8]) -> Result<Vec<u8>> {
+    match std::env::var(var) {
+        Ok(value) => parse_hex_payload(&value).map_err(|e| anyhow!("{var}: {e}")),
+        Err(std::env::VarError::NotPresent) => Ok(default.to_vec()),
+        Err(std::env::VarError::NotUnicode(_)) => Err(anyhow!(
+            "{var} is set but is not valid UTF-8; expected hex bytes (e.g. 01ff) or unset it for the default"
+        )),
+    }
+}
+
+/// Build the real Brio capture source + emitter, discovering the GREY IR node once and binding the
+/// emitter control to the same node. Any failure (no camera, permission denied) surfaces as an error
+/// the caller treats as "face unavailable → degrade to the PIN".
+fn build_hardware_backend(node: Option<PathBuf>) -> Result<(mug::V4l2IrDevice, mug::BrioEmitter)> {
+    let node = match node {
+        Some(node) => node,
+        None => mug::find_brio_ir_node().map_err(|e| anyhow!("discover the Brio IR node: {e}"))?,
+    };
+    let source = mug::V4l2IrDevice::open(&node, mug::BRIO_IR_WIDTH, mug::BRIO_IR_HEIGHT)
+        .map_err(|e| anyhow!("open the Brio IR capture node {}: {e}", node.display()))?;
+    let on_payload = emitter_payload(ENV_EMITTER_ON, DEFAULT_EMITTER_ON)?;
+    let off_payload = emitter_payload(ENV_EMITTER_OFF, DEFAULT_EMITTER_OFF)?;
+    let emitter = mug::BrioEmitter::new(
+        &node,
+        mug::BRIO_EMITTER_UNIT,
+        mug::BRIO_EMITTER_SELECTOR,
+        on_payload,
+        off_payload,
+    )
+    .map_err(|e| anyhow!("open the Brio IR emitter control {}: {e}", node.display()))?;
+    Ok((source, emitter))
+}
+
+/// Build the model-free CI/default matcher. The real ONNX matcher backend is a tracked follow-up; no
+/// model ships, so identity matching is the deterministic mock today.
+fn build_mock_matcher(cfg: &MugConfig) -> Result<Matcher<PooledExtractor>> {
+    Ok(Matcher::new(
+        PooledExtractor::new(MOCK_DIM).map_err(|e| anyhow!("build the mock matcher: {e}"))?,
+        cfg.match_threshold,
+    ))
 }
 
 /// A mug-backed [`FaceTemplateSource`]: capture a liveness-gated pair and embed the emitter-ON frame
@@ -53,8 +242,8 @@ fn virtual_substrate() -> bool {
 /// the virtual CI substrate and real hardware.
 struct MugTemplateSource<S, E, X>
 where
-    S: mug::IrSource,
-    E: mug::IrEmitter,
+    S: IrSource,
+    E: IrEmitter,
     X: mug::EmbeddingExtractor,
 {
     source: S,
@@ -67,8 +256,8 @@ where
 
 impl<S, E, X> FaceTemplateSource for MugTemplateSource<S, E, X>
 where
-    S: mug::IrSource,
-    E: mug::IrEmitter,
+    S: IrSource,
+    E: IrEmitter,
     X: mug::EmbeddingExtractor,
 {
     fn capture_template(&mut self) -> Result<FaceEnrollment> {
@@ -94,33 +283,65 @@ where
     }
 }
 
+/// Assemble a [`MugTemplateSource`] for the given source/emitter with the model-free matcher.
+fn mug_template_source<S, E>(
+    source: S,
+    emitter: E,
+    cfg: &MugConfig,
+) -> Result<MugTemplateSource<S, E, PooledExtractor>>
+where
+    S: IrSource,
+    E: IrEmitter,
+{
+    Ok(MugTemplateSource {
+        source,
+        emitter,
+        matcher: build_mock_matcher(cfg)?,
+        liveness_cfg: cfg.liveness_config(),
+        match_threshold: cfg.match_threshold,
+        deadline_ms: cfg.capture_deadline_ms,
+    })
+}
+
 /// Build the face template source from the environment. Returns an owned trait object the enrollment
-/// transaction drives once. Errors (no virtual substrate and no model) leave the PIN enrollment
-/// untouched — the transaction rolls the whole thing back.
+/// transaction drives once. Errors (no backend selectable) leave the PIN enrollment untouched — the
+/// transaction rolls the whole thing back.
 pub fn template_source_from_env() -> Result<Box<dyn FaceTemplateSource>> {
     let cfg = MugConfig::default();
-    if virtual_substrate() {
-        let (source, emitter) = VirtualIrDevice::split_from_env()
-            .map_err(|e| anyhow!("open the virtual IR device: {e}"))?;
-        let matcher = Matcher::new(
-            PooledExtractor::new(MOCK_DIM).map_err(|e| anyhow!("build the mock matcher: {e}"))?,
-            cfg.match_threshold,
-        );
-        Ok(Box::new(MugTemplateSource {
-            source,
-            emitter,
-            matcher,
-            liveness_cfg: cfg.liveness_config(),
-            match_threshold: cfg.match_threshold,
-            deadline_ms: cfg.capture_deadline_ms,
-        }))
-    } else {
-        Err(anyhow!(
-            "no face capture backend available: set {} for the virtual IR substrate (the only backend wired \
-             today; real-camera capture + an IR matcher model are a follow-up, see issue #56)",
-            VirtualIrDevice::ENV_DIR
-        ))
+    match select_backend()? {
+        CaptureBackend::Virtual => {
+            let (source, emitter) = VirtualIrDevice::split_from_env()
+                .map_err(|e| anyhow!("open the virtual IR device: {e}"))?;
+            Ok(Box::new(mug_template_source(source, emitter, &cfg)?))
+        }
+        CaptureBackend::Hardware(node) => {
+            let (source, emitter) = build_hardware_backend(node)?;
+            Ok(Box::new(mug_template_source(source, emitter, &cfg)?))
+        }
     }
+}
+
+/// Run the bounded face verify against `enrolled` with the matcher and config.
+fn run_verify<S, E>(
+    source: &mut S,
+    emitter: &mut E,
+    enrolled: &FaceEnrollment,
+    cfg: &MugConfig,
+) -> Result<()>
+where
+    S: IrSource,
+    E: IrEmitter,
+{
+    let matcher = build_mock_matcher(cfg)?;
+    mug::verify(
+        source,
+        emitter,
+        &matcher,
+        enrolled,
+        &cfg.liveness_config(),
+        cfg.capture_deadline_ms,
+    )
+    .map_err(|e| anyhow!("face verification failed: {e}"))
 }
 
 /// Run the bounded face verify against `enrolled`, building the capture pipeline from the
@@ -128,28 +349,16 @@ pub fn template_source_from_env() -> Result<Box<dyn FaceTemplateSource>> {
 /// the PIN.
 pub fn verify_from_env(enrolled: &FaceEnrollment) -> Result<()> {
     let cfg = MugConfig::default();
-    if virtual_substrate() {
-        let (mut source, mut emitter) = VirtualIrDevice::split_from_env()
-            .map_err(|e| anyhow!("open the virtual IR device: {e}"))?;
-        let matcher = Matcher::new(
-            PooledExtractor::new(MOCK_DIM).map_err(|e| anyhow!("build the mock matcher: {e}"))?,
-            cfg.match_threshold,
-        );
-        mug::verify(
-            &mut source,
-            &mut emitter,
-            &matcher,
-            enrolled,
-            &cfg.liveness_config(),
-            cfg.capture_deadline_ms,
-        )
-        .map_err(|e| anyhow!("face verification failed: {e}"))
-    } else {
-        Err(anyhow!(
-            "no face capture backend available: set {} for the virtual IR substrate (the only backend wired \
-             today; real-camera capture + an IR matcher model are a follow-up, see issue #56)",
-            VirtualIrDevice::ENV_DIR
-        ))
+    match select_backend()? {
+        CaptureBackend::Virtual => {
+            let (mut source, mut emitter) = VirtualIrDevice::split_from_env()
+                .map_err(|e| anyhow!("open the virtual IR device: {e}"))?;
+            run_verify(&mut source, &mut emitter, enrolled, &cfg)
+        }
+        CaptureBackend::Hardware(node) => {
+            let (mut source, mut emitter) = build_hardware_backend(node)?;
+            run_verify(&mut source, &mut emitter, enrolled, &cfg)
+        }
     }
 }
 
@@ -184,4 +393,126 @@ pub fn unseal_with_face<S: KeySealer>(sealer: &mut S, paths: &Paths) -> Result<S
     sealer
         .unseal(&sealed, &a_face)
         .context("unseal the keyring key with the face authValue")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn virtual_dir_selects_virtual_when_auto() {
+        assert_eq!(
+            resolve_backend(None, true, || panic!(
+                "must not probe when substrate is set"
+            ))
+            .unwrap(),
+            CaptureBackend::Virtual
+        );
+        assert_eq!(
+            resolve_backend(Some("auto"), true, || panic!("must not probe")).unwrap(),
+            CaptureBackend::Virtual
+        );
+    }
+
+    #[test]
+    fn explicit_virtual_requires_substrate() {
+        assert_eq!(
+            resolve_backend(Some("virtual"), true, || Err(mug::MugError::NoIrNode)).unwrap(),
+            CaptureBackend::Virtual
+        );
+        assert!(resolve_backend(Some("virtual"), false, || Err(mug::MugError::NoIrNode)).is_err());
+    }
+
+    #[test]
+    fn explicit_hardware_always_selects_hardware() {
+        // Selected even with no camera and no substrate; the build step then reports unavailable.
+        assert_eq!(
+            resolve_backend(Some("hardware"), false, || Err(mug::MugError::NoIrNode)).unwrap(),
+            CaptureBackend::Hardware(None)
+        );
+        // Explicit hardware wins even when a substrate happens to be configured.
+        assert_eq!(
+            resolve_backend(Some("hardware"), true, || Err(mug::MugError::NoIrNode)).unwrap(),
+            CaptureBackend::Hardware(None)
+        );
+    }
+
+    #[test]
+    fn auto_probes_hardware_without_substrate() {
+        let node = std::path::PathBuf::from("/dev/v4l/by-id/usb-046d_Logitech_BRIO-video-index1");
+        assert_eq!(
+            resolve_backend(None, false, || Ok(node.clone())).unwrap(),
+            CaptureBackend::Hardware(Some(node))
+        );
+    }
+
+    #[test]
+    fn auto_without_substrate_or_camera_is_unavailable() {
+        let err = resolve_backend(None, false, || Err(mug::MugError::NoIrNode))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("no face capture backend available"),
+            "unexpected message: {err}"
+        );
+    }
+
+    #[test]
+    fn auto_surfaces_a_present_but_unusable_brio() {
+        // A Brio-like node that can't be opened (e.g. permission denied) must surface the real
+        // cause, not be flattened into "no camera".
+        let err = resolve_backend(None, false, || {
+            Err(mug::MugError::Camera(
+                "open /dev/video4: permission denied".into(),
+            ))
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("Brio IR probe failed") && err.contains("permission denied"),
+            "unexpected message: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_backend_is_rejected() {
+        let err = resolve_backend(Some("bogus"), true, || Ok(std::path::PathBuf::from("/x")))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown"), "unexpected message: {err}");
+    }
+
+    #[test]
+    fn select_backend_reads_substrate_env() {
+        // The Virtual branch never probes hardware, so this is deterministic regardless of whether
+        // the host running the test happens to have a camera attached.
+        let _lock = tess_testenv::env_lock();
+        let _backend = tess_testenv::EnvGuard::remove(ENV_BACKEND);
+        let _dir = tess_testenv::EnvGuard::set(VirtualIrDevice::ENV_DIR, "/nonexistent-ir-dir");
+        assert_eq!(select_backend().unwrap(), CaptureBackend::Virtual);
+        // Building the source only reads the env var, not the directory contents.
+        assert!(template_source_from_env().is_ok());
+    }
+
+    #[test]
+    fn parse_hex_payload_accepts_separators_and_prefix() {
+        assert_eq!(parse_hex_payload("01ff").unwrap(), vec![0x01, 0xff]);
+        assert_eq!(parse_hex_payload("0x0a:0b").unwrap(), vec![0x0a, 0x0b]);
+        assert_eq!(
+            parse_hex_payload("aa bb,cc").unwrap(),
+            vec![0xaa, 0xbb, 0xcc]
+        );
+    }
+
+    #[test]
+    fn parse_hex_payload_rejects_malformed() {
+        assert!(parse_hex_payload("").is_err());
+        assert!(parse_hex_payload("0").is_err());
+        assert!(parse_hex_payload("zz").is_err());
+        // Multi-byte UTF-8 must fail closed, not panic on a non-char-boundary byte slice.
+        assert!(parse_hex_payload("€€").is_err());
+        assert!(parse_hex_payload("0€").is_err());
+        // Oversized input fails closed rather than allocating.
+        assert!(parse_hex_payload(&"00".repeat(200)).is_err());
+    }
 }

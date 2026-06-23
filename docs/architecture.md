@@ -546,6 +546,41 @@ real TPM gate, the same key is merely sealed a second time under `A_face`, and t
 (disk-only theft) is unchanged because the key is never on disk. The bounded capture plus the watchdog
 mean a wedged camera degrades to the PIN within the deadline rather than freezing login.
 
+#### Face capture backends (`mug` + `tess-cli::face`)
+
+`tess-cli::face::select_backend` chooses the IR capture backend from `MUG_IR_BACKEND` and resolves it
+through the pure, unit-tested `resolve_backend` (factored out so the core decision logic is unit-tested without a camera or env mutation):
+
+| `MUG_IR_BACKEND` | `MUG_VIRTUAL_IR_DIR` set | Brio GREY node found | Result |
+|---|---|---|---|
+| unset / `auto` | yes | — | **virtual** (CI/default) |
+| unset / `auto` | no | yes | **hardware** |
+| unset / `auto` | no | no | unavailable → degrade to PIN |
+| `virtual` | yes | — | **virtual** |
+| `virtual` | no | — | error (substrate requested, none configured) |
+| `hardware` | — | — | **hardware** (explicit opt-in wins; build fails cleanly with no camera) |
+
+The **virtual** branch builds `VirtualIrDevice::split_from_env()`; the **hardware** branch discovers the
+GREY IR node once via `mug::find_brio_ir_node()` and builds `V4l2IrDevice::open` + `BrioEmitter` bound
+to the same node (UVC extension-unit `SET_CUR`; on/off payloads default to a starting value, overridable
+via `MUG_IR_EMITTER_ON_HEX`/`MUG_IR_EMITTER_OFF_HEX`). All of `mug`'s hardware code is safe Rust over the
+single `mug::sys` ioctl boundary (ADR-0012); `tess-cli` adds no `unsafe`. Both backends feed the same
+liveness gate and `Matcher`. `template_source_from_env` (enroll) and `verify_from_env` (unlock) select
+symmetrically.
+
+**Matcher: model-free mock today.** Both backends currently use the deterministic `PooledExtractor`
+mock — tess ships no face model. The real ArcFace/SFace ONNX matcher via `ort` (model path from
+`MUG_MODEL_PATH`; absent ⇒ matcher unavailable ⇒ degrade to PIN) is tracked in #56 and **not wired**:
+no stable `ort` is published on crates.io (the `1.x` line is yanked, `2.x` is `rc`-only) and `ort` 2.x's
+default `download-binaries` feature fetches a prebuilt native ONNX Runtime at build time, which breaks a
+hermetic build and cannot pass `cargo deny`/`cargo vet`. So real-Brio capture pairs live IR frames with
+the mock matcher: liveness is enforced, identity discrimination is weak until #56 lands.
+
+**Validation.** Selection logic is unit-tested with the virtual substrate (the hardware branch is
+*selected* but reports cleanly unavailable without a camera). Real capture + photo rejection is a
+documented **manual smoke** the maintainer runs on a dedicated test machine (throwaway keyring/TPM) with the Brio (emitter-on/off IR liveness rejects a
+flat photo); hardware never runs in CI or on Azure.
+
 ### Watchdog'd helper + fail-open
 
 Heavy work runs in a short-lived child process supervised by `helper::run` under a hard
