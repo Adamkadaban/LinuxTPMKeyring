@@ -179,8 +179,10 @@ model-free **mock** by default (the security-critical *liveness* gate is real on
 ArcFace/SFace ONNX matcher is available behind the **`face-model`** cargo feature, implemented with the
 self-contained [`tract`](https://github.com/sonos/tract) inference engine — no native ONNX Runtime at
 runtime (it builds some SIMD kernels via `cc`, so a C toolchain is needed at build time). Build
-with `--features face-model` and point `MUG_MODEL_PATH` at a fixed-shape NCHW model (none is bundled);
-absent the feature or the model, the mock is used and face degrades to the PIN. The default/CI build
+with `cargo build -p tess-cli --features face-model` (the feature lives on `tess-cli`, so a bare
+`--features face-model` from the workspace root won't resolve) and point `MUG_MODEL_PATH` at a
+fixed-shape NCHW model (none is bundled); absent the feature or the model, the mock is used and face
+degrades to the PIN. The default/CI build
 stays model-free. (See [ADR-0015](docs/adr/0015-tract-onnx-face-matcher.md); `tract` was chosen over
 `ort`, whose only releases are yanked or pre-release with a non-hermetic native download.)
 
@@ -204,8 +206,8 @@ MUG_IR_BACKEND=hardware tess unlock --face            # hold up a printed photo 
 
 A pass is: live face unlocks with no PIN typed; the photo/screen is rejected by liveness and the PIN
 fallback engages. (Real *identity* discrimination — rejecting a different live person — requires a
-real model: build with `--features face-model` and set `MUG_MODEL_PATH`; with the default mock
-matcher this smoke proves capture + liveness only.)
+real model: build with `cargo build -p tess-cli --features face-model` and set `MUG_MODEL_PATH`;
+with the default mock matcher this smoke proves capture + liveness only.)
 
 
 **Honest at-rest trade-off — read before enrolling `--face`.** With a typed PIN, *nothing* that

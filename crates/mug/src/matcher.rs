@@ -385,11 +385,16 @@ impl EmbeddingExtractor for TractExtractor {
         )
         .map_err(|e| MugError::MatcherUnavailable(format!("build input tensor: {e}")))?
         .into();
-        let result = self
+        let mut result = self
             .model
             .run(tvec!(tensor.into()))
             .map_err(|e| MugError::MatcherUnavailable(format!("run ONNX inference: {e}")))?;
-        let out = result[0].clone().into_tensor();
+        if result.is_empty() {
+            return Err(MugError::MatcherUnavailable(
+                "model produced no outputs".into(),
+            ));
+        }
+        let out = result.remove(0).into_tensor();
         let plain = out
             .try_as_plain()
             .map_err(|e| MugError::MatcherUnavailable(format!("view model output: {e}")))?;

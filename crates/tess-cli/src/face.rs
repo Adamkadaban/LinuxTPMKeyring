@@ -8,10 +8,11 @@
 //! - the real **Logitech Brio** IR path (the GREY IR node + the UVC-XU emitter), opt-in and validated
 //!   only by a manual smoke on a dedicated test machine (throwaway keyring/TPM) — never the daily-driver host, never in CI.
 //!
-//! Both run the same liveness gate and, today, the same model-free mock matcher: tess ships no face
-//! model, so identity matching stays a deterministic mock until an ONNX matcher backend lands. When
-//! no backend is available (no substrate, no camera) the factor reports unavailable and the caller
-//! degrades to the PIN.
+//! Both run the same liveness gate. Identity matching uses the model-free mock by default; the real
+//! `tract` ONNX matcher is opt-in behind the `face-model` feature with a runtime model path
+//! (`MUG_MODEL_PATH`/config). tess ships no face model, so absent the feature or the model the mock
+//! is used. When no backend is available (no substrate, no camera) the factor reports unavailable and
+//! the caller degrades to the PIN.
 
 use std::path::PathBuf;
 
