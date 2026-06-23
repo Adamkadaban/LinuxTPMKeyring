@@ -476,7 +476,10 @@ fn run_helper_inner(
         );
     }
 
-    let deadline = Instant::now() + Duration::from_secs(20);
+    // Above the PAM module's worst-case budget: both biometrics enabled is 12s (fingerprint) + 9s
+    // (face) = 21s, so a 20s harness deadline could kill a correctly-running helper early. 30s
+    // clears the combined ceiling with margin.
+    let deadline = Instant::now() + Duration::from_secs(30);
     let status = loop {
         if let Some(status) = child.try_wait().expect("try_wait helper") {
             break status;
