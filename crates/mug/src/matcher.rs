@@ -101,9 +101,16 @@ pub struct PooledExtractor {
 }
 
 impl PooledExtractor {
-    pub fn new(dim: usize) -> Self {
-        assert!(dim > 0, "embedding dim must be positive");
-        Self { dim }
+    /// Build an extractor producing `dim`-length embeddings. `dim == 0` is rejected as
+    /// [`MugError::MatcherUnavailable`] rather than panicking, since a zero dim can arrive from
+    /// wave-2 config/plumbing and must degrade to the PIN, not abort.
+    pub fn new(dim: usize) -> Result<Self> {
+        if dim == 0 {
+            return Err(MugError::MatcherUnavailable(
+                "embedding dim must be positive".into(),
+            ));
+        }
+        Ok(Self { dim })
     }
 }
 
@@ -163,7 +170,7 @@ mod tests {
 
     #[test]
     fn identical_frame_matches() {
-        let matcher = Matcher::new(PooledExtractor::new(64), 0.15);
+        let matcher = Matcher::new(PooledExtractor::new(64).expect("valid dim"), 0.15);
         let frame = on_frame(synth::live_pair(128, 128));
         let enrolled = matcher.embed(&frame).unwrap();
         let d = matcher.verify(&frame, &enrolled).unwrap();
@@ -172,7 +179,7 @@ mod tests {
 
     #[test]
     fn different_distribution_does_not_match() {
-        let matcher = Matcher::new(PooledExtractor::new(64), 0.15);
+        let matcher = Matcher::new(PooledExtractor::new(64).expect("valid dim"), 0.15);
         let enrolled = matcher
             .embed(&on_frame(synth::live_pair(128, 128)))
             .unwrap();
@@ -195,5 +202,13 @@ mod tests {
         let v = [0.2f32, 0.4, 0.4];
         let d = cosine_distance(&v, &v).unwrap();
         assert!(d.abs() < 1e-6);
+    }
+
+    #[test]
+    fn zero_dim_extractor_is_recoverable() {
+        match PooledExtractor::new(0) {
+            Err(MugError::MatcherUnavailable(_)) => {}
+            other => panic!("expected MatcherUnavailable, got {:?}", other.map(|_| ())),
+        }
     }
 }

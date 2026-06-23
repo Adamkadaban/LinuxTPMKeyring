@@ -9,11 +9,15 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::error::{MugError, Result};
+
+/// Process-local sequence so back-to-back atomic writes get distinct temp names.
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// On-disk schema version for a [`FaceEnrollment`].
 pub const ENROLLMENT_VERSION: u32 = 1;
@@ -25,7 +29,8 @@ pub const ENROLLMENT_VERSION: u32 = 1;
 pub struct LivenessCalibration {
     /// Composite liveness score observed during enrollment.
     pub enrolled_score: f32,
-    /// Score threshold to enforce at verify time (>= the global default).
+    /// Score threshold to enforce at verify time. Read back verbatim from disk; range validation and
+    /// clamping against the global floor is a wave-2 concern, so no invariant is asserted here.
     pub score_threshold: f32,
 }
 
@@ -119,6 +124,17 @@ impl EnrollStore {
         if !self.dir.exists() {
             fs::create_dir_all(&self.dir)
                 .map_err(|e| MugError::Store(format!("create {}: {e}", self.dir.display())))?;
+        }
+        let meta = fs::metadata(&self.dir)
+            .map_err(|e| MugError::Store(format!("stat {}: {e}", self.dir.display())))?;
+        if !meta.is_dir() {
+            return Err(MugError::Store(format!(
+                "{} exists but is not a directory",
+                self.dir.display()
+            )));
+        }
+        // Enforce 0700 every time, not only on create: a pre-existing dir may carry loose perms.
+        if meta.permissions().mode() & 0o777 != 0o700 {
             fs::set_permissions(&self.dir, fs::Permissions::from_mode(0o700))
                 .map_err(|e| MugError::Store(format!("chmod 700 {}: {e}", self.dir.display())))?;
         }
@@ -145,30 +161,29 @@ impl EnrollStore {
         enrollment.validate_version()?;
         self.ensure_dir()?;
         let path = self.user_path(username)?;
-        let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
+        let tmp = temp_sibling(&path);
 
         let mut json = serde_json::to_vec_pretty(enrollment)
             .map_err(|e| MugError::Store(format!("serialize enrollment: {e}")))?;
 
-        let write_result = (|| -> std::io::Result<()> {
-            let mut f = fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp)?;
-            f.write_all(&json)?;
-            f.sync_all()?;
-            Ok(())
-        })();
-        // The serialized buffer held a copy of the embedding; wipe it regardless of outcome.
+        // The serialized buffer holds a plaintext copy of the embedding. Write it durably, then wipe
+        // it regardless of outcome; on any write/fsync/rename failure remove the temp so no partial
+        // file containing the embedding is left behind.
+        let write_result = write_private(&tmp, &json);
         json.zeroize();
-        write_result.map_err(|e| MugError::Store(format!("write {}: {e}", tmp.display())))?;
+        write_result.map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            MugError::Store(format!("write {}: {e}", tmp.display()))
+        })?;
 
         fs::rename(&tmp, &path).map_err(|e| {
             let _ = fs::remove_file(&tmp);
             MugError::Store(format!("rename into {}: {e}", path.display()))
         })?;
+
+        // fsync the parent dir so the renamed entry itself survives a crash, not just its contents.
+        sync_parent_dir(&path)
+            .map_err(|e| MugError::Store(format!("sync parent dir of {}: {e}", path.display())))?;
         Ok(())
     }
 
@@ -208,9 +223,70 @@ impl EnrollStore {
     }
 }
 
+/// Build a unique sibling temp path so back-to-back writes never collide and an attacker cannot
+/// pre-create a predictable temp name (the `O_EXCL` open in [`write_private`] would reject a
+/// pre-existing or symlinked path anyway).
+fn temp_sibling(path: &Path) -> PathBuf {
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".tmp.{}.{seq}.{nanos}", std::process::id()));
+    path.with_file_name(name)
+}
+
+/// Create `path` with `O_EXCL` (mode 0600), write `bytes`, and fsync the file. `create_new` fails if
+/// the path already exists or is a symlink, eliminating the clobber/symlink risk of a reused temp.
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(bytes)?;
+    f.sync_all()
+}
+
+/// fsync the directory containing `path` so a freshly renamed entry survives a crash. On Unix a
+/// directory is fsync'd by opening it read-only and calling `sync_all` on the handle.
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    fs::File::open(parent)?.sync_all()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+
+    /// Saves a process-global env var and restores its prior value (or unsets it) on drop, including
+    /// on panic, so the override never leaks into other tests in the same process.
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &Path) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     fn sample() -> FaceEnrollment {
         FaceEnrollment::new(
@@ -284,10 +360,8 @@ mod tests {
     #[test]
     fn default_location_honours_env() {
         let dir = tempfile::tempdir().unwrap();
-        // SAFETY of test: set + read within this test only; value removed after.
-        std::env::set_var(EnrollStore::ENV_DIR, dir.path());
+        let _guard = EnvGuard::set(EnrollStore::ENV_DIR, dir.path());
         let store = EnrollStore::default_location().unwrap();
         assert_eq!(store.dir(), dir.path());
-        std::env::remove_var(EnrollStore::ENV_DIR);
     }
 }

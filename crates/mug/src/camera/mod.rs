@@ -142,10 +142,12 @@ where
     emitter.set_enabled(true)?;
     let on = source.capture(per_frame)?;
 
-    // Restoring the emitter to off is best-effort: a failure here must not turn a captured pair into
-    // an error, but it also must not be swallowed silently downstream — the emitter starts off again
-    // on the next pair regardless.
-    let _ = emitter.set_enabled(false);
+    // Restoring the emitter to off is best-effort cleanup: a failure here must not turn a captured
+    // pair into an error (the emitter starts off again on the next pair regardless), but it is
+    // logged rather than swallowed so an operator can spot a flaky emitter.
+    if let Err(e) = emitter.set_enabled(false) {
+        eprintln!("mug: warning: failed to restore IR emitter to off (best-effort): {e}");
+    }
 
     FramePair::new(off, on)
 }

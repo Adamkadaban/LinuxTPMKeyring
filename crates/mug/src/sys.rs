@@ -101,6 +101,17 @@ nix::ioctl_readwrite!(vidioc_s_fmt, b'V', 5, v4l2_format);
 nix::ioctl_readwrite!(vidioc_enum_fmt, b'V', 2, v4l2_fmtdesc);
 nix::ioctl_readwrite!(uvcioc_ctrl_query, b'u', 0x21, uvc_xu_control_query);
 
+// The `_IOWR` request codes above bake `size_of::<T>()` into the ioctl number, so a struct whose
+// layout drifts from the kernel ABI would silently issue the wrong ioctl. These compile-time checks
+// pin the sizes the kernel `videodev2.h`/`uvcvideo.h` headers define. The first three are u32-only
+// (target-independent); `uvc_xu_control_query` ends in a pointer, so its size is gated to the LP64
+// x86_64 ABI this crate targets.
+const _: () = assert!(core::mem::size_of::<v4l2_format>() == 208);
+const _: () = assert!(core::mem::size_of::<v4l2_pix_format>() == 48);
+const _: () = assert!(core::mem::size_of::<v4l2_fmtdesc>() == 64);
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(core::mem::size_of::<uvc_xu_control_query>() == 16);
+
 fn errno_io(e: nix::errno::Errno) -> io::Error {
     io::Error::from_raw_os_error(e as i32)
 }
@@ -183,17 +194,36 @@ pub fn uvc_set_cur(fd: RawFd, unit: u8, selector: u8, data: &[u8]) -> io::Result
 
 /// Wait up to `timeout_ms` for the fd to become readable (a frame is ready). Returns `Ok(false)` on
 /// timeout so the caller can surface a bounded [`crate::MugError::Timeout`] instead of blocking
-/// login on a wedged camera.
+/// login on a wedged camera. A `poll(2)` interrupted by a signal (`EINTR`) is retried with the
+/// remaining time so a stray signal never aborts a capture, while the overall deadline stays bounded.
 pub fn poll_readable(fd: RawFd, timeout_ms: i32) -> io::Result<bool> {
     let mut pfd = libc::pollfd {
         fd,
         events: libc::POLLIN,
         revents: 0,
     };
-    // SAFETY: a single valid `pollfd` is passed with count 1; libc::poll writes only `revents`.
-    let rc = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
-    if rc < 0 {
-        return Err(io::Error::last_os_error());
+    let deadline = (timeout_ms >= 0)
+        .then(|| std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms as u64));
+    loop {
+        let remaining = match deadline {
+            Some(d) => {
+                let left = d.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return Ok(false);
+                }
+                left.as_millis().min(i32::MAX as u128) as i32
+            }
+            None => -1,
+        };
+        // SAFETY: a single valid `pollfd` is passed with count 1; libc::poll writes only `revents`.
+        let rc = unsafe { libc::poll(&mut pfd, 1, remaining) };
+        if rc < 0 {
+            let err = io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(err);
+        }
+        return Ok(rc > 0 && (pfd.revents & libc::POLLIN) != 0);
     }
-    Ok(rc > 0 && (pfd.revents & libc::POLLIN) != 0)
 }
