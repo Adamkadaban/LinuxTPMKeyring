@@ -40,7 +40,14 @@ pub fn cosine_distance(a: &[f32], b: &[f32]) -> Result<f32> {
     if na == 0.0 || nb == 0.0 {
         return Err(MugError::InvalidFrame("zero-magnitude embedding".into()));
     }
-    Ok((1.0 - (dot / (na * nb))).clamp(0.0, 2.0))
+    let cosine = dot / (na * nb);
+    if !cosine.is_finite() {
+        // NaN/Inf inputs would clamp to NaN and escape the [0, 2] contract — reject instead.
+        return Err(MugError::InvalidFrame(
+            "non-finite cosine (NaN/Inf in embedding)".into(),
+        ));
+    }
+    Ok((1.0 - cosine).clamp(0.0, 2.0))
 }
 
 /// A face matcher: an embedding extractor plus a cosine-distance acceptance threshold.
