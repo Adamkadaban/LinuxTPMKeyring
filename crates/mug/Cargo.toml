@@ -21,7 +21,7 @@ nix = { workspace = true, features = ["ioctl"] }
 # Self-contained ONNX inference (no native ONNX Runtime; builds SIMD kernels via cc) for the real face
 # matcher. Off by default so the CI/default build stays model-free (the deterministic mock); the
 # user supplies the model at runtime — none ships with tess.
-tract-onnx = { version = "0.23.3", optional = true }
+tract-onnx = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
