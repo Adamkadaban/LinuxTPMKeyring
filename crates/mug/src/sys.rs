@@ -224,6 +224,20 @@ pub fn poll_readable(fd: RawFd, timeout_ms: i32) -> io::Result<bool> {
             }
             return Err(err);
         }
-        return Ok(rc > 0 && (pfd.revents & libc::POLLIN) != 0);
+        if rc == 0 {
+            return Ok(false); // genuine timeout
+        }
+        if pfd.revents & libc::POLLIN != 0 {
+            return Ok(true);
+        }
+        // poll reported the fd ready for a reason other than readable — POLLERR/POLLHUP/POLLNVAL
+        // (camera unplugged, fd invalid). Surface a real error, never a misclassified timeout.
+        if pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            return Err(io::Error::other(format!(
+                "poll on camera fd reported revents {:#x} (device error/hangup)",
+                pfd.revents
+            )));
+        }
+        return Ok(false);
     }
 }
