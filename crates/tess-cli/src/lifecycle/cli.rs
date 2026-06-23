@@ -122,6 +122,10 @@ fn prompt_optional_recovery_secret() -> Result<Option<SecretBytes>> {
         .context("read recovery secret")?,
     );
     if entered.trim().is_empty() {
+        eprintln!(
+            "warning: no recovery secret entered — the TPM lockout-hierarchy authValue stays bound \
+             to tess. Re-run `tess unenroll` with the recovery secret to fully release it."
+        );
         return Ok(None);
     }
     Ok(Some(

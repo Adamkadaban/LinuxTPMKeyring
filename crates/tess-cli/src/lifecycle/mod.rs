@@ -234,15 +234,16 @@ fn release_lockout_auth<S: KeySealer>(
         .with_context(|| format!("remove {}", paths.lockout_owned.display()))
 }
 
-/// Remove the sealed metadata, recovery blob, and lockout-ownership marker, idempotently (an
-/// already-absent file is success).
+/// Remove the sealed metadata and recovery blob, idempotently (an already-absent file is success).
+/// The `lockout-owned` marker is intentionally NOT removed here: it tracks whether tess still owns
+/// the TPM lockout authValue, which `release_lockout_auth` clears (and the marker with it) only when
+/// the auth is actually released. Deleting it unconditionally would orphan a still-bound auth — a
+/// later re-enroll would see `lockoutAuthSet` and wrongly treat tess's own auth as a foreign owner.
 fn remove_blobs(paths: &Paths) -> Result<()> {
     crate::enroll::remove_file(&paths.metadata)
         .with_context(|| format!("remove {}", paths.metadata.display()))?;
     crate::enroll::remove_file(&paths.recovery)
         .with_context(|| format!("remove {}", paths.recovery.display()))?;
-    crate::enroll::remove_file(&paths.lockout_owned)
-        .with_context(|| format!("remove {}", paths.lockout_owned.display()))?;
     Ok(())
 }
 

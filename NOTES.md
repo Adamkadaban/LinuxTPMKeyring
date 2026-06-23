@@ -702,7 +702,7 @@ Gotchas worth remembering:
 
 **Resolution:** lockout authValue = `HKDF-SHA256(R, salt="", info="tess-lockout-auth-v1")` set via the
 safe `Context::hierarchy_change_auth(AuthHandle::Lockout, …)` under the salted-HMAC/param-enc session;
-reset shells out to `tpm2_dictionarylockout --clear-lockout --auth file:-`. `crates/tess-tpm/src/lockout.rs:129` · #16
+reset shells out to `tpm2_dictionarylockout --clear-lockout --auth file:-`. `crates/tess-tpm/src/lockout.rs:204` (reset_lockout) · `set_lockout_auth:129` · #16
 
 - **tpm2-tools auth via stdin, not argv.** `--auth file:-` reads the **raw** authValue bytes from
   stdin, which exactly match the raw `TPM2B_AUTH` set by `hierarchy_change_auth` (no `hex:`/`str:`
