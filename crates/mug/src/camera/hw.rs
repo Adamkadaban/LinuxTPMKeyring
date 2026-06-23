@@ -33,6 +33,7 @@ pub fn find_brio_ir_node() -> Result<PathBuf> {
     let entries = std::fs::read_dir(V4L_BY_ID_DIR)
         .map_err(|e| MugError::Camera(format!("read {V4L_BY_ID_DIR}: {e}")))?;
 
+    let mut last_err: Option<MugError> = None;
     for entry in entries {
         let entry = entry.map_err(|e| MugError::Camera(format!("read dir entry: {e}")))?;
         let link = entry.path();
@@ -44,11 +45,16 @@ pub fn find_brio_ir_node() -> Result<PathBuf> {
             continue;
         }
 
-        if node_offers_grey(&link).unwrap_or(false) {
-            return Ok(link);
+        // A Brio-looking node that can't be probed (permission denied, broken symlink, ioctl error)
+        // is remembered, not silently skipped: if no GREY node is found, the real failure surfaces
+        // instead of a misleading NoIrNode.
+        match node_offers_grey(&link) {
+            Ok(true) => return Ok(link),
+            Ok(false) => {}
+            Err(e) => last_err = Some(e),
         }
     }
-    Err(MugError::NoIrNode)
+    Err(last_err.unwrap_or(MugError::NoIrNode))
 }
 
 fn node_offers_grey(path: &Path) -> Result<bool> {

@@ -10,6 +10,7 @@ mod hw;
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::error::{MugError, Result};
 
@@ -124,7 +125,8 @@ pub trait IrEmitter {
 }
 
 /// Capture a liveness frame pair: emitter OFF → capture, emitter ON → capture, then best-effort
-/// restore OFF. `deadline_ms` is split across the two captures so the whole operation stays bounded.
+/// restore OFF. The whole operation is bounded by `deadline_ms`: the first capture gets half the
+/// budget and the second gets whatever remains, so two captures never exceed the caller's deadline.
 pub fn capture_liveness_pair<S, E>(
     source: &mut S,
     emitter: &mut E,
@@ -134,13 +136,19 @@ where
     S: IrSource,
     E: IrEmitter,
 {
-    let per_frame = (deadline_ms / 2).max(1);
+    let deadline = Instant::now() + Duration::from_millis(deadline_ms);
+    let first_budget = deadline_ms / 2;
 
     emitter.set_enabled(false)?;
-    let off = source.capture(per_frame)?;
+    let off = source.capture(first_budget)?;
 
     emitter.set_enabled(true)?;
-    let on = source.capture(per_frame)?;
+    // Whatever is left of the overall budget (saturating to 0), so the pair stays within deadline_ms
+    // even for tiny/misconfigured values. The remaining span never exceeds deadline_ms, so it fits u64.
+    let remaining = deadline
+        .saturating_duration_since(Instant::now())
+        .as_millis() as u64;
+    let on = source.capture(remaining)?;
 
     // Restoring the emitter to off is best-effort cleanup: a failure here must not turn a captured
     // pair into an error (the emitter starts off again on the next pair regardless), but it is
