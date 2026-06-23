@@ -237,6 +237,12 @@ fn resize_gray(frame: &IrFrame, dst_w: usize, dst_h: usize) -> Vec<u8> {
 #[cfg(feature = "face-model")]
 const MAX_INPUT_ELEMS: usize = 16 * 1024 * 1024;
 
+/// Upper bound on a model's output (embedding) element count. Face embeddings are tiny (hundreds to a
+/// few thousand floats); capping the declared output shape stops a hostile model from forcing a huge
+/// output allocation that would OOM/abort the unlock helper instead of degrading to the PIN.
+#[cfg(feature = "face-model")]
+const MAX_OUTPUT_ELEMS: usize = 1024 * 1024;
+
 /// A `tract`-backed ONNX face-embedding extractor (self-contained inference; no native ONNX Runtime,
 /// though `tract` builds some SIMD kernels via `cc`, so a build-time C toolchain is required).
 ///
@@ -328,6 +334,11 @@ impl TractExtractor {
                 return Err(MugError::MatcherUnavailable(
                     "model output has a zero-length dimension".into(),
                 ));
+            }
+            if n > MAX_OUTPUT_ELEMS {
+                return Err(MugError::MatcherUnavailable(format!(
+                    "model output of {n} elements exceeds the {MAX_OUTPUT_ELEMS}-element cap"
+                )));
             }
             n
         };
