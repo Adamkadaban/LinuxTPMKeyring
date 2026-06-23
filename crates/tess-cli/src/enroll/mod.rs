@@ -265,14 +265,20 @@ pub fn enroll<S: KeySealer>(
 
     // Refuse to clobber an existing enrollment: its blobs are the only way to unseal/recover the
     // current keyring key, and overwriting them here (then deleting them on rollback) could strand
-    // the user. Until `tess unenroll`/`tess recover` land, the actionable step is removing the stale
-    // blob(s) manually (named in the message) to re-enroll from scratch.
+    // the user. The face-unlock artifacts are included so a stale `metadata-face.json`/`face-unlock.key`
+    // (e.g. from a prior failed `--face` attempt) can't silently persist a face credential. Run
+    // `tess unenroll` to clear a prior enrollment, or remove the named stale blob(s) to re-enroll.
     ensure!(
-        !paths.metadata.exists() && !paths.recovery.exists(),
-        "already enrolled: {} or {} already exists. Remove the stale blob(s) to re-enroll from \
-         scratch (a future `tess unenroll`/`tess recover` will automate this).",
+        !paths.metadata.exists()
+            && !paths.recovery.exists()
+            && !paths.metadata_face.exists()
+            && !paths.face_key.exists(),
+        "already enrolled: one of {}, {}, {}, {} already exists. Run `tess unenroll`, or remove the \
+         stale blob(s) to re-enroll from scratch.",
         paths.metadata.display(),
-        paths.recovery.display()
+        paths.recovery.display(),
+        paths.metadata_face.display(),
+        paths.face_key.display()
     );
 
     // Prove the supplied credential opens the keyring *before* writing anything to disk, so a wrong

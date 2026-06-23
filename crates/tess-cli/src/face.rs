@@ -111,8 +111,8 @@ pub fn template_source_from_env() -> Result<Box<dyn FaceTemplateSource>> {
         }))
     } else {
         Err(anyhow!(
-            "no face capture backend available: set {} for the virtual substrate, or configure an \
-             IR face model (none ships with tess)",
+            "no face capture backend available: set {} for the virtual IR substrate (the only backend wired \
+             today; real-camera capture + an IR matcher model are a follow-up, see issue #56)",
             VirtualIrDevice::ENV_DIR
         ))
     }
@@ -141,8 +141,8 @@ pub fn verify_from_env(enrolled: &FaceEnrollment) -> Result<()> {
         .map_err(|e| anyhow!("face verification failed: {e}"))
     } else {
         Err(anyhow!(
-            "no face capture backend available: set {} for the virtual substrate, or configure an \
-             IR face model (none ships with tess)",
+            "no face capture backend available: set {} for the virtual IR substrate (the only backend wired \
+             today; real-camera capture + an IR matcher model are a follow-up, see issue #56)",
             VirtualIrDevice::ENV_DIR
         ))
     }

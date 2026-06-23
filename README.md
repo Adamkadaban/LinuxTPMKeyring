@@ -160,8 +160,9 @@ time under a fresh, independent random authValue `A_face`; that authValue is sto
 image). `tess unlock --face` captures an IR frame pair, runs the active-illumination **liveness**
 check, matches your face, and — on success — reads `A_face` and unseals `K` with **no PIN typed**.
 Any face failure, timeout, or missing enrollment falls back to the PIN. The PIN always works; face is
-the convenience path. (No face model ships with tess, so face capture needs the configured IR model
-on hardware; CI uses a virtual IR substrate + a model-free mock matcher.)
+the convenience path. (Today the face pipeline is wired to a **virtual IR substrate**
+(`MUG_VIRTUAL_IR_DIR`) with a model-free mock matcher — used by CI and for trying the flow. Real
+Logitech Brio capture plus an IR matcher model are a tracked follow-up ([#56](https://github.com/Adamkadaban/LinuxTPMKeyring/issues/56)); no face model ships with tess.)
 
 **Honest at-rest trade-off — read before enrolling `--face`.** With a typed PIN, *nothing* that
 unlocks the key is ever stored, so a powered-off stolen laptop yields nothing: **disk-only theft
