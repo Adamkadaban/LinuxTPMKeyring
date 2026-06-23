@@ -34,7 +34,7 @@ with no camera. The Brio emitter `SET_CUR` payloads default to a starting value 
 via `MUG_IR_EMITTER_ON_HEX`/`MUG_IR_EMITTER_OFF_HEX`; a wrong payload fails safe (emitter stays off,
 liveness can't pass). Selection is symmetric across `template_source_from_env` (enroll) and
 `verify_from_env` (unlock). No new `unsafe`: all hardware code remains behind `mug::sys` (ADR-0012);
-`tess-cli` stays `deny(unsafe_code)`. See `crates/tess-cli/src/face.rs` (`resolve_backend`,
+`tess-cli` stays unsafe-free under the workspace `unsafe_code = "forbid"` lint. See `crates/tess-cli/src/face.rs` (`resolve_backend`,
 `build_hardware_backend`).
 
 **Matcher backend (#56) — deferred/blocked, NOT wired.** No `ort` dependency or `face-model` feature

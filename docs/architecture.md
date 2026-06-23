@@ -549,8 +549,7 @@ mean a wedged camera degrades to the PIN within the deadline rather than freezin
 #### Face capture backends (`mug` + `tess-cli::face`)
 
 `tess-cli::face::select_backend` chooses the IR capture backend from `MUG_IR_BACKEND` and resolves it
-through the pure, unit-tested `resolve_backend` (factored out so selection is tested without a camera
-or env mutation):
+through the pure, unit-tested `resolve_backend` (factored out so the core decision logic is unit-tested without a camera or env mutation):
 
 | `MUG_IR_BACKEND` | `MUG_VIRTUAL_IR_DIR` set | Brio GREY node found | Result |
 |---|---|---|---|

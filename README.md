@@ -187,7 +187,7 @@ as a liveness-gated convenience pending the matcher model.
 The hardware path is validated by a manual smoke on a **dedicated test machine** with the Brio
 attached (CI never touches a camera). Because `enroll --face` rekeys the login keyring, run this
 against a **throwaway keyring/TPM** (a test VM with the Brio passed through, or a disposable login) —
-**never the daily-driver keyring/TPM** (`AGENTS.md`):
+**never the daily-driver keyring/TPM** (`enroll --face` rekeys it):
 
 ```sh
 # 1. Enroll against the real camera (look at the Brio; the IR emitter toggles during capture).
