@@ -219,9 +219,8 @@ pub fn poll_readable(fd: RawFd, timeout_ms: i32) -> io::Result<bool> {
         let remaining = match deadline {
             Some(d) => {
                 let left = d.saturating_duration_since(std::time::Instant::now());
-                if left.is_zero() {
-                    return Ok(false);
-                }
+                // When the deadline has passed (or `timeout_ms == 0`), this is 0 — a non-blocking
+                // poll, so an already-readable fd still reports ready instead of a false timeout.
                 left.as_millis().min(i32::MAX as u128) as i32
             }
             None => -1,
