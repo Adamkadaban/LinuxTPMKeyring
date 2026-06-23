@@ -111,12 +111,17 @@ Honest security trade-off, by construction:
 
 - **Face unlock softens the at-rest guarantee; PIN login does not.** With a typed PIN, nothing that
   unlocks the key is ever stored — a powered-off stolen laptop yields nothing to extract (the
-  strongest posture). To unlock with *just a face*, the face gate must hand the TPM the unlock
-  credential on the user's behalf, so that credential is **stored on the device**, protected by the
-  liveness-gated face match plus filesystem permissions (and, when present, full-disk encryption).
-  On commodity Linux there is no VBS/TEE to anchor that the way Windows Hello does, so face-unlock's
-  powered-off-theft resistance is weaker than PIN-only's and depends on the device's disk
-  encryption. Users who want the strongest at-rest posture use PIN login and leave face unenrolled.
+  strongest posture). To unlock with *just a face*, the same keyring key `K` is sealed in the TPM a
+  **second** time under a fresh, independent random authValue `A_face` (`metadata-face.json`), and
+  `A_face` is stored on disk (`face-unlock.key`, mode 0600). `K` itself is still **never** on disk,
+  so disk-only theft stays fully protected (unsealing always needs the TPM/laptop); but `A_face` on
+  disk lets the TPM unseal `K` after a userspace, liveness-gated face match, so **whole-laptop
+  powered-off theft is softened** versus PIN-only — protected by filesystem permissions plus the
+  device's disk encryption when present. On commodity Linux there is no VBS/TEE to anchor that the
+  way Windows Hello does, so face-unlock's powered-off-theft resistance is weaker than PIN-only's and
+  depends on full-disk encryption. `A_face` is independent of both the PIN and the recovery secret
+  (it is freshly drawn, never derived), so it grants no extra reach over the existing recovery path.
+  Users who want the strongest at-rest posture use PIN login and leave face unenrolled.
 - **Liveness raises the bar, it is not a guarantee.** It defeats the photo/screen replays that fool
   Howdy (which has no liveness at all), but it does not claim to stop a determined attacker with a
   fabricated 3-D mask matched to the enrolled face — that is out of scope, as is any root adversary

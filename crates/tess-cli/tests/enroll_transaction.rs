@@ -174,6 +174,8 @@ fn paths_in(dir: &std::path::Path) -> Paths {
         metadata: dir.join("metadata.json"),
         recovery: dir.join("recovery.json"),
         lockout_owned: dir.join("lockout-owned"),
+        metadata_face: dir.join("metadata-face.json"),
+        face_key: dir.join("face-unlock.key"),
     }
 }
 
@@ -203,8 +205,16 @@ fn happy_path_seals_rekeys_and_both_unlock_paths_recover_the_key() {
             Ok(())
         };
 
-        let outcome = enroll(&mut sealer, &backend, &paths, &old, &pin, &verify_item)
-            .expect("enrollment succeeds");
+        let outcome = enroll(
+            &mut sealer,
+            &backend,
+            &paths,
+            &old,
+            &pin,
+            &verify_item,
+            None,
+        )
+        .expect("enrollment succeeds");
         assert!(!outcome.recovery_secret_display.is_empty());
         assert!(paths.metadata.exists(), "sealed metadata persisted");
         assert!(paths.recovery.exists(), "recovery blob persisted");
@@ -259,8 +269,16 @@ fn rollback_on_rekey_failure_preserves_items_and_recovery_was_first() {
         let pin = SecretBytes::new(PIN.to_vec());
         let verify_item = || Ok(());
 
-        let err = enroll(&mut sealer, &backend, &paths, &old, &pin, &verify_item)
-            .expect_err("rekey failure must fail enrollment");
+        let err = enroll(
+            &mut sealer,
+            &backend,
+            &paths,
+            &old,
+            &pin,
+            &verify_item,
+            None,
+        )
+        .expect_err("rekey failure must fail enrollment");
         assert!(
             format!("{err:#}").contains("rekey"),
             "error mentions the rekey: {err:#}"
@@ -299,8 +317,16 @@ fn rollback_on_verify_failure_restores_original_keyring() {
         // The rekey succeeds, then item verification fails — rollback must rekey back to old.
         let verify_item = || Err(anyhow!("injected item-verification failure"));
 
-        let err = enroll(&mut sealer, &backend, &paths, &old, &pin, &verify_item)
-            .expect_err("verify failure must fail enrollment");
+        let err = enroll(
+            &mut sealer,
+            &backend,
+            &paths,
+            &old,
+            &pin,
+            &verify_item,
+            None,
+        )
+        .expect_err("verify failure must fail enrollment");
         assert!(format!("{err:#}").contains("rolled back"), "{err:#}");
 
         assert!(
@@ -333,6 +359,8 @@ fn rollback_on_persist_failure_never_touches_the_keyring() {
             metadata: block.join("metadata.json"),
             recovery: dir.path().join("recovery.json"),
             lockout_owned: dir.path().join("lockout-owned"),
+            metadata_face: dir.path().join("metadata-face.json"),
+            face_key: dir.path().join("face-unlock.key"),
         };
         let mut sealer = TpmSealer::open(tcti).expect("open swtpm sealer");
         let backend = ObservingBackend::new(
@@ -344,8 +372,16 @@ fn rollback_on_persist_failure_never_touches_the_keyring() {
         let pin = SecretBytes::new(PIN.to_vec());
         let verify_item = || Ok(());
 
-        let err = enroll(&mut sealer, &backend, &paths, &old, &pin, &verify_item)
-            .expect_err("persist failure must fail enrollment");
+        let err = enroll(
+            &mut sealer,
+            &backend,
+            &paths,
+            &old,
+            &pin,
+            &verify_item,
+            None,
+        )
+        .expect_err("persist failure must fail enrollment");
         assert!(format!("{err:#}").contains("metadata"), "{err:#}");
 
         // The destructive rekey was never reached, so the keyring is untouched and the recovery blob

@@ -8,8 +8,10 @@
 
 mod hw;
 
+use std::cell::Cell;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::error::{MugError, Result};
@@ -200,11 +202,85 @@ impl VirtualIrDevice {
     }
 
     fn load(&self, name: &str) -> Result<IrFrame> {
-        let path = self.dir.join(name);
-        let data = fs::read(&path).map_err(|e| {
-            MugError::Camera(format!("read synthetic frame {}: {e}", path.display()))
-        })?;
-        IrFrame::new(self.width, self.height, data)
+        load_synthetic(&self.dir, name, self.width, self.height)
+    }
+
+    /// Split the synthetic device into independent source and emitter handles that share emitter
+    /// state through an `Rc<Cell<bool>>`. The combined [`VirtualIrDevice`] is both [`IrSource`] and
+    /// [`IrEmitter`] but cannot be borrowed mutably as both at once, which
+    /// [`capture_liveness_pair`] requires; this pair is the headless analogue of the real Brio's
+    /// separate capture node and emitter control.
+    pub fn split(
+        dir: impl Into<PathBuf>,
+        width: u32,
+        height: u32,
+    ) -> (VirtualIrSource, VirtualIrEmitter) {
+        let state = Rc::new(Cell::new(false));
+        let dir = dir.into();
+        (
+            VirtualIrSource {
+                dir,
+                width,
+                height,
+                state: Rc::clone(&state),
+            },
+            VirtualIrEmitter { state },
+        )
+    }
+
+    /// Split from [`VirtualIrDevice::ENV_DIR`], defaulting to the Brio IR geometry.
+    pub fn split_from_env() -> Result<(VirtualIrSource, VirtualIrEmitter)> {
+        let dir = std::env::var_os(Self::ENV_DIR)
+            .ok_or_else(|| MugError::Camera(format!("{} is not set", Self::ENV_DIR)))?;
+        Ok(Self::split(
+            PathBuf::from(dir),
+            BRIO_IR_WIDTH,
+            BRIO_IR_HEIGHT,
+        ))
+    }
+}
+
+fn load_synthetic(dir: &Path, name: &str, width: u32, height: u32) -> Result<IrFrame> {
+    let path = dir.join(name);
+    let data = fs::read(&path)
+        .map_err(|e| MugError::Camera(format!("read synthetic frame {}: {e}", path.display())))?;
+    IrFrame::new(width, height, data)
+}
+
+/// The [`IrSource`] half of [`VirtualIrDevice::split`]: serves the OFF/ON synthetic frame selected
+/// by the shared emitter state.
+pub struct VirtualIrSource {
+    dir: PathBuf,
+    width: u32,
+    height: u32,
+    state: Rc<Cell<bool>>,
+}
+
+impl IrSource for VirtualIrSource {
+    fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    fn capture(&mut self, _deadline_ms: u64) -> Result<IrFrame> {
+        let name = if self.state.get() {
+            VirtualIrDevice::ON_FRAME
+        } else {
+            VirtualIrDevice::OFF_FRAME
+        };
+        load_synthetic(&self.dir, name, self.width, self.height)
+    }
+}
+
+/// The [`IrEmitter`] half of [`VirtualIrDevice::split`]: toggles the state the paired
+/// [`VirtualIrSource`] reads.
+pub struct VirtualIrEmitter {
+    state: Rc<Cell<bool>>,
+}
+
+impl IrEmitter for VirtualIrEmitter {
+    fn set_enabled(&mut self, on: bool) -> Result<()> {
+        self.state.set(on);
+        Ok(())
     }
 }
 

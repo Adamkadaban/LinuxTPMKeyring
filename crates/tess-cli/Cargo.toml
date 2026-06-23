@@ -33,6 +33,7 @@ tess-core.workspace = true
 tess-tpm.workspace = true
 tess-keyring.workspace = true
 tess-fprint.workspace = true
+mug.workspace = true
 tss-esapi.workspace = true
 clap.workspace = true
 anyhow.workspace = true

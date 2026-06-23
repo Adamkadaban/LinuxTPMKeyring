@@ -4,6 +4,7 @@
 
 pub mod doctor;
 pub mod enroll;
+pub mod face;
 pub mod install;
 pub mod lifecycle;
 pub mod session;

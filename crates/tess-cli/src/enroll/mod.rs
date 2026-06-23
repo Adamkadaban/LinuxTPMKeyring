@@ -30,6 +30,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, ensure, Context, Result};
+use mug::{EnrollStore, FaceEnrollment};
 use tess_core::{KeyringBackend, SecretBytes};
 
 use sealer::KeySealer;
@@ -45,6 +46,12 @@ pub struct Paths {
     /// unenroll knows it owns the auth and may safely release it. Absent on a machine where enroll
     /// skipped binding (a foreign lockout owner) — so unenroll never authorizes a wrong reset there.
     pub lockout_owned: PathBuf,
+    /// TPM sealed-object metadata for the face-unlock credential: the same keyring key sealed a
+    /// second time under the independent face authValue. Present only when `--face` was enrolled.
+    pub metadata_face: PathBuf,
+    /// The face-unlock authValue (`A_face`) on disk, mode 0600. Lets the TPM unseal the key after a
+    /// liveness-gated face match, with no PIN typed. Present only when `--face` was enrolled.
+    pub face_key: PathBuf,
 }
 
 impl Paths {
@@ -56,6 +63,8 @@ impl Paths {
             metadata: dir.join("metadata.json"),
             recovery: dir.join("recovery.json"),
             lockout_owned: dir.join("lockout-owned"),
+            metadata_face: dir.join("metadata-face.json"),
+            face_key: dir.join("face-unlock.key"),
         })
     }
 
@@ -91,11 +100,34 @@ impl std::fmt::Debug for EnrollOutcome {
     }
 }
 
+/// Captures a face-enrollment template (the IR embedding + liveness calibration) from a live or
+/// virtual capture. The transaction calls this once, before any face artifact is written, so a
+/// camera/liveness failure aborts the face enrollment before it touches disk. A CI impl drives the
+/// virtual IR source + mock matcher; the hardware impl drives the Brio + ONNX matcher.
+pub trait FaceTemplateSource {
+    fn capture_template(&mut self) -> Result<FaceEnrollment>;
+}
+
+/// The optional face leg of an enrollment: where to store the face template and how to capture it.
+/// When passed to [`enroll`], the same keyring key is additionally sealed under a fresh independent
+/// authValue and the captured template is saved to `store` under `username` — all inside the
+/// transaction, rolled back on any failure.
+pub struct FaceEnroll<'a> {
+    pub username: &'a str,
+    pub store: &'a EnrollStore,
+    pub template: &'a mut dyn FaceTemplateSource,
+}
+
 /// Tracks the destructive steps performed so a failure can undo exactly what happened, in reverse.
 #[derive(Default)]
 struct Tx {
     recovery_written: bool,
     metadata_written: bool,
+    /// Face-unlock artifacts (additive, fully transactional): the second sealed metadata, the
+    /// on-disk authValue, and the mug-store template. Removed on rollback in reverse.
+    face_metadata_written: bool,
+    face_key_written: bool,
+    face_store_enrolled: bool,
     /// `Some(derived_auth)` once enrollment changed the TPM lockout authValue from empty to the
     /// recovery-derived value; rollback restores it to empty using that same value.
     lockout_auth: Option<SecretBytes>,
@@ -127,6 +159,7 @@ impl Tx {
         keyring: &dyn KeyringBackend,
         paths: &Paths,
         old: &SecretBytes,
+        face: Option<(&str, &EnrollStore)>,
     ) -> Rollback {
         if let Some(new_key) = &self.new_key {
             if let Err(e) = keyring.rekey(new_key, old) {
@@ -155,12 +188,39 @@ impl Tx {
         // The keyring is safe (on `old`, or never changed). Removing the orphaned blobs is
         // best-effort cleanup; a failure here leaves only stale files, never a lockout.
         let mut cleanup: Result<()> = Ok(());
+        if self.face_store_enrolled {
+            if let Some((username, store)) = face {
+                if let Err(e) = store.remove(username) {
+                    let err = anyhow!("remove face enrollment for {username} during rollback: {e}");
+                    cleanup = fold_cleanup(cleanup, err);
+                }
+            }
+        }
+        if self.face_key_written {
+            if let Err(e) = remove_file(&paths.face_key) {
+                let err = anyhow::Error::new(e).context(format!(
+                    "remove face-unlock key {} during rollback",
+                    paths.face_key.display()
+                ));
+                cleanup = fold_cleanup(cleanup, err);
+            }
+        }
+        if self.face_metadata_written {
+            if let Err(e) = remove_file(&paths.metadata_face) {
+                let err = anyhow::Error::new(e).context(format!(
+                    "remove face sealed metadata {} during rollback",
+                    paths.metadata_face.display()
+                ));
+                cleanup = fold_cleanup(cleanup, err);
+            }
+        }
         if self.metadata_written {
             if let Err(e) = remove_file(&paths.metadata) {
-                cleanup = Err(anyhow::Error::new(e).context(format!(
+                let err = anyhow::Error::new(e).context(format!(
                     "remove sealed metadata {} during rollback",
                     paths.metadata.display()
-                )));
+                ));
+                cleanup = fold_cleanup(cleanup, err);
             }
         }
         if self.recovery_written {
@@ -169,10 +229,7 @@ impl Tx {
                     "remove recovery blob {} during rollback",
                     paths.recovery.display()
                 ));
-                cleanup = Err(match cleanup {
-                    Ok(()) => err,
-                    Err(prev) => prev.context(err.to_string()),
-                });
+                cleanup = fold_cleanup(cleanup, err);
             }
         }
         match cleanup {
@@ -182,9 +239,19 @@ impl Tx {
     }
 }
 
+/// Chain a later cleanup error onto whatever the cleanup result already holds, preserving the first.
+fn fold_cleanup(cleanup: Result<()>, err: anyhow::Error) -> Result<()> {
+    match cleanup {
+        Ok(()) => Err(err),
+        Err(prev) => Err(prev.context(err.to_string())),
+    }
+}
+
 /// Run the enrollment transaction. `old` is the current keyring credential, `pin` the PIN that will
 /// gate the TPM-sealed key, and `verify_item` an additional check that a known pre-existing keyring
 /// item still decrypts after the rekey (the CLI passes a no-op; tests assert real items survive).
+/// `face`, when supplied, additionally seals the same key under an independent face authValue and
+/// enrolls the face template — fully inside the transaction (rolled back on any failure).
 pub fn enroll<S: KeySealer>(
     sealer: &mut S,
     keyring: &dyn KeyringBackend,
@@ -192,19 +259,26 @@ pub fn enroll<S: KeySealer>(
     old: &SecretBytes,
     pin: &SecretBytes,
     verify_item: &dyn Fn() -> Result<()>,
+    mut face: Option<FaceEnroll>,
 ) -> Result<EnrollOutcome> {
     ensure!(!pin.is_empty(), "PIN must not be empty");
 
     // Refuse to clobber an existing enrollment: its blobs are the only way to unseal/recover the
     // current keyring key, and overwriting them here (then deleting them on rollback) could strand
-    // the user. Until `tess unenroll`/`tess recover` land, the actionable step is removing the stale
-    // blob(s) manually (named in the message) to re-enroll from scratch.
+    // the user. The face-unlock artifacts are included so a stale `metadata-face.json`/`face-unlock.key`
+    // (e.g. from a prior failed `--face` attempt) can't silently persist a face credential. Run
+    // `tess unenroll` to clear a prior enrollment, or remove the named stale blob(s) to re-enroll.
     ensure!(
-        !paths.metadata.exists() && !paths.recovery.exists(),
-        "already enrolled: {} or {} already exists. Remove the stale blob(s) to re-enroll from \
-         scratch (a future `tess unenroll`/`tess recover` will automate this).",
+        !paths.metadata.exists()
+            && !paths.recovery.exists()
+            && !paths.metadata_face.exists()
+            && !paths.face_key.exists(),
+        "already enrolled: one of {}, {}, {}, {} already exists. Run `tess unenroll`, or remove the \
+         stale blob(s) to re-enroll from scratch.",
         paths.metadata.display(),
-        paths.recovery.display()
+        paths.recovery.display(),
+        paths.metadata_face.display(),
+        paths.face_key.display()
     );
 
     // Prove the supplied credential opens the keyring *before* writing anything to disk, so a wrong
@@ -221,7 +295,7 @@ pub fn enroll<S: KeySealer>(
     let display = recovery::encode(&recovery_secret);
 
     let mut tx = Tx::default();
-    match commit(
+    let result = commit(
         &mut tx,
         sealer,
         keyring,
@@ -231,35 +305,43 @@ pub fn enroll<S: KeySealer>(
         &key,
         &recovery_secret,
         verify_item,
-    ) {
+        face.as_mut(),
+    );
+    match result {
         Ok(()) => Ok(EnrollOutcome {
             recovery_secret_display: display,
         }),
-        Err(err) => match tx.rollback(sealer, keyring, paths, old) {
-            Rollback::Restored => {
-                Err(err.context("enrollment failed and was rolled back to the original keyring"))
+        Err(err) => {
+            let face_cleanup = face.as_ref().map(|f| (f.username, f.store));
+            match tx.rollback(sealer, keyring, paths, old, face_cleanup) {
+                Rollback::Restored => {
+                    Err(err
+                        .context("enrollment failed and was rolled back to the original keyring"))
+                }
+                // The keyring is safe (restored to the original credential); only orphaned blobs
+                // remain. Do not print or expose the recovery secret — it isn't needed.
+                Rollback::CleanupFailed(cleanup_err) => Err(err.context(format!(
+                    "enrollment failed and was rolled back to the original keyring, but removing \
+                     the orphaned enrollment blobs failed ({cleanup_err:#}); delete them manually"
+                ))),
+                // Genuine lockout risk: the keyring is stranded on the new key and the blobs were
+                // kept. The user needs the recovery secret — print it once to the terminal (like the
+                // success path) rather than embedding it in the error chain, which could be logged
+                // repeatedly.
+                Rollback::RestoreFailed(restore_err) => {
+                    eprintln!(
+                        "CRITICAL: enrollment failed and the original keyring credential could not \
+                         be restored. Save this recovery secret and run `tess recover`:\n\n    \
+                         {display}\n"
+                    );
+                    Err(err.context(format!(
+                        "enrollment failed and the original keyring credential could not be \
+                         restored ({restore_err:#}); the recovery secret was printed to stderr — \
+                         run `tess recover`"
+                    )))
+                }
             }
-            // The keyring is safe (restored to the original credential); only orphaned blobs remain.
-            // Do not print or expose the recovery secret — it isn't needed.
-            Rollback::CleanupFailed(cleanup_err) => Err(err.context(format!(
-                "enrollment failed and was rolled back to the original keyring, but removing the \
-                 orphaned enrollment blobs failed ({cleanup_err:#}); delete them manually"
-            ))),
-            // Genuine lockout risk: the keyring is stranded on the new key and the blobs were kept.
-            // The user needs the recovery secret — print it once to the terminal (like the success
-            // path) rather than embedding it in the error chain, which could be logged repeatedly.
-            Rollback::RestoreFailed(restore_err) => {
-                eprintln!(
-                    "CRITICAL: enrollment failed and the original keyring credential could not be \
-                     restored. Save this recovery secret and run `tess recover`:\n\n    {display}\n"
-                );
-                Err(err.context(format!(
-                    "enrollment failed and the original keyring credential could not be restored \
-                     ({restore_err:#}); the recovery secret was printed to stderr — run \
-                     `tess recover`"
-                )))
-            }
-        },
+        }
     }
 }
 
@@ -276,6 +358,7 @@ fn commit<S: KeySealer>(
     key: &SecretBytes,
     recovery_secret: &SecretBytes,
     verify_item: &dyn Fn() -> Result<()>,
+    face: Option<&mut FaceEnroll>,
 ) -> Result<()> {
     // Step 3: recovery backup FIRST, created and verified before anything destructive.
     let blob =
@@ -306,7 +389,16 @@ fn commit<S: KeySealer>(
     tess_tpm::persist::save(&metadata, &paths.metadata).context("persist the sealed metadata")?;
     tx.metadata_written = true;
 
-    // Step 4.5: bind the TPM lockout hierarchy to the recovery secret so a future hard lockout is
+    // Step 4.5 (optional): the additive face-unlock credential. The same key is sealed a SECOND time
+    // under a fresh, independent authValue (`A_face`, not derived from the PIN or recovery secret),
+    // that authValue is stored 0600, and the face template is enrolled. Done before the destructive
+    // rekey, so any failure here rolls back with the keyring never touched — face is additive and a
+    // failure never strands the keyring.
+    if let Some(face) = face {
+        commit_face(tx, sealer, paths, key, face).context("enroll the face-unlock credential")?;
+    }
+
+    // Step 4.6: bind the TPM lockout hierarchy to the recovery secret so a future hard lockout is
     // resettable by the recovery-secret holder (the privileged DA reset). Skipped — with a warning,
     // not an error — when the lockout hierarchy already carries an authValue tess did not set, so a
     // managed machine still enrolls (only the privileged reset is unavailable there).
@@ -352,6 +444,58 @@ fn commit<S: KeySealer>(
     );
     verify_item().context("verify a pre-existing keyring item still decrypts after the rekey")?;
 
+    Ok(())
+}
+
+/// The additive face-unlock steps, ordered so disk writes only happen after the (failable) capture.
+/// Each completed step is recorded in `tx` so rollback removes exactly the face artifacts created.
+fn commit_face<S: KeySealer>(
+    tx: &mut Tx,
+    sealer: &mut S,
+    paths: &Paths,
+    key: &SecretBytes,
+    face: &mut FaceEnroll,
+) -> Result<()> {
+    // Capture FIRST: a camera/liveness failure aborts before any face artifact reaches disk.
+    let template = face
+        .template
+        .capture_template()
+        .context("capture the face enrollment template")?;
+
+    // A fresh independent authValue, drawn from the same getrandom+TPM-RNG mix as the keyring key.
+    // It is NOT derived from the PIN or the recovery secret — a distinct on-disk credential.
+    let a_face = sealer
+        .generate_key()
+        .context("generate the independent face authValue")?;
+
+    // Seal the SAME keyring key under `A_face`, and prove it unseals before persisting so a broken
+    // face object can never be left behind.
+    let sealed = sealer
+        .seal(&a_face, key)
+        .context("seal the keyring key under the face authValue")?;
+    let check = sealer
+        .unseal(&sealed, &a_face)
+        .context("verify the face-sealed key unseals before persisting")?;
+    ensure!(
+        check.as_slice() == key.as_slice(),
+        "face-sealed key did not unseal to the keyring key"
+    );
+    let metadata =
+        tess_tpm::persist::to_metadata(&sealed).context("encode the face-sealed metadata")?;
+    tess_tpm::persist::save(&metadata, &paths.metadata_face)
+        .context("persist the face-sealed metadata")?;
+    tx.face_metadata_written = true;
+
+    // Store `A_face` durably, 0600.
+    recovery::write_secret_file(&paths.face_key, &a_face)
+        .context("store the face-unlock authValue")?;
+    tx.face_key_written = true;
+
+    // Enroll the face template into the per-user mug store.
+    face.store
+        .save(face.username, &template)
+        .map_err(|e| anyhow!("save the face enrollment for {}: {e}", face.username))?;
+    tx.face_store_enrolled = true;
     Ok(())
 }
 
@@ -446,6 +590,8 @@ mod tests {
             metadata: dir.join("metadata.json"),
             recovery: dir.join("recovery.json"),
             lockout_owned: dir.join("lockout-owned"),
+            metadata_face: dir.join("metadata-face.json"),
+            face_key: dir.join("face-unlock.key"),
         }
     }
 
@@ -490,15 +636,16 @@ mod tests {
         let tx = Tx {
             recovery_written: true,
             metadata_written: true,
-            lockout_auth: None,
             new_key: None,
+            ..Tx::default()
         };
         assert!(matches!(
             tx.rollback(
                 &mut NoopSealer,
                 &keyring,
                 &p,
-                &SecretBytes::new(b"old".to_vec())
+                &SecretBytes::new(b"old".to_vec()),
+                None,
             ),
             Rollback::Restored
         ));
@@ -523,15 +670,16 @@ mod tests {
         let tx = Tx {
             recovery_written: true,
             metadata_written: true,
-            lockout_auth: None,
             new_key: Some(SecretBytes::new(b"new".to_vec())),
+            ..Tx::default()
         };
         assert!(matches!(
             tx.rollback(
                 &mut NoopSealer,
                 &keyring,
                 &p,
-                &SecretBytes::new(b"old".to_vec())
+                &SecretBytes::new(b"old".to_vec()),
+                None,
             ),
             Rollback::Restored
         ));
@@ -562,14 +710,15 @@ mod tests {
         let tx = Tx {
             recovery_written: true,
             metadata_written: true,
-            lockout_auth: None,
             new_key: Some(SecretBytes::new(b"new".to_vec())),
+            ..Tx::default()
         };
         let outcome = tx.rollback(
             &mut NoopSealer,
             &keyring,
             &p,
             &SecretBytes::new(b"old".to_vec()),
+            None,
         );
 
         let Rollback::RestoreFailed(err) = outcome else {
@@ -596,14 +745,15 @@ mod tests {
         let tx = Tx {
             recovery_written: true,
             metadata_written: true,
-            lockout_auth: None,
             new_key: Some(SecretBytes::new(b"new".to_vec())),
+            ..Tx::default()
         };
         let outcome = tx.rollback(
             &mut NoopSealer,
             &keyring,
             &p,
             &SecretBytes::new(b"old".to_vec()),
+            None,
         );
 
         let Rollback::CleanupFailed(err) = outcome else {

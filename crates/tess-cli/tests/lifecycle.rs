@@ -133,6 +133,8 @@ fn paths_in(dir: &std::path::Path) -> Paths {
         metadata: dir.join("metadata.json"),
         recovery: dir.join("recovery.json"),
         lockout_owned: dir.join("lockout-owned"),
+        metadata_face: dir.join("metadata-face.json"),
+        face_key: dir.join("face-unlock.key"),
     }
 }
 
@@ -148,7 +150,7 @@ fn enroll_fixture(
     let old = SecretBytes::new(OLD_PASSWORD.to_vec());
     let pin = SecretBytes::new(PIN.to_vec());
     let verify_item = || Ok(());
-    enroll(&mut sealer, &backend, paths, &old, &pin, &verify_item)
+    enroll(&mut sealer, &backend, paths, &old, &pin, &verify_item, None)
         .expect("enrollment succeeds")
         .recovery_secret_display
 }
@@ -244,6 +246,7 @@ fn unenroll_restores_password_keyring_with_items_intact() {
             &pin,
             &new_password,
             Some(&recovery_secret),
+            None,
         )
         .expect("unenroll succeeds");
 

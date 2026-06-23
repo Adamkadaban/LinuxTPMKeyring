@@ -263,6 +263,46 @@ pub(crate) fn write_durable_marker(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Durably write raw secret bytes to `path` (atomic temp-write + rename + parent-dir fsync, mode
+/// 0600). The caller owns wiping the in-memory copy via [`SecretBytes`]. Used for the face-unlock
+/// authValue (`A_face`): unlike the recovery blob it is the raw credential, so it never reaches disk
+/// in any form other than this private file.
+pub(crate) fn write_secret_file(path: &Path, secret: &SecretBytes) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
+        }
+    }
+    let tmp = temp_sibling(path);
+    write_private(&tmp, secret.as_slice()).with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        anyhow!("rename {} -> {}: {e}", tmp.display(), path.display())
+    })?;
+    sync_parent_dir(path).with_context(|| format!("sync parent dir of {}", path.display()))?;
+    Ok(())
+}
+
+/// Read raw secret bytes written by [`write_secret_file`] back into a zeroizing [`SecretBytes`]. The
+/// `std::fs::read` buffer is moved straight into the secret container (no extra clear-text copy).
+pub(crate) fn read_secret_file(path: &Path) -> Result<SecretBytes> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let meta = std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
+    // The face authValue's at-rest protection is its 0600 mode; refuse to use it if group/other
+    // have any access (SSH-style), rather than silently proceeding with a widened, insecure file.
+    let mode = meta.permissions().mode() & 0o777;
+    ensure!(
+        mode & 0o077 == 0,
+        "{} has insecure permissions {:#o}; expected no group/other access (e.g. 0600). Fix with: chmod 600 {}",
+        path.display(),
+        mode,
+        path.display()
+    );
+    let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    Ok(SecretBytes::new(bytes))
+}
+
 /// Read and parse a recovery blob from `path`.
 pub fn load_blob(path: &Path) -> Result<RecoveryBlob> {
     let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
@@ -482,5 +522,18 @@ mod tests {
         assert_eq!(loaded.ciphertext, blob.ciphertext);
         assert_eq!(loaded.salt, blob.salt);
         assert_eq!(loaded.nonce, blob.nonce);
+    }
+
+    #[test]
+    fn secret_file_round_trips_and_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("face-unlock.key");
+        let secret = generate_recovery_secret().unwrap();
+        write_secret_file(&path, &secret).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the face authValue file must be 0600");
+        let read_back = read_secret_file(&path).unwrap();
+        assert_eq!(read_back.as_slice(), secret.as_slice());
     }
 }

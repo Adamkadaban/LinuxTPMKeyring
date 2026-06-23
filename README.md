@@ -1,7 +1,7 @@
 <h1 align="center">tess</h1>
 
 <p align="center">
-  Windows-Hello-style unlocking for the Linux keyring — your secrets, sealed in the TPM, released by a PIN (with an optional fingerprint front gate; face is post-MVP), not your password.
+  Windows-Hello-style unlocking for the Linux keyring — your secrets, sealed in the TPM, released by a PIN (with an optional fingerprint front gate, or a face-or-PIN unlock via `--face`), not your password.
 </p>
 
 <p align="center">
@@ -137,17 +137,41 @@ unenroll with the secret releases it.
 ## Use
 
 ```sh
-tess status        # enrollment + keyring + TPM state
+tess status        # enrollment + keyring + TPM state (incl. whether face-unlock is enrolled)
 tess enroll        # enroll (prints a recovery secret — keep it safe)
+tess enroll --face # also enroll face-unlock: seal the key a 2nd time under a face-released authValue
 tess unlock        # one-shot manual unlock (unseal with PIN → unlock keyring)
+tess unlock --face # try a liveness-gated face match first (no PIN typed), fall back to the PIN
 tess test          # dry-run the session unlock path (no changes)
 tess recover       # re-unlock using the recovery secret; auto-resets a hard TPM lockout, and with --reseal re-seals under a new PIN
-tess unenroll      # restore the password-based keyring (items preserved); releases the TPM lockout hierarchy when given the recovery secret
+tess unenroll      # restore the password-based keyring (items preserved); also clears any face-unlock artifacts; releases the TPM lockout hierarchy when given the recovery secret
 tess doctor        # check TPM / keyring / fprintd / enrollment readiness (non-zero exit when not ready)
 tess doctor --post-install   # stricter check: also require a keyring provider binary on PATH + a completed enrollment
 tess install       # wire pam_tess.so into the session stack (idempotent, fail-open)
 tess install --uninstall   # remove the tess block + module (best-effort), un-wiring the stack
 ```
+
+### Face-or-PIN unlock (`--face`)
+
+`tess enroll --face` adds a Windows-Hello-style **face-or-PIN** unlock on top of the PIN, without ever
+putting the keyring key on disk. The same random key `K` that the PIN seals is sealed a **second**
+time under a fresh, independent random authValue `A_face`; that authValue is stored `0600` at
+`face-unlock.key`, and your face is enrolled (an IR embedding + liveness calibration, never a raw
+image). `tess unlock --face` captures an IR frame pair, runs the active-illumination **liveness**
+check, matches your face, and — on success — reads `A_face` and unseals `K` with **no PIN typed**.
+Any face failure, timeout, or missing enrollment falls back to the PIN. The PIN always works; face is
+the convenience path. (Today the face pipeline is wired to a **virtual IR substrate**
+(`MUG_VIRTUAL_IR_DIR`) with a model-free mock matcher — used by CI and for trying the flow. Real
+Logitech Brio capture plus an IR matcher model are a tracked follow-up ([#56](https://github.com/Adamkadaban/LinuxTPMKeyring/issues/56)); no face model ships with tess.)
+
+**Honest at-rest trade-off — read before enrolling `--face`.** With a typed PIN, *nothing* that
+unlocks the key is ever stored, so a powered-off stolen laptop yields nothing: **disk-only theft
+stays fully protected either way** (unsealing always needs the TPM/laptop, and `K` is never on disk).
+But `A_face` on disk lets the TPM unseal `K` after a userspace face match, so **whole-laptop
+powered-off theft is softened** versus PIN-only — mitigated by **full-disk encryption** (use it).
+There is no TEE/VBS on commodity Linux to anchor the face gate, so it is a userspace authentication
+gate, not a cryptographic binding; a root adversary on a live machine is out of scope. Users who want
+the strongest at-rest posture use PIN-only and leave face unenrolled.
 
 ### PAM wiring (`tess install`)
 
@@ -191,8 +215,8 @@ The module then runs one bounded `fprintd` verify ahead of the PIN unseal and fa
 PIN **regardless of the result** — a match never skips the PIN, and a no-match or stalled reader
 never blocks login. Precedence: **fingerprint (convenience) → PIN (the real gate) → password
 fallthrough**. There is no `tess`-CLI fingerprint flag in the MVP; the gate is configured at the PAM
-line. Multi-factor enrollment UX (`--fingerprint`/`--face`) is post-MVP (Phase 5, the Mug face
-daemon).
+line. The `tess enroll --face` / `tess unlock --face` face-or-PIN CLI flow ships (Phase 5, the Mug
+face factor); wiring face into the **PAM session** (non-blocking login) is a separate follow-up.
 
 > The PAM install logic is exercised in tests against throwaway fixtures only — it never edits a real
 > `/etc/pam.d` or module directory in CI.

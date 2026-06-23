@@ -37,8 +37,9 @@
 //! - `sys` — the only place `unsafe` lives: raw V4L2 / UVC ioctls (the Brio IR-emitter is a vendor
 //!   UVC extension-unit control with no safe wrapper).
 //!
-//! Wave 2 wraps [`matcher`]/[`liveness`]/[`camera`] in a bounded, non-blocking `AuthGate`; the
-//! module boundaries here are designed for that.
+//! [`verify`] composes capture → liveness → match into one bounded operation, and [`FaceGate`] wraps
+//! it behind [`tess_core::AuthGate`] so face slots into the same bounded `authorize(deadline_ms)`
+//! interface as the fingerprint gate.
 
 #![deny(unsafe_code)]
 
@@ -52,14 +53,17 @@ pub mod store;
 mod sys;
 
 mod error;
+mod gate;
 
 pub use error::{MugError, Result};
 
 pub use camera::{
     capture_liveness_pair, FramePair, IrEmitter, IrFrame, IrSource, VirtualIrDevice,
-    BRIO_IR_HEIGHT, BRIO_IR_WIDTH, BRIO_PRODUCT_ID, BRIO_VENDOR_ID,
+    VirtualIrEmitter, VirtualIrSource, BRIO_IR_HEIGHT, BRIO_IR_WIDTH, BRIO_PRODUCT_ID,
+    BRIO_VENDOR_ID,
 };
 pub use config::MugConfig;
+pub use gate::{verify, FaceGate};
 pub use liveness::{analyze as analyze_liveness, LivenessConfig, LivenessFeatures, LivenessReport};
-pub use matcher::{cosine_distance, Embedding, EmbeddingExtractor, Matcher};
+pub use matcher::{cosine_distance, Embedding, EmbeddingExtractor, Matcher, PooledExtractor};
 pub use store::{EnrollStore, FaceEnrollment, LivenessCalibration};

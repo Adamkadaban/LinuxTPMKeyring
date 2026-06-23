@@ -8,6 +8,7 @@
 pub mod cli;
 
 use anyhow::{ensure, Context, Result};
+use mug::EnrollStore;
 use tess_core::{KeyringBackend, SecretBytes};
 use tess_tpm::{persist, LockoutState, TctiConfig};
 
@@ -90,6 +91,33 @@ pub fn unlock<S: KeySealer>(
     unlock_and_verify(keyring, &key, "unsealed key")
 }
 
+/// Whether face-unlock is **fully usable** — i.e. all three artifacts are present: the on-disk
+/// sealed-face metadata, the on-disk authValue, *and* the per-user mug template. A files-only check
+/// would let `tess status` report "enrolled" while `tess unlock --face` always falls back to the PIN
+/// (a missing/corrupt template makes the match unavailable). Non-mutating — the template probe never
+/// creates the store dir. (The unlock path itself only needs the on-disk files; see `unlock_with_face`.)
+pub fn face_enrolled(paths: &Paths) -> bool {
+    paths.metadata_face.exists() && paths.face_key.exists() && crate::face::template_present()
+}
+
+/// `tess unlock --face` (post-gate half): unseal the keyring key via the on-disk face authValue and
+/// unlock the keyring with it. Assumes the liveness-gated face match already passed; the caller runs
+/// the match first and falls back to the PIN path on any failure here.
+pub fn unlock_with_face<S: KeySealer>(
+    sealer: &mut S,
+    keyring: &dyn KeyringBackend,
+    paths: &Paths,
+) -> Result<()> {
+    ensure!(
+        paths.metadata_face.exists() && paths.face_key.exists(),
+        "face-unlock is not enrolled ({} or {} is missing)",
+        paths.metadata_face.display(),
+        paths.face_key.display()
+    );
+    let key = crate::face::unseal_with_face(sealer, paths)?;
+    unlock_and_verify(keyring, &key, "face-unsealed key")
+}
+
 /// `tess recover` — re-establish keyring access using the recovery secret when the TPM path is
 /// unavailable (cleared TPM, lost PIN, changed PCRs). Unwraps the keyring key from the recovery blob
 /// and unlocks the keyring with it. Non-destructive: it neither rekeys nor removes any blob.
@@ -167,6 +195,7 @@ pub fn unenroll<S: KeySealer>(
     pin: &SecretBytes,
     new_password: &SecretBytes,
     recovery_secret: Option<&SecretBytes>,
+    face: Option<(&str, &EnrollStore)>,
 ) -> Result<()> {
     ensure!(
         !new_password.is_empty(),
@@ -208,7 +237,7 @@ pub fn unenroll<S: KeySealer>(
 
     // The sealed/recovery blobs are now stale. Removing them is the final, non-destructive cleanup —
     // a failure here leaves only orphaned files.
-    remove_blobs(paths)
+    remove_blobs(paths, face)
         .context("remove the sealed metadata and recovery blob after a successful unenroll")
 }
 
@@ -234,16 +263,26 @@ fn release_lockout_auth<S: KeySealer>(
         .with_context(|| format!("remove {}", paths.lockout_owned.display()))
 }
 
-/// Remove the sealed metadata and recovery blob, idempotently (an already-absent file is success).
-/// The `lockout-owned` marker is intentionally NOT removed here: it tracks whether tess still owns
-/// the TPM lockout authValue, which `release_lockout_auth` clears (and the marker with it) only when
-/// the auth is actually released. Deleting it unconditionally would orphan a still-bound auth — a
-/// later re-enroll would see `lockoutAuthSet` and wrongly treat tess's own auth as a foreign owner.
-fn remove_blobs(paths: &Paths) -> Result<()> {
+/// Remove the sealed metadata, recovery blob, and any face-unlock artifacts, idempotently (an
+/// already-absent file is success). The `lockout-owned` marker is intentionally NOT removed here: it
+/// tracks whether tess still owns the TPM lockout authValue, which `release_lockout_auth` clears
+/// (and the marker with it) only when the auth is actually released. Deleting it unconditionally
+/// would orphan a still-bound auth — a later re-enroll would see `lockoutAuthSet` and wrongly treat
+/// tess's own auth as a foreign owner. The mug store entry is removed when `face` is supplied.
+fn remove_blobs(paths: &Paths, face: Option<(&str, &EnrollStore)>) -> Result<()> {
     crate::enroll::remove_file(&paths.metadata)
         .with_context(|| format!("remove {}", paths.metadata.display()))?;
     crate::enroll::remove_file(&paths.recovery)
         .with_context(|| format!("remove {}", paths.recovery.display()))?;
+    crate::enroll::remove_file(&paths.metadata_face)
+        .with_context(|| format!("remove {}", paths.metadata_face.display()))?;
+    crate::enroll::remove_file(&paths.face_key)
+        .with_context(|| format!("remove {}", paths.face_key.display()))?;
+    if let Some((username, store)) = face {
+        store
+            .remove(username)
+            .map_err(|e| anyhow::anyhow!("remove the face enrollment for {username}: {e}"))?;
+    }
     Ok(())
 }
 
@@ -260,6 +299,9 @@ pub struct TpmInfo {
 pub struct StatusReport {
     pub metadata_present: bool,
     pub recovery_present: bool,
+    /// Whether face-unlock is fully usable: the sealed-face metadata, the on-disk authValue, and the
+    /// per-user mug template are all present (see [`face_enrolled`]).
+    pub face_present: bool,
     /// `None` when the lock state was not probed; `Some(Err)` carries why it could not be read.
     pub keyring_locked: Option<std::result::Result<bool, String>>,
     pub tpm: std::result::Result<TpmInfo, String>,
@@ -275,6 +317,7 @@ pub fn gather_status(
     StatusReport {
         metadata_present: paths.metadata.exists(),
         recovery_present: paths.recovery.exists(),
+        face_present: face_enrolled(paths),
         keyring_locked,
         tpm: read_caps(tcti).map(|(version, lockout)| TpmInfo {
             version: version.to_string(),
@@ -304,6 +347,15 @@ pub fn render_status(report: &StatusReport) -> String {
             "present"
         } else {
             "absent"
+        }
+    );
+    let _ = writeln!(
+        out,
+        "  face-unlock:   {}",
+        if report.face_present {
+            "enrolled"
+        } else {
+            "not enrolled"
         }
     );
     let _ = writeln!(
@@ -457,6 +509,7 @@ mod tests {
         let report = StatusReport {
             metadata_present: true,
             recovery_present: true,
+            face_present: true,
             keyring_locked: Some(Ok(false)),
             tpm: Ok(TpmInfo {
                 version: "TPM 2.0 (spec rev 138)".to_string(),
@@ -466,6 +519,7 @@ mod tests {
         let out = render_status(&report);
         assert!(out.contains("enrolled (sealed metadata present)"));
         assert!(out.contains("recovery blob: present"));
+        assert!(out.contains("face-unlock:   enrolled"));
         assert!(out.contains("keyring:       unlocked"));
         assert!(out.contains("TPM 2.0 (spec rev 138); DA lockout 0/3"));
     }
@@ -475,12 +529,14 @@ mod tests {
         let report = StatusReport {
             metadata_present: false,
             recovery_present: false,
+            face_present: false,
             keyring_locked: Some(Err("connect: no bus".to_string())),
             tpm: Err("no TCTI library".to_string()),
         };
         let out = render_status(&report);
         assert!(out.contains("not enrolled"));
         assert!(out.contains("recovery blob: absent"));
+        assert!(out.contains("face-unlock:   not enrolled"));
         assert!(out.contains("keyring:       unavailable (connect: no bus)"));
         assert!(out.contains("TPM:           unavailable (no TCTI library)"));
     }
@@ -490,6 +546,7 @@ mod tests {
         let report = StatusReport {
             metadata_present: true,
             recovery_present: false,
+            face_present: false,
             keyring_locked: None,
             tpm: Err("busy".to_string()),
         };

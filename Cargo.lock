@@ -1254,6 +1254,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hkdf",
  "libc",
+ "mug",
  "nix",
  "rpassword",
  "secret-service",

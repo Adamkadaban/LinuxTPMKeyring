@@ -172,6 +172,8 @@ fn full_phase3_cycle_preserves_all_items() {
         metadata: tess_dir.join("metadata.json"),
         recovery: tess_dir.join("recovery.json"),
         lockout_owned: tess_dir.join("lockout-owned"),
+        metadata_face: tess_dir.join("metadata-face.json"),
+        face_key: tess_dir.join("face-unlock.key"),
     };
 
     let backend =
@@ -187,9 +189,17 @@ fn full_phase3_cycle_preserves_all_items() {
         // single-client swtpm.
         let mut sealer = TpmSealer::open(&tcti).expect("open swtpm sealer");
         let verify_item = || Ok(());
-        enroll(&mut sealer, &backend, &paths, &old, &pin, &verify_item)
-            .expect("enrollment succeeds")
-            .recovery_secret_display
+        enroll(
+            &mut sealer,
+            &backend,
+            &paths,
+            &old,
+            &pin,
+            &verify_item,
+            None,
+        )
+        .expect("enrollment succeeds")
+        .recovery_secret_display
     };
     let recovery_secret = recovery::decode(&recovery_display).expect("decode recovery secret");
     assert!(paths.metadata.exists(), "sealed metadata persisted");
@@ -276,6 +286,7 @@ fn full_phase3_cycle_preserves_all_items() {
             &new_pin,
             &restored_password,
             Some(&recovery_secret),
+            None,
         )
         .expect("unenroll succeeds");
     }
