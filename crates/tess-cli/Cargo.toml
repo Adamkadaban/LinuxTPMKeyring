@@ -54,7 +54,6 @@ secret-service = { workspace = true, optional = true }
 tempfile.workspace = true
 zbus.workspace = true
 nix.workspace = true
-mug.workspace = true
 
 [lints]
 workspace = true

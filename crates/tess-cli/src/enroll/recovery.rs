@@ -287,6 +287,18 @@ pub(crate) fn write_secret_file(path: &Path, secret: &SecretBytes) -> Result<()>
 /// Read raw secret bytes written by [`write_secret_file`] back into a zeroizing [`SecretBytes`]. The
 /// `std::fs::read` buffer is moved straight into the secret container (no extra clear-text copy).
 pub(crate) fn read_secret_file(path: &Path) -> Result<SecretBytes> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let meta = std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
+    // The face authValue's at-rest protection is its 0600 mode; refuse to use it if group/other
+    // have any access (SSH-style), rather than silently proceeding with a widened, insecure file.
+    let mode = meta.permissions().mode() & 0o777;
+    ensure!(
+        mode & 0o077 == 0,
+        "{} has insecure permissions {:#o}; expected 0600 (no group/other access). Fix with: chmod 600 {}",
+        path.display(),
+        mode,
+        path.display()
+    );
     let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
     Ok(SecretBytes::new(bytes))
 }
