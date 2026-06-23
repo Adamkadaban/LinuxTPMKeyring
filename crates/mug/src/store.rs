@@ -382,6 +382,7 @@ mod tests {
 
     #[test]
     fn default_location_honours_env() {
+        let _env = tess_testenv::env_lock();
         let dir = tempfile::tempdir().unwrap();
         let _guard = EnvGuard::set_path(EnrollStore::ENV_DIR, dir.path());
         let store = EnrollStore::default_location().unwrap();

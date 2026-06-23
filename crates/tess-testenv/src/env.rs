@@ -6,6 +6,21 @@
 
 use std::ffi::OsString;
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
+
+/// Process-wide guard serializing environment access within a test binary. Each test binary links
+/// its own instance; all env-touching tests in that binary must hold it (via [`env_lock`]) so a
+/// mutation never races a concurrent read/write under the parallel test harness.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// Acquire the binary-wide environment lock. Hold the returned guard for the entire lifetime of any
+/// [`EnvGuard`] created under it; poisoning is ignored (a panicking test still leaves the env
+/// consistent because `EnvGuard` restores on drop).
+pub fn env_lock() -> MutexGuard<'static, ()> {
+    ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Saves a process-global env var and restores its prior value (or unsets it) on `Drop`, including
 /// on panic, so the override never leaks into another test in the same process.

@@ -508,6 +508,7 @@ mod tests {
     fn helper_spec_release_ignores_env_override() {
         // RAII restore so a panicking assertion can't leak the mutation into other tests.
         // (HELPER_PATH_ENV only exists under debug_assertions, so the var name is a literal here.)
+        let _env = tess_testenv::env_lock();
         let _guard = EnvGuard::set("TESS_PAM_HELPER", "/env/should/be/ignored");
 
         // In release builds resolution never consults the environment.
@@ -524,9 +525,11 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn helper_spec_resolution_precedence() {
+        // Hold the binary-wide env lock for the whole test so the HELPER_PATH_ENV mutations below
+        // never race a concurrent reader under the parallel harness.
+        let _env = tess_testenv::env_lock();
         // Restore any pre-existing value on the way out, even if an assertion panics, so this test
-        // neither leaks global state into others nor breaks when CI pre-sets the variable. This is
-        // the only test that touches HELPER_PATH_ENV, so no concurrent reader observes the mutation.
+        // neither leaks global state into others nor breaks when CI pre-sets the variable.
 
         // A root-controlled PAM argument wins over the environment and the default. The outer guard
         // captures the original value and restores it when the test ends.

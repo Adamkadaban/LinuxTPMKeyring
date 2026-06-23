@@ -15,4 +15,4 @@
 
 mod env;
 
-pub use env::EnvGuard;
+pub use env::{EnvGuard, env_lock};
