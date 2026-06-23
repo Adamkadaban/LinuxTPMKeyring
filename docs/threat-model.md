@@ -133,8 +133,9 @@ attacker who trips the lockout has, by construction, no way to derive the lockou
 from `R`, not the PIN and not `K`), so they cannot clear their own lockout — the hardware throttle
 stays in force. The reset is a *recovery* convenience for the legitimate user, not a bypass of
 anti-hammering. The reset is the same strength as `R` (a wrong authValue is refused by the TPM and
-itself trips the lockout-hierarchy's own recovery delay). `tess unenroll` releases the lockout
-hierarchy back to empty, so uninstalling tess leaves the TPM as it was found; on a machine whose
+itself trips the lockout-hierarchy's own recovery delay). Given the recovery secret, `tess unenroll`
+releases the lockout hierarchy back to empty, so uninstalling tess leaves the TPM as it was found
+(skipping the secret leaves the authValue bound, with a warning); on a machine whose
 lockout hierarchy is already owned by something else, tess refuses to clobber it and the privileged
 reset is simply unavailable there.
 

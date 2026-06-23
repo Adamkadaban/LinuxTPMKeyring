@@ -128,8 +128,10 @@ recover immediately, run `tess recover` and enter your **recovery secret**: enro
 lockout hierarchy to a key derived from that secret, so `tess recover` can run the privileged
 `TPM2_DictionaryAttackLockReset` (via `tpm2_dictionarylockout`) to clear the counter, then restore
 keyring access. Only the recovery-secret holder can do this — a PIN-guessing attacker who trips the
-lockout cannot clear it, so anti-hammering is preserved. `tess unenroll` releases the lockout
-hierarchy back to its stock (empty) state.
+lockout cannot clear it, so anti-hammering is preserved. Given the recovery secret, `tess unenroll`
+(and `tess recover`) releases the lockout hierarchy back to its stock (empty) state; if you skip the
+recovery secret at unenroll, the authValue stays bound (a warning is printed) and a later unenroll
+with the secret releases it.
 
 ## Use
 
@@ -139,7 +141,7 @@ tess enroll        # enroll (prints a recovery secret — keep it safe)
 tess unlock        # one-shot manual unlock (unseal with PIN → unlock keyring)
 tess test          # dry-run the session unlock path (no changes)
 tess recover       # re-unlock using the recovery secret; auto-resets a hard TPM lockout, and with --reseal re-seals under a new PIN
-tess unenroll      # restore the password-based keyring (items preserved); also releases the TPM lockout hierarchy
+tess unenroll      # restore the password-based keyring (items preserved); releases the TPM lockout hierarchy when given the recovery secret
 tess doctor        # check TPM / keyring / fprintd / enrollment readiness (non-zero exit when not ready)
 tess doctor --post-install   # stricter check: also require a keyring provider binary on PATH + a completed enrollment
 tess install       # wire pam_tess.so into the session stack (idempotent, fail-open)
