@@ -727,7 +727,7 @@ reset shells out to `tpm2_dictionarylockout --clear-lockout --auth file:-`. `cra
 security core), a pluggable model-free matcher, IR capture behind a trait + synthetic source, the
 Brio IR-emitter enable, and a 0600 zeroized enroll store. Default crate is `#![deny(unsafe_code)]`;
 all raw V4L2/UVC ioctls confined to one `#[allow(unsafe_code)]` `mug::sys` module — a **second**
-allowed-unsafe location (was: only `tess-pam::ffi`), recorded in `docs/adr/0011`, AGENTS.md invariant
+allowed-unsafe location (was: only `tess-pam::ffi`), recorded in `docs/adr/0012`, AGENTS.md invariant
 amended. `crates/mug/src/liveness.rs:1` · `crates/mug/src/sys.rs:1` · PR for Phase 5.
 
 Brio hardware-discovery FACTS (one-time, on the user's real Logitech Brio — never re-run on host):

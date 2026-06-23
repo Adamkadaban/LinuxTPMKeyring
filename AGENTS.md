@@ -344,7 +344,7 @@ Mirror the per-phase wave tables in [`PLAN.md`](./PLAN.md) §5. Current phase: *
 - **`unsafe` is allowed only in `tess-pam`'s `ffi` module and `mug`'s `sys` module.** Every other
   crate is `#![forbid(unsafe_code)]`; those two crates are `#![deny(unsafe_code)]` with a single
   `#[allow(unsafe_code)]` module each (`tess-pam::ffi` for the PAM C ABI; `mug::sys` for the raw
-  V4L2/UVC ioctls that drive the Brio IR node + emitter — see `docs/adr/0011`). A PR adding `unsafe`
+  V4L2/UVC ioctls that drive the Brio IR node + emitter — see `docs/adr/0012`). A PR adding `unsafe`
   anywhere else is rejected.
 - **The PAM module must never freeze login.** No blocking TPM/D-Bus/camera I/O on the PAM thread —
   fork a watchdog'd helper process, hard wall-clock timeout, on timeout return

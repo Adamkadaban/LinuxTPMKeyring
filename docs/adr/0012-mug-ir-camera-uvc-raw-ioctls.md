@@ -1,4 +1,4 @@
-# 0011 — Mug IR camera/UVC raw ioctls: a second confined `unsafe` location
+# 0012 — Mug IR camera/UVC raw ioctls: a second confined `unsafe` location
 
 - Status: Accepted
 - Date: 2026-06-22
