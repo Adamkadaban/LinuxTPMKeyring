@@ -229,8 +229,10 @@ fn build_hardware_backend(node: Option<PathBuf>) -> Result<(mug::V4l2IrDevice, m
     Ok((source, emitter))
 }
 
-/// The env var pointing at a user-supplied ONNX face-embedding model. Only consulted when mug is
-/// built with the `face-model` feature; no model ships with tess.
+/// The env var pointing at a user-supplied ONNX face-embedding model. It only takes effect when mug
+/// is built with the `face-model` feature; without it, a set value is still read and validated (a
+/// non-UTF-8 value errors, and an otherwise-set value logs a warning that the mock is used). No model
+/// ships with tess.
 const ENV_MODEL_PATH: &str = "MUG_MODEL_PATH";
 
 /// Build the identity matcher. With the `face-model` feature and a configured model path, this is the
