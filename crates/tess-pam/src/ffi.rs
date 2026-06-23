@@ -170,7 +170,7 @@ fn log_session_outcome(outcome: Option<GateResult>) {
         }
         Some(GateResult::Authorized) => c"tess: session — login keyring unlocked",
         Some(GateResult::Declined) => {
-            c"tess: session — wrong PIN or unseal/unlock failed; keyring left locked"
+            c"tess: session — no factor satisfied (wrong PIN, no biometric match, or no PIN supplied); keyring left locked"
         }
         Some(GateResult::Unavailable) => {
             c"tess: session — unlock unavailable (helper timeout/failure or no PIN); keyring left locked"
