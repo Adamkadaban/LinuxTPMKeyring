@@ -186,10 +186,10 @@ fn l2_normalize(emb: &mut [f32]) -> Result<()> {
         .map(|v| (*v as f64) * (*v as f64))
         .sum::<f64>()
         .sqrt();
-    if norm <= f64::EPSILON {
-        return Err(MugError::MatcherUnavailable(
-            "model produced a zero-norm embedding".into(),
-        ));
+    if !norm.is_finite() || norm <= f64::EPSILON {
+        return Err(MugError::MatcherUnavailable(format!(
+            "model produced a degenerate embedding (norm {norm}); not finite or near zero"
+        )));
     }
     for v in emb.iter_mut() {
         *v = (*v as f64 / norm) as f32;

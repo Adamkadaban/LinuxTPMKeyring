@@ -177,7 +177,8 @@ the convenience path.
 **No model ships — face *matching* needs a user-supplied model.** Identity matching is a deterministic
 model-free **mock** by default (the security-critical *liveness* gate is real on both backends). A real
 ArcFace/SFace ONNX matcher is available behind the **`face-model`** cargo feature, implemented with the
-pure-Rust [`tract`](https://github.com/sonos/tract) inference engine (no native ONNX Runtime). Build
+self-contained [`tract`](https://github.com/sonos/tract) inference engine — no native ONNX Runtime at
+runtime (it builds some SIMD kernels via `cc`, so a C toolchain is needed at build time). Build
 with `--features face-model` and point `MUG_MODEL_PATH` at a fixed-shape NCHW model (none is bundled);
 absent the feature or the model, the mock is used and face degrades to the PIN. The default/CI build
 stays model-free. (See [ADR-0015](docs/adr/0015-tract-onnx-face-matcher.md); `tract` was chosen over
