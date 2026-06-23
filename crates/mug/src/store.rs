@@ -146,9 +146,13 @@ impl EnrollStore {
         self.ensure_dir()?;
         let path = self.user_path(username)?;
         match fs::read(&path) {
-            Ok(bytes) => {
-                let enrollment: FaceEnrollment = serde_json::from_slice(&bytes)
-                    .map_err(|e| MugError::Store(format!("parse {}: {e}", path.display())))?;
+            Ok(mut bytes) => {
+                let parsed = serde_json::from_slice::<FaceEnrollment>(&bytes)
+                    .map_err(|e| MugError::Store(format!("parse {}: {e}", path.display())));
+                // The buffer holds the plaintext embedding/calibration — wipe it before returning
+                // (on the parse-error path too), matching save's zeroize.
+                bytes.zeroize();
+                let enrollment = parsed?;
                 enrollment.validate_version()?;
                 Ok(Some(enrollment))
             }
