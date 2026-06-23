@@ -30,6 +30,31 @@ auth [success=done default=ignore] pam_tess.so
 result (decline, timeout, error) is ignored, falling through to the password factor. Never wire
 `pam_tess.so` as `required`, `requisite`, or `sufficient` — those can fail a login.
 
+## Optional biometric arguments
+
+Two **opt-in, off-by-default** module arguments add a biometric factor to the session line; each is
+host-trusted convenience layered on the PIN, and every failure/timeout degrades to the PIN so login
+is never blocked:
+
+```pam
+session optional pam_tess.so fingerprint=yes          # fprintd front gate, then the PIN
+session optional pam_tess.so face=yes                 # liveness-gated face release (unlocks without a PIN when PAM supplies no token)
+session optional pam_tess.so fingerprint=yes face=yes # both; precedence face -> fingerprint -> PIN
+```
+
+- `fingerprint=yes` runs one bounded `fprintd` verify ahead of the PIN unseal — a match is
+  convenience and the PIN still unseals the key.
+- `face=yes` attempts a bounded, liveness-gated face match that **can release the key without
+  requiring a PIN/password token** (the same key sealed a second time under an independent on-disk
+  authValue), enrolled with `tess enroll --face`. When PAM supplies no token the face match alone
+  unlocks; when one is supplied it is the PIN fallback. On any face failure/timeout/not-enrolled it
+  falls back to the PIN.
+
+The module widens its watchdog deadline to cover whichever biometric legs are enabled; both legs are
+also bounded internally, so a wedged reader or camera degrades to the PIN within the deadline rather
+than freezing login. Only an explicit `yes` enables a factor; anything else keeps the PIN-only
+default.
+
 ## Placement
 
 The target on Debian 13 is `/etc/pam.d/common-session`, the shared session stack included by the

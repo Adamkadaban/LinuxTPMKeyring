@@ -522,6 +522,30 @@ The auth phase (`pam_sm_authenticate`) does **not** authenticate the user or unl
 is the session phase's job): it declines (`PAM_AUTHINFO_UNAVAIL`, or `PAM_IGNORE` when aborting) so a
 `[success=done default=ignore]` stack falls through to the password factor.
 
+#### Face release path (`face=yes`)
+
+The module argument `face=yes` enables a **model-B** face release ahead of the PIN; **the default is
+PIN-only** and it may be combined with `fingerprint=yes`. When enabled, the module hands the helper a
+`--face` flag and widens the watchdog deadline (`Watchdog::FACE_DEADLINE`, 9 s; with both biometrics
+the budget is the sum, the backstop for both running sequentially). Because face — unlike the
+fingerprint front gate — can release the key without requiring a PIN, the session gate runs the
+helper even when PAM supplies no password token: it hands an empty stdin so the face path can try
+while the PIN fallback simply finds nothing to unseal with. (This is specifically the no-token case —
+when PAM does supply a token it is passed as the PIN; the module does not suppress PAM's own
+prompting.) Inside the helper the precedence is **face → fingerprint
+(if enabled) → PIN → password fallthrough**: the helper attempts a bounded, liveness-gated
+`mug::verify`; on a pass it unseals the keyring key via the independent on-disk authValue `A_face`
+(mode 0600) and unlocks the keyring, then exits successfully with the PIN never read. On **any** face
+outcome other than a clean unlock — not enrolled, no capture backend, no match, liveness rejection,
+capture timeout, or a TPM/keyring fault — it logs a secret-free reason and falls through to the PIN.
+
+**Honest limitation.** The face match is a userspace, host-trusted *presence/convenience* signal, not
+a cryptographic binding: there is no TEE/VBS on commodity Linux, so a root adversary on a live machine
+can forge a match. That is exactly why face is **never the sole gate** — the PIN authValue remains the
+real TPM gate, the same key is merely sealed a second time under `A_face`, and the at-rest guarantee
+(disk-only theft) is unchanged because the key is never on disk. The bounded capture plus the watchdog
+mean a wedged camera degrades to the PIN within the deadline rather than freezing login.
+
 ### Watchdog'd helper + fail-open
 
 Heavy work runs in a short-lived child process supervised by `helper::run` under a hard

@@ -106,10 +106,17 @@ const HELPER_PATH_ENV: &str = "TESS_PAM_HELPER";
 
 /// The flag the gate appends to the helper command line to enable the fingerprint front gate.
 const FINGERPRINT_FLAG: &str = "--fingerprint";
+/// The flag the gate appends to the helper command line to enable the face release path.
+const FACE_FLAG: &str = "--face";
 /// The environment variable carrying the login user to the helper, so its fprintd verify claims the
 /// device for the right user. Not a secret; the username only selects whose enrolled finger fprintd
 /// matches against.
 const FPRINT_USER_ENV: &str = "TESS_FPRINT_USER";
+/// The environment variable carrying the login user to the helper for the face leg, so it consults
+/// the right user's mug enrollment. Like `FPRINT_USER_ENV`, the environment is not trusted in the
+/// privileged PAM context: the gate sets this to the PAM-resolved user or clears it, never trusting
+/// an inherited value.
+const FACE_USER_ENV: &str = "TESS_FACE_USER";
 
 /// The helper program the gate runs under the watchdog, plus whether the fingerprint front gate is
 /// enabled. A missing helper path fails open (auth → fall through, session → success), the correct
@@ -126,6 +133,18 @@ pub struct HelperSpec {
     /// The login user passed to the helper for the fprintd claim (`None` until the session phase
     /// resolves `PAM_USER`). Only meaningful when `fingerprint` is true.
     pub fingerprint_user: Option<String>,
+    /// When true, the helper attempts a bounded, liveness-gated face match *before* the PIN unseal
+    /// and, on success, releases the keyring key via the independent on-disk `A_face` authValue, so
+    /// the user need not type the PIN on that login (model-B unlock). This adds a release path; it
+    /// does not weaken the PIN: the key is still independently sealed under the PIN authValue, which
+    /// remains the real TPM gate and the always-available fallback, and any face
+    /// decline/timeout/not-enrolled degrades cleanly to it — face never blocks login. Defaults off
+    /// (PIN-only), the safe default.
+    pub face: bool,
+    /// The login user passed to the helper for the face leg, so it consults the right user's mug
+    /// enrollment instead of an inherited `$USER`/`$LOGNAME` (`None` until the session phase resolves
+    /// `PAM_USER`). Only meaningful when `face` is true.
+    pub face_user: Option<String>,
 }
 
 impl HelperSpec {
@@ -135,6 +154,8 @@ impl HelperSpec {
             args,
             fingerprint: false,
             fingerprint_user: None,
+            face: false,
+            face_user: None,
         }
     }
 
@@ -143,9 +164,11 @@ impl HelperSpec {
     /// additionally honour `TESS_PAM_HELPER` for the test harness; release builds ignore the
     /// environment entirely, so a caller's environment cannot substitute the helper executable in
     /// the privileged PAM context. The `fingerprint=yes` module argument enables the fingerprint
-    /// front gate; anything else (including its absence) leaves it off.
+    /// front gate and `face=yes` enables the face release path; either may be set independently or
+    /// together, and anything else (including their absence) leaves both off.
     pub fn resolve(pam_args: &[&str]) -> Self {
         let fingerprint = fingerprint_enabled(pam_args);
+        let face = face_enabled(pam_args);
         let mut spec = if let Some(path) = helper_arg(pam_args) {
             Self::new(path, Vec::new())
         } else {
@@ -163,12 +186,19 @@ impl HelperSpec {
             }
         };
         spec.fingerprint = fingerprint;
+        spec.face = face;
         spec
     }
 
     /// Set the login user used for the fprintd claim. No-op effect unless `fingerprint` is enabled.
     pub fn with_fingerprint_user(mut self, user: Option<String>) -> Self {
         self.fingerprint_user = user;
+        self
+    }
+
+    /// Set the login user used to select the face enrollment. No-op effect unless `face` is enabled.
+    pub fn with_face_user(mut self, user: Option<String>) -> Self {
+        self.face_user = user;
         self
     }
 
@@ -189,6 +219,19 @@ impl HelperSpec {
                 }
             }
         }
+        if self.face {
+            command.arg(FACE_FLAG);
+            match &self.face_user {
+                Some(user) => {
+                    command.env(FACE_USER_ENV, user);
+                }
+                // Same untrusted-environment reasoning as the fingerprint user above: clear any
+                // inherited value so the helper uses only the PAM-resolved user.
+                None => {
+                    command.env_remove(FACE_USER_ENV);
+                }
+            }
+        }
         command
     }
 }
@@ -199,6 +242,17 @@ fn fingerprint_enabled(pam_args: &[&str]) -> bool {
     pam_args
         .iter()
         .filter_map(|arg| arg.strip_prefix("fingerprint="))
+        .next_back()
+        .map(|value| value.eq_ignore_ascii_case("yes"))
+        .unwrap_or(false)
+}
+
+/// Whether a `face=yes` module argument is present. Only an explicit `yes` enables the face release
+/// path; `no`, any other value, or the argument's absence keeps the PIN-only default.
+fn face_enabled(pam_args: &[&str]) -> bool {
+    pam_args
+        .iter()
+        .filter_map(|arg| arg.strip_prefix("face="))
         .next_back()
         .map(|value| value.eq_ignore_ascii_case("yes"))
         .unwrap_or(false)
@@ -358,6 +412,78 @@ mod tests {
         assert!(HelperSpec::resolve(&["fingerprint=yes"]).fingerprint);
         // Case-insensitive, and a later occurrence wins.
         assert!(HelperSpec::resolve(&["fingerprint=no", "fingerprint=YES"]).fingerprint);
+    }
+
+    #[test]
+    fn face_defaults_off_and_adds_no_flag() {
+        let spec = HelperSpec::new("/tmp/helper", Vec::new());
+        assert!(!spec.face);
+        let args: Vec<_> = spec.command().get_args().map(|a| a.to_owned()).collect();
+        assert!(
+            !args.iter().any(|a| a == "--face"),
+            "PIN-only helper must not get --face"
+        );
+    }
+
+    #[test]
+    fn face_yes_passes_the_resolved_user() {
+        let spec = HelperSpec::resolve(&["face=yes"]).with_face_user(Some("alice".to_string()));
+        assert!(spec.face);
+        let user_env = spec
+            .command()
+            .get_envs()
+            .find(|(k, _)| *k == "TESS_FACE_USER")
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_owned());
+        assert_eq!(user_env, Some(OsString::from("alice")));
+    }
+
+    #[test]
+    fn face_without_user_clears_inherited_env() {
+        // Same untrusted-environment defense as fingerprint: with no PAM-resolved user the command
+        // must explicitly *remove* TESS_FACE_USER so a planted parent value can't select the
+        // enrollment consulted by the privileged helper.
+        let spec = HelperSpec::resolve(&["face=yes"]);
+        assert!(spec.face_user.is_none());
+        let removed = spec
+            .command()
+            .get_envs()
+            .any(|(k, v)| k == "TESS_FACE_USER" && v.is_none());
+        assert!(removed, "TESS_FACE_USER must be explicitly cleared");
+    }
+
+    #[test]
+    fn face_yes_arg_enables_flag() {
+        let spec = HelperSpec::resolve(&["helper=/etc/tess/helper", "face=yes"]);
+        assert!(spec.face);
+        let command = spec.command();
+        let args: Vec<_> = command.get_args().map(|a| a.to_owned()).collect();
+        assert!(
+            args.iter().any(|a| a == "--face"),
+            "face=yes must append --face"
+        );
+    }
+
+    #[test]
+    fn face_only_yes_enables_it() {
+        assert!(!HelperSpec::resolve(&["face=no"]).face);
+        assert!(!HelperSpec::resolve(&["face=maybe"]).face);
+        assert!(!HelperSpec::resolve(&[]).face);
+        assert!(HelperSpec::resolve(&["face=yes"]).face);
+        // Case-insensitive, and a later occurrence wins.
+        assert!(HelperSpec::resolve(&["face=no", "face=YES"]).face);
+    }
+
+    #[test]
+    fn fingerprint_and_face_combine_and_each_append_their_flag() {
+        let spec = HelperSpec::resolve(&["fingerprint=yes", "face=yes"])
+            .with_fingerprint_user(Some("alice".to_string()));
+        assert!(spec.fingerprint);
+        assert!(spec.face);
+        let command = spec.command();
+        let args: Vec<_> = command.get_args().map(|a| a.to_owned()).collect();
+        assert!(args.iter().any(|a| a == "--fingerprint"));
+        assert!(args.iter().any(|a| a == "--face"));
     }
 
     #[test]

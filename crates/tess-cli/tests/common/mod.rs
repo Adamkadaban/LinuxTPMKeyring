@@ -385,7 +385,23 @@ pub fn run_pam_helper_fprint(
             bus_address: fprint_bus.to_string(),
             timeout_ms: fprint_timeout.as_millis() as u64,
         }),
+        false,
     )
+}
+
+/// Run `tess-pam-helper` with the face release path enabled (`--face`). The mug substrate
+/// (`MUG_VIRTUAL_IR_DIR`, `MUG_STORE_DIR`, `USER`) is inherited from the caller's process environment
+/// (set via `EnvGuard`), so the child resolves the same virtual IR frames, enroll store, and
+/// username. `pin` is fed on stdin for the PIN fallback; pass an empty slice to prove a face unlock
+/// needs no password. Otherwise identical to [`run_pam_helper`]: bounded wait, child reaped under a
+/// hard deadline.
+pub fn run_pam_helper_face(
+    tcti: &TctiConfig,
+    bus_address: &str,
+    data_home: &Path,
+    pin: &[u8],
+) -> (bool, String) {
+    run_helper_inner(tcti, bus_address, data_home, pin, None, true)
 }
 
 struct FprintEnv {
@@ -414,7 +430,7 @@ pub fn run_pam_helper(
     data_home: &Path,
     pin: &[u8],
 ) -> (bool, String) {
-    run_helper_inner(tcti, bus_address, data_home, pin, None)
+    run_helper_inner(tcti, bus_address, data_home, pin, None, false)
 }
 
 fn run_helper_inner(
@@ -423,6 +439,7 @@ fn run_helper_inner(
     data_home: &Path,
     pin: &[u8],
     fprint: Option<FprintEnv>,
+    face: bool,
 ) -> (bool, String) {
     let (host, port) = match tcti {
         TctiConfig::Swtpm { host, port } => (host.clone(), port.to_string()),
@@ -443,16 +460,36 @@ fn run_helper_inner(
             .env("TESS_FPRINT_BUS_ADDRESS", fprint.bus_address)
             .env("TESS_FPRINT_TIMEOUT_MS", fprint.timeout_ms.to_string());
     }
+    if face {
+        command.arg("--face");
+        // Model the gate: it plumbs the PAM-resolved login user via TESS_FACE_USER and the helper
+        // must prefer it over the (untrusted) inherited $USER/$LOGNAME. Carry the enrolled user
+        // (the caller's $USER) in TESS_FACE_USER and poison $USER/$LOGNAME, so a regression that
+        // resolved the enrollment from $USER would look up the wrong user and fail to unlock.
+        if let Ok(user) = std::env::var("USER") {
+            command.env("TESS_FACE_USER", user);
+        }
+        command
+            .env("USER", "inherited-untrusted-user")
+            .env_remove("LOGNAME");
+    }
     let mut child = command.spawn().expect("spawn tess-pam-helper");
 
-    child
-        .stdin
-        .take()
-        .expect("helper stdin")
-        .write_all(pin)
-        .expect("write PIN to helper stdin");
+    // A face unlock can release the key and exit before reading stdin, so a broken pipe here just
+    // means the child already finished — not a harness failure. The real signal is the exit status
+    // and the keyring state the caller asserts on.
+    if let Err(e) = child.stdin.take().expect("helper stdin").write_all(pin) {
+        assert_eq!(
+            e.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "writing the PIN to the helper failed: {e}"
+        );
+    }
 
-    let deadline = Instant::now() + Duration::from_secs(20);
+    // Above the PAM module's worst-case budget: both biometrics enabled is 12s (fingerprint) + 9s
+    // (face) = 21s, so a 20s harness deadline could kill a correctly-running helper early. 30s
+    // clears the combined ceiling with margin.
+    let deadline = Instant::now() + Duration::from_secs(30);
     let status = loop {
         if let Some(status) = child.try_wait().expect("try_wait helper") {
             break status;

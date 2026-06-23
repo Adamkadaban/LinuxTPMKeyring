@@ -800,3 +800,37 @@ Key facts / gotchas:
   the sim suite pins `USER=tess-face-test` and `MUG_STORE_DIR`/`MUG_VIRTUAL_IR_DIR` to temp dirs.
 - PAM-session face integration is deliberately NOT in this PR (separate follow-up; PLAN wave-2 box
   left unticked for it).
+
+## 2026-06-23 — Phase 5: wire the face factor into the PAM session, non-blocking (issue #62)
+**Resolution:** `face=yes` PAM module arg threads gate → ffi → `tess-pam-helper --face`, mirroring the
+fingerprint front gate but for model-B (face *releases* the key with no PIN). Precedence in the helper:
+face → fingerprint → PIN → password fallthrough. `crates/tess-pam/src/gate.rs:110` (`FACE_FLAG`/`face`/
+`face_enabled`) · `crates/tess-pam/src/ffi.rs:253` (`session_deadline` + empty-stdin-for-face) ·
+`crates/tess-cli/src/session.rs:107` (`run_pam_helper`/`face_front_unlock`) · #62
+
+Key facts / gotchas:
+- **Face can unlock with NO password, so the session gate must spawn the helper even when `get_pin`
+  returns None.** `evaluate` still short-circuits a None PIN to `Unavailable` (no spawn) for the
+  PIN-only/fingerprint-only cases; the *session gate* converts `None → Some(&[])` (empty stdin) only
+  when `spec.face` is set, so the helper runs and the face path can try while the PIN fallback finds
+  nothing to unseal with. The auth gate still passes `None` → never spawns at auth (auth only
+  declines; unlock is the session phase's job).
+- **Widened watchdog deadline:** `Watchdog::FACE_DEADLINE = 9s` (face capture ~2.5s + unseal headroom);
+  with both biometrics the budget is `FINGERPRINT_DEADLINE + FACE_DEADLINE = 21s` (the backstop for
+  both running sequentially before the PIN). Each leg is also bounded internally, so 21s is only the
+  pathological-hang ceiling, never the normal wait.
+- **Never-freeze chain is unchanged and load-bearing:** the helper is the same watchdog'd child
+  (`helper::supervise` → SIGTERM → SIGKILL → reap, bounded by `deadline + 2*term_grace`,
+  `crates/tess-pam/src/helper.rs:128`). A hung face capture is killed+reaped exactly like any hung
+  helper; the stall test feeds the empty stdin the face-no-pin path uses and asserts bounded + reaped
+  (`process_alive`) + auth fall-through + session success
+  (`crates/tess-pam/tests/stall_injection.rs` `hung_face_capture_*`).
+- **No new `unsafe`, no new deps.** All changes are in `#![deny(unsafe_code)]` / `#![forbid]` crates
+  outside `tess-pam::ffi`; `Cargo.lock` untouched, `cargo vet --locked` and `cargo deny` stay green.
+- **Test harness broken-pipe tolerance:** a face unlock exits *before* reading stdin, so the harness's
+  `write_all(pin)` can hit `BrokenPipe` — that's a valid "child already unlocked" outcome, not a
+  failure. `run_pam_helper_face` feeds an EMPTY stdin for the no-password proof (a success then can
+  only be face: the PIN path would read an empty PIN and error). `crates/tess-cli/tests/common/mod.rs`.
+- **User resolution for the mug store stays `$USER`/`$LOGNAME`** (`current_username()`), which the sim
+  suite pins. Threading the PAM-resolved login user through to the mug store for real greeters/$HOME
+  is part of real-hardware capture (#63); the matcher model is #56.

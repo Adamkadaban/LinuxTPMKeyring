@@ -115,6 +115,74 @@ fn hang_forever_with_pin_input_times_out_bounded_and_is_reaped() {
 }
 
 #[test]
+fn hung_face_capture_is_bounded_reaped_and_falls_through_to_the_pin() {
+    // Stall injection for the face release path. The session gate hands the helper an *empty* stdin
+    // when face is enabled but no password was typed (face can unlock on its own), so model a hung
+    // face capture as a helper that never exits and is fed that empty stdin. The watchdog must still
+    // (a) return within a hard wall-clock bound, (b) SIGKILL and reap the child, and (c) classify the
+    // timeout so auth falls through to the password and a session open still succeeds.
+    use pam_tess::helper::run_with_input;
+
+    let watchdog = Watchdog::new(Duration::from_millis(300)).with_grace(Duration::from_millis(150));
+    let mut cmd = hang_forever();
+
+    let started = Instant::now();
+    let reaped = run_with_input(&mut cmd, &watchdog, b"").expect("spawn");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "a hung face capture must be bounded, took {elapsed:?}"
+    );
+    assert!(matches!(
+        reaped.termination,
+        Termination::TimedOut {
+            escalated_to_sigkill: true
+        }
+    ));
+    assert!(
+        !process_alive(reaped.pid),
+        "the hung face helper PID must be reaped, not leaked"
+    );
+
+    let auth = decide(GatePhase::Auth, classify(&Ok(reaped.clone())));
+    let session = decide(GatePhase::Session, classify(&Ok(reaped)));
+    assert_eq!(
+        auth,
+        ret::PAM_AUTHINFO_UNAVAIL,
+        "a stalled face must fall through to the password factor"
+    );
+    assert_eq!(
+        session,
+        ret::PAM_SUCCESS,
+        "a stalled face must never freeze a session open"
+    );
+}
+
+#[test]
+fn face_helper_runs_without_a_pin_and_can_authorize() {
+    // Model B: face can release the key with no password typed, so the session gate runs the helper
+    // even when no PIN is available (it passes an empty stdin). `true` ignores stdin and exits 0, so
+    // the gate authorizes — proving the face leg is not short-circuited to Unavailable like the
+    // PIN-only no-password case.
+    use pam_tess::{evaluate, GateEnv, GateResult, HelperSpec};
+
+    let env = GateEnv {
+        is_remote: false,
+        tpm_present: true,
+    };
+    let mut spec = HelperSpec::new("true", Vec::new());
+    spec.face = true;
+    let outcome = evaluate(
+        &env,
+        &spec,
+        &Watchdog::new(Duration::from_secs(2)),
+        Some(b""),
+    );
+    assert_eq!(outcome, Some(GateResult::Authorized));
+}
+
+#[test]
 fn run_gate_with_pin_authorizes_when_helper_succeeds() {
     // This exercises run_gate directly with a PIN supplied. Note the real PAM auth entrypoint
     // (run_auth_gate) intentionally passes None so auth always falls through to the password

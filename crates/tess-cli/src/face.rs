@@ -19,9 +19,13 @@ use crate::enroll::{recovery, FaceTemplateSource, Paths};
 /// comes from the loaded network; this only governs the deterministic mock path.
 const MOCK_DIM: usize = 64;
 
-/// Resolve the current login user, used as the mug-store key. Reads `$USER`, then `$LOGNAME`.
+/// Resolve the current login user, used as the mug-store key. Prefers `$TESS_FACE_USER` (the
+/// authoritative PAM-plumbed user in the helper), then falls back to `$USER`, then `$LOGNAME`.
 pub fn current_username() -> Result<String> {
-    for var in ["USER", "LOGNAME"] {
+    // Prefer the PAM-plumbed user: in the privileged PAM helper the inherited `$USER`/`$LOGNAME` are
+    // untrusted, so the session gate passes the PAM-resolved login user in `TESS_FACE_USER`. Outside
+    // PAM (the `tess enroll --face` CLI) that variable is unset and `$USER`/`$LOGNAME` is correct.
+    for var in ["TESS_FACE_USER", "USER", "LOGNAME"] {
         if let Some(value) = std::env::var_os(var) {
             let name = value.to_string_lossy().into_owned();
             if !name.is_empty() {
@@ -30,7 +34,7 @@ pub fn current_username() -> Result<String> {
         }
     }
     Err(anyhow!(
-        "cannot resolve the current username (neither $USER nor $LOGNAME is set)"
+        "cannot resolve the current username (none of $TESS_FACE_USER, $USER, $LOGNAME are set)"
     ))
 }
 
