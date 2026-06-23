@@ -554,4 +554,30 @@ mod tests {
         // Oversized input fails closed rather than allocating.
         assert!(parse_hex_payload(&"00".repeat(200)).is_err());
     }
+
+    #[test]
+    fn build_matcher_falls_back_to_mock_without_a_model() {
+        // No configured path and no env var: the matcher must build (the model-free mock) so face
+        // stays available as a liveness-gated convenience and degrades to the PIN for identity.
+        let _lock = tess_testenv::env_lock();
+        let _model = tess_testenv::EnvGuard::remove(ENV_MODEL_PATH);
+        let cfg = MugConfig::default();
+        assert!(build_matcher(&cfg).is_ok());
+    }
+
+    #[test]
+    fn build_matcher_rejects_non_utf8_model_path_env() {
+        use std::os::unix::ffi::OsStrExt;
+        // A non-UTF-8 MUG_MODEL_PATH is an error regardless of the `face-model` feature (the check
+        // runs before the feature gate), never a silent fallback or a panic.
+        let _lock = tess_testenv::env_lock();
+        let bad = std::ffi::OsStr::from_bytes(&[0x66, 0x6f, 0xff]);
+        let _model = tess_testenv::EnvGuard::set_path(ENV_MODEL_PATH, std::path::Path::new(bad));
+        let cfg = MugConfig::default();
+        let err = match build_matcher(&cfg) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected an error for a non-UTF-8 model path"),
+        };
+        assert!(err.contains("not valid UTF-8"), "unexpected message: {err}");
+    }
 }
