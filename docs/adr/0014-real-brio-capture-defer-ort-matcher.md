@@ -17,7 +17,7 @@ Phase 5 landed `mug` with two halves of the face factor already built but not ye
 `tess-cli::face` only wired the headless virtual substrate (`MUG_VIRTUAL_IR_DIR`) and otherwise
 errored "virtual substrate only". Two coupled issues asked to finish the job: #63 (wire real Brio
 capture) and #56 (wire the `ort` matcher). CI must stay model-free and hardware-free; the real
-hardware path is validated by a manual host smoke, never CI.
+hardware path is validated by a manual smoke on a dedicated test machine (throwaway keyring/TPM) with the Brio, never on the daily-driver host and never CI.
 
 ## Decision
 

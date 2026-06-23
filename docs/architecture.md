@@ -579,7 +579,7 @@ the mock matcher: liveness is enforced, identity discrimination is weak until #5
 
 **Validation.** Selection logic is unit-tested with the virtual substrate (the hardware branch is
 *selected* but reports cleanly unavailable without a camera). Real capture + photo rejection is a
-documented **manual host smoke** the maintainer runs with the Brio (emitter-on/off IR liveness rejects a
+documented **manual smoke** the maintainer runs on a dedicated test machine (throwaway keyring/TPM) with the Brio (emitter-on/off IR liveness rejects a
 flat photo); hardware never runs in CI or on Azure.
 
 ### Watchdog'd helper + fail-open

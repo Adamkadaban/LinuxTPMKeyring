@@ -6,7 +6,7 @@
 //!
 //! - the headless **virtual IR substrate** (`MUG_VIRTUAL_IR_DIR`), used by CI and to try the flow; and
 //! - the real **Logitech Brio** IR path (the GREY IR node + the UVC-XU emitter), opt-in and validated
-//!   only by a manual host smoke — never in CI.
+//!   only by a manual smoke on a dedicated test machine (throwaway keyring/TPM) — never the daily-driver host, never in CI.
 //!
 //! Both run the same liveness gate and, today, the same model-free mock matcher: tess ships no face
 //! model, so identity matching stays a deterministic mock until an ONNX matcher backend lands. When
@@ -88,16 +88,19 @@ fn virtual_substrate() -> bool {
 fn select_backend() -> Result<CaptureBackend> {
     let requested = std::env::var(ENV_BACKEND).ok();
     resolve_backend(requested.as_deref(), virtual_substrate(), || {
-        mug::find_brio_ir_node().is_ok()
+        mug::find_brio_ir_node().map(|_| ())
     })
 }
 
 /// Pure backend-selection logic, factored out of [`select_backend`] so it is unit-testable without
-/// touching the process environment or any real camera.
+/// touching the process environment or any real camera. `probe_brio` returns `Ok(())` when a usable
+/// Brio GREY node is present, `Err(MugError::NoIrNode)` when none is attached, or another error when
+/// a Brio-like node exists but can't be used (e.g. permission denied) — the last is surfaced rather
+/// than collapsed into "no camera".
 fn resolve_backend(
     requested: Option<&str>,
     virtual_set: bool,
-    brio_present: impl FnOnce() -> bool,
+    probe_brio: impl FnOnce() -> mug::Result<()>,
 ) -> Result<CaptureBackend> {
     match requested.map(str::trim) {
         Some("hardware") => Ok(CaptureBackend::Hardware),
@@ -114,15 +117,22 @@ fn resolve_backend(
         Some("auto") | Some("") | None => {
             if virtual_set {
                 Ok(CaptureBackend::Virtual)
-            } else if brio_present() {
-                Ok(CaptureBackend::Hardware)
             } else {
-                Err(anyhow!(
-                    "no face capture backend available: set {} for the virtual IR substrate, or attach a \
-                     Logitech Brio (GREY IR node) and set {ENV_BACKEND}=hardware — the face factor is \
-                     unavailable and the caller degrades to the PIN",
-                    VirtualIrDevice::ENV_DIR
-                ))
+                match probe_brio() {
+                    Ok(()) => Ok(CaptureBackend::Hardware),
+                    Err(mug::MugError::NoIrNode) => Err(anyhow!(
+                        "no face capture backend available: set {} for the virtual IR substrate, or \
+                         attach a Logitech Brio (GREY IR node) — auto-detected when present. The face \
+                         factor is unavailable and the caller degrades to the PIN",
+                        VirtualIrDevice::ENV_DIR
+                    )),
+                    Err(e) => Err(anyhow!(
+                        "a Logitech Brio node is present but unusable ({e}); fix it or set {} for the \
+                         virtual IR substrate. The face factor is unavailable and the caller degrades \
+                         to the PIN",
+                        VirtualIrDevice::ENV_DIR
+                    )),
+                }
             }
         }
         Some(other) => Err(anyhow!(
@@ -373,22 +383,22 @@ mod tests {
     #[test]
     fn explicit_virtual_requires_substrate() {
         assert_eq!(
-            resolve_backend(Some("virtual"), true, || false).unwrap(),
+            resolve_backend(Some("virtual"), true, || Err(mug::MugError::NoIrNode)).unwrap(),
             CaptureBackend::Virtual
         );
-        assert!(resolve_backend(Some("virtual"), false, || false).is_err());
+        assert!(resolve_backend(Some("virtual"), false, || Err(mug::MugError::NoIrNode)).is_err());
     }
 
     #[test]
     fn explicit_hardware_always_selects_hardware() {
         // Selected even with no camera and no substrate; the build step then reports unavailable.
         assert_eq!(
-            resolve_backend(Some("hardware"), false, || false).unwrap(),
+            resolve_backend(Some("hardware"), false, || Err(mug::MugError::NoIrNode)).unwrap(),
             CaptureBackend::Hardware
         );
         // Explicit hardware wins even when a substrate happens to be configured.
         assert_eq!(
-            resolve_backend(Some("hardware"), true, || false).unwrap(),
+            resolve_backend(Some("hardware"), true, || Err(mug::MugError::NoIrNode)).unwrap(),
             CaptureBackend::Hardware
         );
     }
@@ -396,14 +406,14 @@ mod tests {
     #[test]
     fn auto_probes_hardware_without_substrate() {
         assert_eq!(
-            resolve_backend(None, false, || true).unwrap(),
+            resolve_backend(None, false, || Ok(())).unwrap(),
             CaptureBackend::Hardware
         );
     }
 
     #[test]
     fn auto_without_substrate_or_camera_is_unavailable() {
-        let err = resolve_backend(None, false, || false)
+        let err = resolve_backend(None, false, || Err(mug::MugError::NoIrNode))
             .unwrap_err()
             .to_string();
         assert!(
@@ -413,8 +423,25 @@ mod tests {
     }
 
     #[test]
+    fn auto_surfaces_a_present_but_unusable_brio() {
+        // A Brio-like node that can't be opened (e.g. permission denied) must surface the real
+        // cause, not be flattened into "no camera".
+        let err = resolve_backend(None, false, || {
+            Err(mug::MugError::Camera(
+                "open /dev/video4: permission denied".into(),
+            ))
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("present but unusable") && err.contains("permission denied"),
+            "unexpected message: {err}"
+        );
+    }
+
+    #[test]
     fn unknown_backend_is_rejected() {
-        let err = resolve_backend(Some("bogus"), true, || true)
+        let err = resolve_backend(Some("bogus"), true, || Ok(()))
             .unwrap_err()
             .to_string();
         assert!(err.contains("unknown"), "unexpected message: {err}");

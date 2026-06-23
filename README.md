@@ -182,10 +182,12 @@ stable `ort` is currently published. Until then, real-hardware capture pairs the
 the mock matcher: liveness is enforced, but identity discrimination is weak. Treat face-on-real-Brio
 as a liveness-gated convenience pending the matcher model.
 
-#### Manual real-Brio smoke (maintainer, on the host — never CI)
+#### Manual real-Brio smoke (maintainer, dedicated test machine — never CI)
 
-The hardware path is validated by a manual smoke on a machine with the Brio attached (CI never touches
-a camera):
+The hardware path is validated by a manual smoke on a **dedicated test machine** with the Brio
+attached (CI never touches a camera). Because `enroll --face` rekeys the login keyring, run this
+against a **throwaway keyring/TPM** (a test VM with the Brio passed through, or a disposable login) —
+**never the daily-driver keyring/TPM** (`AGENTS.md`):
 
 ```sh
 # 1. Enroll against the real camera (look at the Brio; the IR emitter toggles during capture).

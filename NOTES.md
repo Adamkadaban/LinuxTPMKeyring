@@ -865,7 +865,7 @@ Key facts / gotchas:
   placeholder default is acceptable for the opt-in, manually-validated path.
 - **Real face *matching* still needs #56's model.** With the mock matcher on real Brio frames,
   liveness (the security core) is real but identity discrimination is weak — documented honestly in
-  README + architecture.md. Real-Brio capture/photo-rejection is a documented manual host smoke, never
+  README + architecture.md. Real-Brio capture/photo-rejection is a documented manual smoke on a dedicated test machine (throwaway keyring/TPM) with the Brio, never on the daily-driver host and never
   CI (hardware never runs in CI/Azure).
 - **No `Cargo.lock` churn:** mug gained zero deps, tess-cli gained zero deps. `cargo deny check` and
   `cargo vet --locked` (186 exempted) stay green. fmt/clippy(`-D warnings`)/check/test(workspace)/
