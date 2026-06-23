@@ -13,6 +13,8 @@
 //! no backend is available (no substrate, no camera) the factor reports unavailable and the caller
 //! degrades to the PIN.
 
+use std::path::PathBuf;
+
 use anyhow::{Context, Result, anyhow};
 use mug::{
     EnrollStore, FaceEnrollment, IrEmitter, IrSource, LivenessCalibration, LivenessConfig, Matcher,
@@ -41,12 +43,14 @@ const DEFAULT_EMITTER_ON: &[u8] = &[0x01];
 const DEFAULT_EMITTER_OFF: &[u8] = &[0x00];
 
 /// The selected IR capture backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum CaptureBackend {
     /// File-backed synthetic substrate (`MUG_VIRTUAL_IR_DIR`): CI and headless flow trials.
     Virtual,
-    /// The real Logitech Brio IR capture node + UVC-XU emitter.
-    Hardware,
+    /// The real Logitech Brio IR capture node + UVC-XU emitter. Carries the GREY IR node when it was
+    /// already discovered during `auto` selection (reused so the auth path scans `/dev/v4l/by-id`
+    /// once); `None` for an explicit `hardware` request, where the builder discovers it.
+    Hardware(Option<PathBuf>),
 }
 
 /// Resolve the current login user, used as the mug-store key. Prefers `$TESS_FACE_USER` (the
@@ -95,23 +99,26 @@ fn select_backend() -> Result<CaptureBackend> {
             ));
         }
     };
-    resolve_backend(requested.as_deref(), virtual_substrate(), || {
-        mug::find_brio_ir_node().map(|_| ())
-    })
+    resolve_backend(
+        requested.as_deref(),
+        virtual_substrate(),
+        mug::find_brio_ir_node,
+    )
 }
 
 /// Pure backend-selection logic, factored out of [`select_backend`] so it is unit-testable without
-/// touching the process environment or any real camera. `probe_brio` returns `Ok(())` when a usable
-/// Brio GREY node is present, `Err(MugError::NoIrNode)` when none is attached, or another error when
-/// the probe itself failed (e.g. `/dev/v4l/by-id` unreadable, or a Brio-like node that can't be
-/// opened) — the last is surfaced rather than collapsed into "no camera".
+/// touching the process environment or any real camera. `probe_brio` returns `Ok(node)` with the
+/// discovered GREY node, `Err(MugError::NoIrNode)` when none is attached, or another error when the
+/// probe itself failed (e.g. `/dev/v4l/by-id` unreadable, or a Brio-like node that can't be opened)
+/// — the last is surfaced rather than collapsed into "no camera". A node discovered here is carried
+/// in `Hardware(Some(..))` so the builder reuses it instead of re-scanning.
 fn resolve_backend(
     requested: Option<&str>,
     virtual_set: bool,
-    probe_brio: impl FnOnce() -> mug::Result<()>,
+    probe_brio: impl FnOnce() -> mug::Result<PathBuf>,
 ) -> Result<CaptureBackend> {
     match requested.map(str::trim) {
-        Some("hardware") => Ok(CaptureBackend::Hardware),
+        Some("hardware") => Ok(CaptureBackend::Hardware(None)),
         Some("virtual") => {
             if virtual_set {
                 Ok(CaptureBackend::Virtual)
@@ -127,7 +134,7 @@ fn resolve_backend(
                 Ok(CaptureBackend::Virtual)
             } else {
                 match probe_brio() {
-                    Ok(()) => Ok(CaptureBackend::Hardware),
+                    Ok(node) => Ok(CaptureBackend::Hardware(Some(node))),
                     Err(mug::MugError::NoIrNode) => Err(anyhow!(
                         "no face capture backend available: set {} for the virtual IR substrate, or \
                          attach a Logitech Brio (GREY IR node) — auto-detected when present. The face \
@@ -201,8 +208,11 @@ fn emitter_payload(var: &str, default: &[u8]) -> Result<Vec<u8>> {
 /// Build the real Brio capture source + emitter, discovering the GREY IR node once and binding the
 /// emitter control to the same node. Any failure (no camera, permission denied) surfaces as an error
 /// the caller treats as "face unavailable → degrade to the PIN".
-fn build_hardware_backend() -> Result<(mug::V4l2IrDevice, mug::BrioEmitter)> {
-    let node = mug::find_brio_ir_node().map_err(|e| anyhow!("discover the Brio IR node: {e}"))?;
+fn build_hardware_backend(node: Option<PathBuf>) -> Result<(mug::V4l2IrDevice, mug::BrioEmitter)> {
+    let node = match node {
+        Some(node) => node,
+        None => mug::find_brio_ir_node().map_err(|e| anyhow!("discover the Brio IR node: {e}"))?,
+    };
     let source = mug::V4l2IrDevice::open(&node, mug::BRIO_IR_WIDTH, mug::BRIO_IR_HEIGHT)
         .map_err(|e| anyhow!("open the Brio IR capture node {}: {e}", node.display()))?;
     let on_payload = emitter_payload(ENV_EMITTER_ON, DEFAULT_EMITTER_ON)?;
@@ -304,8 +314,8 @@ pub fn template_source_from_env() -> Result<Box<dyn FaceTemplateSource>> {
                 .map_err(|e| anyhow!("open the virtual IR device: {e}"))?;
             Ok(Box::new(mug_template_source(source, emitter, &cfg)?))
         }
-        CaptureBackend::Hardware => {
-            let (source, emitter) = build_hardware_backend()?;
+        CaptureBackend::Hardware(node) => {
+            let (source, emitter) = build_hardware_backend(node)?;
             Ok(Box::new(mug_template_source(source, emitter, &cfg)?))
         }
     }
@@ -345,8 +355,8 @@ pub fn verify_from_env(enrolled: &FaceEnrollment) -> Result<()> {
                 .map_err(|e| anyhow!("open the virtual IR device: {e}"))?;
             run_verify(&mut source, &mut emitter, enrolled, &cfg)
         }
-        CaptureBackend::Hardware => {
-            let (mut source, mut emitter) = build_hardware_backend()?;
+        CaptureBackend::Hardware(node) => {
+            let (mut source, mut emitter) = build_hardware_backend(node)?;
             run_verify(&mut source, &mut emitter, enrolled, &cfg)
         }
     }
@@ -418,20 +428,21 @@ mod tests {
         // Selected even with no camera and no substrate; the build step then reports unavailable.
         assert_eq!(
             resolve_backend(Some("hardware"), false, || Err(mug::MugError::NoIrNode)).unwrap(),
-            CaptureBackend::Hardware
+            CaptureBackend::Hardware(None)
         );
         // Explicit hardware wins even when a substrate happens to be configured.
         assert_eq!(
             resolve_backend(Some("hardware"), true, || Err(mug::MugError::NoIrNode)).unwrap(),
-            CaptureBackend::Hardware
+            CaptureBackend::Hardware(None)
         );
     }
 
     #[test]
     fn auto_probes_hardware_without_substrate() {
+        let node = std::path::PathBuf::from("/dev/v4l/by-id/usb-046d_Logitech_BRIO-video-index1");
         assert_eq!(
-            resolve_backend(None, false, || Ok(())).unwrap(),
-            CaptureBackend::Hardware
+            resolve_backend(None, false, || Ok(node.clone())).unwrap(),
+            CaptureBackend::Hardware(Some(node))
         );
     }
 
@@ -465,7 +476,7 @@ mod tests {
 
     #[test]
     fn unknown_backend_is_rejected() {
-        let err = resolve_backend(Some("bogus"), true, || Ok(()))
+        let err = resolve_backend(Some("bogus"), true, || Ok(std::path::PathBuf::from("/x")))
             .unwrap_err()
             .to_string();
         assert!(err.contains("unknown"), "unexpected message: {err}");
