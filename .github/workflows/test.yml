@@ -120,7 +120,6 @@ jobs:
           grep -Eq ' \./usr/lib/tess/tess-pam-helper$' /tmp/tess-deb-contents.txt
           grep -Eq ' \./usr/lib/x86_64-linux-gnu/security/pam_tess\.so$' /tmp/tess-deb-contents.txt
           grep -Eq ' \./usr/lib/udev/rules\.d/70-tess-tpm\.rules$' /tmp/tess-deb-contents.txt
-          grep -Eq ' \./usr/share/tess/auditd/tess\.rules$' /tmp/tess-deb-contents.txt
 
       - name: TPM-access install wiring (static assertions)
         run: |

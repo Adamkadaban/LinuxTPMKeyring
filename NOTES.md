@@ -762,3 +762,6 @@ Gotchas worth remembering:
 - **Synthetic IR substrate mirrors tess-fprint's virtual-driver pattern:** `MUG_VIRTUAL_IR_DIR` env
   → `VirtualIrDevice` serving `ir_off.grey`/`ir_on.grey`; `MUG_STORE_DIR` relocates the enroll store
   for tests. Headless: no camera, no model, no `unsafe` exercised. 27 mug tests green.
+
+## 2026-06-22 — removed the auditd config (deferred per maintainer)
+**Resolution:** auditd ruleset was forensic-only (root can disable it), not a security boundary; dropped the `.deb` asset, CI assertion, README/threat-model sections, and PLAN deliverable. cargo-vet certification of critical crates deferred to #58. `crates/tess-cli/Cargo.toml` · #58

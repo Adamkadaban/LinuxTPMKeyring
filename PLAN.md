@@ -355,14 +355,13 @@ audit`/`cargo deny`/`cargo vet` gate every PR; `cargo +nightly -Z minimal-versio
 - [x] Seeded corpora (structurally-valid; real sealed-blob capture is swtpm-CI-only, never on host); short-in-PR / long-nightly CI
 - [x] `cargo vet` self-contained exemptions store (external audit-set imports dropped for `--locked` reproducibility); full `safe-to-deploy` certification of `tss-esapi`/`secret-service` deferred (still `audit`/`deny`-gated)
 - [x] `cargo +nightly -Z minimal-versions` CI job (prove declared lower bounds build)
-- [x] `auditd` tamper-evidence config in packaging (documented as *audit*, not a security boundary)
 
 | Wave | Worktree slug | Depends on | Tasks |
 |---|---|---|---|
 | 1 (parallel ×3) | fuzz-metadata | Phase 4 | `fuzz_metadata` target + corpus + nightly wiring |
 | 1 (parallel ×3) | fuzz-tpm-blob | Phase 4 | `fuzz_tpm_blob` target + corpus |
 | 1 (parallel ×3) | fuzz-dbus-reply | Phase 4 | `fuzz_dbus_reply` target + corpus |
-| 2 (solo) | supplychain-vet | wave 1 | `cargo vet`, minimal-versions CI, auditd config |
+| 2 (solo) | supplychain-vet | wave 1 | `cargo vet`, minimal-versions CI |
 
 ## 6. Anticipated Risks
 
@@ -414,7 +413,6 @@ audit`/`cargo deny`/`cargo vet` gate every PR; `cargo +nightly -Z minimal-versio
 - **`KeyringBackend`** — hook: Secret Service (GNOME ref) now; KWallet/KeePassXC via the same trait.
 - **Measured boot (future bar-raise toward the ChromeOS model)** — hook: optional PCR policy +
   signed-policy update; raises the cost of *persistent* root, never claims runtime-root isolation.
-- **Tamper-evidence** — hook: `auditd` rules in packaging (audit only, explicitly not a boundary).
 
 ## 8. Teardown
 
