@@ -7,7 +7,7 @@
 //! extractor is configured the face factor is simply unavailable and the caller degrades to the PIN.
 //!
 //! Matching is cosine-distance against the enrolled embedding with a tunable threshold. The matcher
-//! never holds key material; a match is convenience layered on the PIN, never the sole gate.
+//! never holds key material; a liveness-gated match authorizes the unlock, with the PIN as fallback.
 
 use crate::camera::IrFrame;
 use crate::error::{MugError, Result};

@@ -11,13 +11,18 @@
 //!
 //! # Security framing (read this before trusting it)
 //!
-//! The face factor is **host-trusted convenience, never the sole gate**. The real authorization is
-//! the TPM PIN authValue: a sealed key is only released after the PIN succeeds, and no liveness
-//! pass or face match on its own ever releases key material. Mug raises the spoofing bar far above
-//! Howdy's (a photo or screen is rejected), but it is **not** a guarantee against a determined
-//! attacker with a fabricated 3-D mask matched to the enrolled face — that is out of scope, as is
-//! any root/kernel adversary on a live machine. Treat a Mug pass as "probably the right live
-//! person in front of the camera," layered on the PIN, not as proof.
+//! Mug provides **face-or-PIN unlock** (Windows-Hello-style): a successful, liveness-gated face
+//! match releases the keyring key with no PIN typed, and the **PIN remains an always-available
+//! fallback**. This is a deliberate trade-off. With a typed PIN nothing that unlocks the key is ever
+//! stored, so PIN login is self-protecting at rest. To unlock with just a face, the face gate must
+//! hand the TPM the unlock credential, so that credential is stored on the device, protected by the
+//! liveness-gated match plus filesystem permissions (and the device's disk encryption when present).
+//! Commodity Linux has no VBS/TEE to anchor that, so face-unlock's powered-off-theft resistance is
+//! weaker than PIN-only's. Mug raises the spoofing bar far above Howdy's (a photo or screen is
+//! rejected), but it is **not** a guarantee against a determined attacker with a fabricated 3-D mask
+//! matched to the enrolled face — out of scope, as is any root/kernel adversary on a live machine.
+//! Treat a Mug pass as "probably the right live person in front of the camera." Users who want the
+//! strongest at-rest posture use PIN login and leave face unenrolled.
 //!
 //! # Shape
 //!

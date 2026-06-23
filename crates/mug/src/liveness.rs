@@ -29,7 +29,8 @@
 //! fixtures (see [`synth`]) rather than committed binaries or real faces.
 //!
 //! This raises the spoofing bar far above Howdy's (which has none); it is not a guarantee against a
-//! fabricated 3-D mask. Face is convenience layered on the TPM PIN, never the sole gate.
+//! fabricated 3-D mask. Face unlock releases the key Hello-style, with the PIN as an always-available
+//! fallback — and the at-rest trade-off that buys (see the crate docs).
 
 use crate::camera::FramePair;
 use crate::error::{MugError, Result};
