@@ -86,7 +86,15 @@ fn virtual_substrate() -> bool {
 /// 3. `auto`/unset: the substrate when `MUG_VIRTUAL_IR_DIR` is set (the CI/default path), otherwise
 ///    the Brio when a GREY IR node is discoverable, otherwise unavailable (degrade to the PIN).
 fn select_backend() -> Result<CaptureBackend> {
-    let requested = std::env::var(ENV_BACKEND).ok();
+    let requested = match std::env::var(ENV_BACKEND) {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(anyhow!(
+                "{ENV_BACKEND} is set but is not valid UTF-8 (expected auto, virtual, or hardware)"
+            ));
+        }
+    };
     resolve_backend(requested.as_deref(), virtual_substrate(), || {
         mug::find_brio_ir_node().map(|_| ())
     })
@@ -156,6 +164,11 @@ fn parse_hex_payload(raw: &str) -> std::result::Result<Vec<u8>, String> {
     }
     if !hex.len().is_multiple_of(2) {
         return Err(format!("odd hex length {}", hex.len()));
+    }
+    // Guard before byte-slicing below: reject any non-ASCII-hex character (including multi-byte
+    // UTF-8) up front, so `&hex[i..i + 2]` can never split a char boundary and panic.
+    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("non-hex characters in payload {raw:?}"));
     }
     (0..hex.len())
         .step_by(2)
@@ -477,5 +490,8 @@ mod tests {
         assert!(parse_hex_payload("").is_err());
         assert!(parse_hex_payload("0").is_err());
         assert!(parse_hex_payload("zz").is_err());
+        // Multi-byte UTF-8 must fail closed, not panic on a non-char-boundary byte slice.
+        assert!(parse_hex_payload("€€").is_err());
+        assert!(parse_hex_payload("0€").is_err());
     }
 }
