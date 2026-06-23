@@ -8,7 +8,7 @@
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -92,16 +92,27 @@ impl EnrollStore {
     /// Resolve the default store directory: [`EnrollStore::ENV_DIR`] if set, else
     /// `$XDG_DATA_HOME/mug` (falling back to `$HOME/.local/share/mug`).
     pub fn default_location() -> Result<Self> {
-        if let Some(dir) = std::env::var_os(Self::ENV_DIR) {
-            return Ok(Self::with_dir(PathBuf::from(dir)));
+        if let Some(dir) = std::env::var_os(Self::ENV_DIR)
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+        {
+            return Ok(Self::with_dir(dir));
         }
-        let base = if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-            PathBuf::from(xdg)
-        } else if let Some(home) = std::env::var_os("HOME") {
-            PathBuf::from(home).join(".local").join("share")
+        // Ignore a relative/empty XDG_DATA_HOME (per the XDG spec) so enrollment never lands in a
+        // surprising CWD-relative location; fall through to $HOME, then error.
+        let base = if let Some(xdg) = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+        {
+            xdg
+        } else if let Some(home) = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+        {
+            home.join(".local").join("share")
         } else {
             return Err(MugError::Store(
-                "cannot resolve store dir: neither MUG_STORE_DIR, XDG_DATA_HOME, nor HOME set"
+                "cannot resolve store dir: set MUG_STORE_DIR or an absolute XDG_DATA_HOME/HOME"
                     .into(),
             ));
         };
@@ -109,12 +120,16 @@ impl EnrollStore {
     }
 
     fn user_path(&self, username: &str) -> Result<PathBuf> {
-        // Defend the path join against separators / traversal in the username.
-        if username.is_empty()
-            || username.contains('/')
-            || username.contains('\\')
-            || username.contains("..")
-        {
+        // Let the path parser validate the username instead of substring-matching: require it to be
+        // exactly one *Normal* path component. That rejects separators, "", ".", "..", absolute
+        // paths and OS prefixes, while accepting legitimate names like "a..b". The single-component
+        // name then joins inside the store dir with no traversal.
+        let mut components = Path::new(username).components();
+        let single_normal = matches!(
+            (components.next(), components.next()),
+            (Some(Component::Normal(c)), None) if c == std::ffi::OsStr::new(username)
+        );
+        if !single_normal {
             return Err(MugError::Store(format!("invalid username: {username:?}")));
         }
         Ok(self.dir.join(format!("{username}.json")))
@@ -331,6 +346,24 @@ mod tests {
         let dir_mode = fs::metadata(store.dir()).unwrap().permissions().mode() & 0o777;
         assert_eq!(file_mode, 0o600, "enrollment file must be 0600");
         assert_eq!(dir_mode, 0o700, "store dir must be 0700");
+    }
+
+    #[test]
+    fn user_path_validation_accepts_normal_rejects_traversal() {
+        let store = EnrollStore::with_dir("/tmp/mug-test");
+        // Legitimate names, including embedded dots, are accepted.
+        for ok in ["alice", "a..b", "a.b", "user_1", "café"] {
+            assert!(store.user_path(ok).is_ok(), "{ok:?} should be valid");
+        }
+        // Separators, traversal, current/parent dir, empty, and absolute paths are rejected.
+        for bad in ["", ".", "..", "a/b", "../etc", "/abs"] {
+            assert!(store.user_path(bad).is_err(), "{bad:?} should be rejected");
+        }
+        // A valid name stays inside the store dir.
+        assert_eq!(
+            store.user_path("alice").unwrap(),
+            Path::new("/tmp/mug-test/alice.json")
+        );
     }
 
     #[test]

@@ -109,7 +109,9 @@ impl FramePair {
     }
 }
 
-/// A source of IR frames. Implementations must honour `deadline_ms` and never block past it.
+/// A source of IR frames. The real hardware implementation must honour `deadline_ms` and never
+/// block past it (a wedged camera must not freeze the unlock); in-memory/test sources that return a
+/// frame immediately trivially satisfy this and may ignore the parameter.
 pub trait IrSource {
     fn dimensions(&self) -> (u32, u32);
     /// Capture one frame, bounded by `deadline_ms`.
