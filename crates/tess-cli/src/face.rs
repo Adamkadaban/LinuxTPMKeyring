@@ -150,6 +150,15 @@ fn resolve_backend(
 
 /// Parse a hex-encoded emitter payload, tolerating `0x` prefixes and `:`/`,`/whitespace separators.
 fn parse_hex_payload(raw: &str) -> std::result::Result<Vec<u8>, String> {
+    // Brio SET_CUR payloads are a handful of bytes; bound the input up front so a hostile env var
+    // can't force a large allocation on the auth path.
+    const MAX_INPUT_LEN: usize = 256;
+    if raw.len() > MAX_INPUT_LEN {
+        return Err(format!(
+            "payload too long ({} bytes; max {MAX_INPUT_LEN})",
+            raw.len()
+        ));
+    }
     let cleaned: String = raw
         .chars()
         .filter(|c| !c.is_whitespace() && *c != ':' && *c != ',')
@@ -492,5 +501,7 @@ mod tests {
         // Multi-byte UTF-8 must fail closed, not panic on a non-char-boundary byte slice.
         assert!(parse_hex_payload("€€").is_err());
         assert!(parse_hex_payload("0€").is_err());
+        // Oversized input fails closed rather than allocating.
+        assert!(parse_hex_payload(&"00".repeat(200)).is_err());
     }
 }
