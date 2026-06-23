@@ -91,8 +91,6 @@ pub fn unlock<S: KeySealer>(
     unlock_and_verify(keyring, &key, "unsealed key")
 }
 
-/// Whether the face-unlock credential is enrolled (both the face-sealed metadata and the on-disk
-/// face authValue are present).
 /// Whether face-unlock is **fully usable** — i.e. all three artifacts are present: the on-disk
 /// sealed-face metadata, the on-disk authValue, *and* the per-user mug template. A files-only check
 /// would let `tess status` report "enrolled" while `tess unlock --face` always falls back to the PIN
@@ -301,7 +299,8 @@ pub struct TpmInfo {
 pub struct StatusReport {
     pub metadata_present: bool,
     pub recovery_present: bool,
-    /// Whether the face-unlock credential (face metadata + on-disk authValue) is enrolled.
+    /// Whether face-unlock is fully usable: the sealed-face metadata, the on-disk authValue, and the
+    /// per-user mug template are all present (see [`face_enrolled`]).
     pub face_present: bool,
     /// `None` when the lock state was not probed; `Some(Err)` carries why it could not be read.
     pub keyring_locked: Option<std::result::Result<bool, String>>,
