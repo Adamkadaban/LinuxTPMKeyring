@@ -215,8 +215,35 @@ The module then runs one bounded `fprintd` verify ahead of the PIN unseal and fa
 PIN **regardless of the result** — a match never skips the PIN, and a no-match or stalled reader
 never blocks login. Precedence: **fingerprint (convenience) → PIN (the real gate) → password
 fallthrough**. There is no `tess`-CLI fingerprint flag in the MVP; the gate is configured at the PAM
-line. The `tess enroll --face` / `tess unlock --face` face-or-PIN CLI flow ships (Phase 5, the Mug
-face factor); wiring face into the **PAM session** (non-blocking login) is a separate follow-up.
+line.
+
+#### Optional face release path
+
+The face release path is likewise **opt-in** and **off by default**. Enable it with the `face=yes`
+module argument (and combine it with `fingerprint=yes` if you want both):
+
+```pam
+session optional pam_tess.so face=yes
+session optional pam_tess.so fingerprint=yes face=yes
+```
+
+With `face=yes` the session helper first attempts a **bounded, liveness-gated face match**. Unlike
+the fingerprint gate, a successful face match **releases the keyring key with no password typed**:
+the same key is sealed a second time in the TPM under an independent on-disk authValue (`A_face`,
+mode 0600), and a live, matching face unseals it. Face is **host-trusted convenience, never the sole
+gate** — the PIN authValue stays the real TPM gate, and **any** face outcome (no enrollment, no
+capture backend, no match, liveness rejection, timeout, TPM/keyring fault) degrades cleanly to the
+PIN. The face capture is bounded inside the helper and the whole helper is bounded by the PAM
+module's watchdog, so a wedged camera can never freeze login. Enroll the factor with
+`tess enroll --face`. Precedence with everything enabled: **face → fingerprint → PIN → password
+fallthrough**.
+
+If you wire tess into the **auth** stack as well, use a fail-open control flag so a declined or
+timed-out factor falls through to the password:
+
+```pam
+auth [success=done default=ignore] pam_tess.so face=yes
+```
 
 > The PAM install logic is exercised in tests against throwaway fixtures only — it never edits a real
 > `/etc/pam.d` or module directory in CI.

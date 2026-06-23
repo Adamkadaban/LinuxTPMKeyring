@@ -30,8 +30,11 @@ pub mod ret {
 /// `Some(result)`: `Unavailable` when no PIN was available (so no helper is spawned), else the
 /// classified outcome of running the watchdog'd helper with `pin` on its standard input. When
 /// `helper_spec.fingerprint` is set, the helper additionally runs a bounded fprintd verify as a
-/// front gate before the PIN unseal — host-trusted convenience that never replaces the PIN. Bounded
-/// by `watchdog.deadline + 2 * watchdog.term_grace`; never blocks login.
+/// front gate before the PIN unseal — host-trusted convenience that never replaces the PIN. When
+/// `helper_spec.face` is set, the helper first attempts a bounded liveness-gated face match that can
+/// release the key with no PIN typed; the session gate therefore hands an empty stdin (not `None`)
+/// when face is enabled but no password was supplied, so the helper still runs. Bounded by
+/// `watchdog.deadline + 2 * watchdog.term_grace`; never blocks login.
 pub fn evaluate(
     env: &GateEnv,
     helper_spec: &HelperSpec,

@@ -95,27 +95,84 @@ fn read_pin_from_stdin() -> Result<SecretBytes> {
     Ok(SecretBytes::new(buf))
 }
 
-/// Entry point for the `tess-pam-helper` binary: optionally run the fingerprint front gate, then
-/// read the PIN from stdin and run the session unlock against the user's enrollment data, the
-/// environment-selected TPM, and the Secret Service login keyring. The PIN is read *after* the
-/// (potentially multi-second) fingerprint verify so its in-memory lifetime spans only the unseal.
-/// Returns an error (mapped by the binary to a non-zero exit) on any failure of the **PIN** path —
-/// the real gate. The fingerprint gate never produces such an error: it is host-trusted convenience
-/// layered on the PIN, so any fingerprint result (match, no-match, timeout, unavailable) falls
-/// through to the PIN unseal, which alone can release the sealed key.
-pub fn run_pam_helper(fingerprint: bool) -> Result<()> {
+/// Entry point for the `tess-pam-helper` binary: optionally attempt the bounded face release path
+/// and/or the fingerprint front gate, then read the PIN from stdin and run the session unlock
+/// against the user's enrollment data, the environment-selected TPM, and the Secret Service login
+/// keyring. Precedence: **face (model-B, releases the key with no PIN) → fingerprint (convenience)
+/// → PIN (the real TPM gate) → password fallthrough**. The face leg is host-trusted convenience that
+/// can release the key on its own, but any failure/timeout/not-enrolled degrades cleanly to the PIN;
+/// the fingerprint leg never substitutes for the PIN. The PIN is read *after* the (potentially
+/// multi-second) biometric attempts so its in-memory lifetime spans only the unseal. Returns an error
+/// (mapped by the binary to a non-zero exit) only on failure of the **PIN** path — the real gate.
+pub fn run_pam_helper(fingerprint: bool, face: bool) -> Result<()> {
     let paths = Paths::for_user().context("resolve the tess data directory")?;
     let tcti = tcti_from_env();
+    let keyring = SecretServiceBackend::connect().context("connect to the Secret Service")?;
+
+    if face {
+        // The bounded liveness-gated match can release the key with no PIN typed. On a clean unlock
+        // there is nothing more to do; on any failure we report it and fall through to the PIN.
+        match face_front_unlock(&tcti, &paths, &keyring) {
+            FaceRelease::Unlocked => {
+                eprintln!(
+                    "tess-pam-helper: face verified (host-trusted convenience); keyring unlocked via the face authValue"
+                );
+                return Ok(());
+            }
+            FaceRelease::Fallback(reason) => {
+                eprintln!("tess-pam-helper: face unavailable ({reason}) — falling back to the PIN");
+            }
+        }
+    }
     if fingerprint {
         // Precedence: fingerprint (convenience) -> PIN (the real TPM gate) -> password fallthrough.
         // The verify is bounded and its outcome only logged; the PIN read below is what unseals the
-        // key. Run the verify first so the PIN's in-memory lifetime spans only the unseal, not the
-        // (potentially multi-second) fingerprint wait.
+        // key.
         report_fingerprint(fingerprint_front_gate());
     }
-    let keyring = SecretServiceBackend::connect().context("connect to the Secret Service")?;
     let pin = read_pin_from_stdin()?;
     unseal_and_unlock(&tcti, &paths.metadata, &pin, &keyring)
+}
+
+/// The outcome of the optional face release path. Every variant either unlocks outright or degrades
+/// to the PIN — a face failure never aborts the helper, only the PIN path can.
+enum FaceRelease {
+    /// A live, matching face released the key and unlocked the keyring — no PIN needed.
+    Unlocked,
+    /// Face was unavailable (not enrolled, no capture backend, no match, liveness rejection, TPM or
+    /// keyring fault); carries a secret-free reason for the journal. The caller falls back to the PIN.
+    Fallback(String),
+}
+
+/// Attempt the bounded, liveness-gated face release: confirm face is fully enrolled, run the
+/// match, and on success unseal the keyring key via the on-disk `A_face` authValue and unlock the
+/// keyring. The TPM context is scoped to this function so it is dropped before the PIN fallback opens
+/// its own (the swtpm transport used in tests is single-client). Never blocks past the capture
+/// deadline; the PAM module's watchdog is the outer wall-clock backstop.
+fn face_front_unlock(
+    tcti: &TctiConfig,
+    paths: &Paths,
+    keyring: &dyn KeyringBackend,
+) -> FaceRelease {
+    if !crate::lifecycle::face_enrolled(paths) {
+        return FaceRelease::Fallback("face not enrolled".to_string());
+    }
+    let enrollment = match crate::face::load_enrollment() {
+        Ok(Some(enrollment)) => enrollment,
+        Ok(None) => return FaceRelease::Fallback("no face enrollment on disk".to_string()),
+        Err(e) => return FaceRelease::Fallback(format!("load face enrollment: {e:#}")),
+    };
+    if let Err(e) = crate::face::verify_from_env(&enrollment) {
+        return FaceRelease::Fallback(format!("face verify: {e:#}"));
+    }
+    let mut sealer = match TpmSealer::open(tcti) {
+        Ok(sealer) => sealer,
+        Err(e) => return FaceRelease::Fallback(format!("open the TPM: {e:#}")),
+    };
+    match crate::lifecycle::unlock_with_face(&mut sealer, keyring, paths) {
+        Ok(()) => FaceRelease::Unlocked,
+        Err(e) => FaceRelease::Fallback(format!("face unseal/unlock: {e:#}")),
+    }
 }
 
 /// The result of the optional fingerprint front gate. Every variant proceeds to the PIN unseal: a

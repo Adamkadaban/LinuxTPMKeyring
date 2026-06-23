@@ -38,6 +38,11 @@ impl Watchdog {
     /// it is larger than [`DEFAULT_DEADLINE`]; the helper still bounds its own fprintd verify well
     /// inside this ceiling, leaving headroom for the unseal.
     pub const FINGERPRINT_DEADLINE: Duration = Duration::from_secs(12);
+    /// Wall-clock budget for a session helper that runs the face release path. It must cover a
+    /// bounded liveness frame-pair capture (itself deadline-bounded inside `mug::verify`) plus the
+    /// TPM unseal and keyring unlock, so it is larger than [`DEFAULT_DEADLINE`]; the capture still
+    /// bounds itself well inside this ceiling, leaving headroom for the unseal.
+    pub const FACE_DEADLINE: Duration = Duration::from_secs(9);
     pub const DEFAULT_TERM_GRACE: Duration = Duration::from_millis(250);
     pub const DEFAULT_POLL: Duration = Duration::from_millis(5);
 

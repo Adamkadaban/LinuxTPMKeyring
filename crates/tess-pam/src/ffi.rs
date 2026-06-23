@@ -214,21 +214,28 @@ fn run_session_gate(pamh: *mut pam_handle_t, argc: c_int, argv: *const *const c_
         let env = GateEnv::detect(get_rhost(pamh).as_deref());
         // SAFETY: argc/argv are the arguments PAM passed straight into the entrypoint.
         let spec = unsafe { helper_spec(argc, argv) };
-        // The fingerprint front gate needs the login user for its fprintd claim, and a wider
-        // wall-clock budget to cover a real swipe ahead of the unseal. PIN-only sessions keep the
-        // default deadline.
-        let (spec, watchdog) = if spec.fingerprint {
-            (
-                spec.with_fingerprint_user(get_user(pamh)),
-                Watchdog::new(Watchdog::FINGERPRINT_DEADLINE),
-            )
+        // The fingerprint front gate needs the login user for its fprintd claim. Both biometric
+        // legs (fingerprint swipe, face capture) are slow, so the watchdog budget widens to cover
+        // whichever are enabled ahead of the unseal; a PIN-only session keeps the default deadline.
+        let spec = if spec.fingerprint {
+            spec.with_fingerprint_user(get_user(pamh))
         } else {
-            (spec, Watchdog::default())
+            spec
         };
+        let watchdog = Watchdog::new(session_deadline(&spec));
         // Only prompt for a PIN once a gesture is known to be possible, so SSH/remote and no-TPM
         // hosts are never prompted.
         let pin = if env.aborts() { None } else { get_pin(pamh) };
-        let outcome = crate::evaluate(&env, &spec, &watchdog, pin.as_ref().map(|p| p.as_slice()));
+        // Face (model-B) can release the key on its own, so the helper still runs when no password
+        // was supplied — an empty stdin lets the face path try while the PIN fallback simply finds
+        // nothing to unseal with. A fingerprint-only or PIN-only session needs the PIN, so a missing
+        // PIN there stays Unavailable (no helper spawned).
+        let helper_input: Option<&[u8]> = match (pin.as_ref(), spec.face) {
+            (Some(pin), _) => Some(pin.as_slice()),
+            (None, true) => Some(&[]),
+            (None, false) => None,
+        };
+        let outcome = crate::evaluate(&env, &spec, &watchdog, helper_input);
         log_session_outcome(outcome);
         match outcome {
             None => ret::PAM_SUCCESS,
@@ -236,6 +243,20 @@ fn run_session_gate(pamh: *mut pam_handle_t, argc: c_int, argv: *const *const c_
         }
     }));
     gate.unwrap_or(ret::PAM_SUCCESS)
+}
+
+/// Wall-clock budget for the session helper, widened to cover whichever slow biometric legs are
+/// enabled ahead of the PIN unseal. PIN-only keeps the tight default; each biometric adds its own
+/// bounded budget, and with both enabled the budget covers both running sequentially. Every leg is
+/// also bounded internally, so this is only the backstop the watchdog enforces — login is never
+/// frozen past it.
+fn session_deadline(spec: &HelperSpec) -> std::time::Duration {
+    match (spec.fingerprint, spec.face) {
+        (false, false) => Watchdog::DEFAULT_DEADLINE,
+        (true, false) => Watchdog::FINGERPRINT_DEADLINE,
+        (false, true) => Watchdog::FACE_DEADLINE,
+        (true, true) => Watchdog::FINGERPRINT_DEADLINE + Watchdog::FACE_DEADLINE,
+    }
 }
 
 /// Collect the PAM module arguments (the tokens after the module path in the PAM config line) into
