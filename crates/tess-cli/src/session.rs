@@ -124,13 +124,16 @@ pub fn run_pam_helper(fingerprint: bool, face: bool) -> Result<()> {
             }
         }
     }
+    // Read the PIN before the fingerprint front gate: when no PIN is on stdin (e.g. the face-only
+    // path already fell back) this returns early, skipping the bounded — and pointless — fingerprint
+    // verify, since fingerprint is only a convenience gate in front of the PIN unseal and can never
+    // unlock without it. Avoids up to a full fingerprint deadline of needless login latency.
+    let pin = read_pin_from_stdin()?;
     if fingerprint {
-        // Precedence: fingerprint (convenience) -> PIN (the real TPM gate) -> password fallthrough.
-        // The verify is bounded and its outcome only logged; the PIN read below is what unseals the
-        // key.
+        // Convenience confirmation that the right user is present before the PIN unseal below; the
+        // verify is bounded and its outcome only logged — the PIN is what unseals the key.
         report_fingerprint(fingerprint_front_gate());
     }
-    let pin = read_pin_from_stdin()?;
     unseal_and_unlock(&tcti, &paths.metadata, &pin, &keyring)
 }
 
