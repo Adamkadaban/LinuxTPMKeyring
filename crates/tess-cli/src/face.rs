@@ -39,6 +39,13 @@ const ENV_BACKEND: &str = "MUG_IR_BACKEND";
 const ENV_EMITTER_ON: &str = "MUG_IR_EMITTER_ON_HEX";
 /// Hex-encoded UVC SET_CUR payload that turns the Brio IR emitter off (overrides the default).
 const ENV_EMITTER_OFF: &str = "MUG_IR_EMITTER_OFF_HEX";
+/// Brio IR-emitter UVC extension-unit id (hex u8, e.g. `0x04`) — overrides [`mug::BRIO_EMITTER_UNIT`].
+const ENV_EMITTER_UNIT: &str = "MUG_IR_EMITTER_UNIT";
+/// Brio IR-emitter UVC selector (hex u8, e.g. `0x06`) — overrides [`mug::BRIO_EMITTER_SELECTOR`].
+const ENV_EMITTER_SELECTOR: &str = "MUG_IR_EMITTER_SELECTOR";
+/// Video node the emitter SET_CUR targets (path) — defaults to the GREY capture node, but the
+/// emitter extension unit may live on a different Brio node.
+const ENV_EMITTER_NODE: &str = "MUG_IR_EMITTER_NODE";
 
 /// Default Brio IR-emitter payloads. The exact bytes are device-confirmed during the manual smoke;
 /// a wrong value fails safe (the emitter stays off, the liveness differential cannot pass, the face
@@ -209,9 +216,35 @@ fn emitter_payload(var: &str, default: &[u8]) -> Result<Vec<u8>> {
     }
 }
 
-/// Build the real Brio capture source + emitter, discovering the GREY IR node once and binding the
-/// emitter control to the same node. Any failure (no camera, permission denied) surfaces as an error
-/// the caller treats as "face unavailable → degrade to the PIN".
+/// Parse a hex `u8` (with or without a `0x` prefix), e.g. `0x04` or `4`.
+fn parse_hex_u8(raw: &str) -> std::result::Result<u8, String> {
+    let s = raw.trim();
+    let s = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+    if s.is_empty() {
+        return Err("empty value".into());
+    }
+    u8::from_str_radix(s, 16).map_err(|e| format!("invalid hex u8 {raw:?}: {e}"))
+}
+
+/// Resolve a hex-`u8` emitter coordinate from `var`, falling back to `default`.
+fn emitter_coord(var: &str, default: u8) -> Result<u8> {
+    match std::env::var(var) {
+        Ok(value) => parse_hex_u8(&value).map_err(|e| anyhow!("{var}: {e}")),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(std::env::VarError::NotUnicode(_)) => Err(anyhow!(
+            "{var} is set but is not valid UTF-8; expected a hex u8 (e.g. 0x04)"
+        )),
+    }
+}
+
+/// Build the real Brio capture source + emitter, discovering the GREY IR node once. The emitter
+/// SET_CUR targets the capture node by default, or `MUG_IR_EMITTER_NODE` when set (the emitter
+/// extension unit may live on a different Brio node); its unit/selector default to the Brio values
+/// and are overridable via `MUG_IR_EMITTER_UNIT`/`MUG_IR_EMITTER_SELECTOR`. Any failure (no camera,
+/// permission denied) surfaces as an error the caller treats as "face unavailable → degrade to PIN".
 fn build_hardware_backend(node: Option<PathBuf>) -> Result<(mug::V4l2IrDevice, mug::BrioEmitter)> {
     let node = match node {
         Some(node) => node,
@@ -221,14 +254,19 @@ fn build_hardware_backend(node: Option<PathBuf>) -> Result<(mug::V4l2IrDevice, m
         .map_err(|e| anyhow!("open the Brio IR capture node {}: {e}", node.display()))?;
     let on_payload = emitter_payload(ENV_EMITTER_ON, DEFAULT_EMITTER_ON)?;
     let off_payload = emitter_payload(ENV_EMITTER_OFF, DEFAULT_EMITTER_OFF)?;
-    let emitter = mug::BrioEmitter::new(
-        &node,
-        mug::BRIO_EMITTER_UNIT,
-        mug::BRIO_EMITTER_SELECTOR,
-        on_payload,
-        off_payload,
-    )
-    .map_err(|e| anyhow!("open the Brio IR emitter control {}: {e}", node.display()))?;
+    let unit = emitter_coord(ENV_EMITTER_UNIT, mug::BRIO_EMITTER_UNIT)?;
+    let selector = emitter_coord(ENV_EMITTER_SELECTOR, mug::BRIO_EMITTER_SELECTOR)?;
+    let emitter_node = match std::env::var_os(ENV_EMITTER_NODE) {
+        Some(path) => PathBuf::from(path),
+        None => node.clone(),
+    };
+    let emitter = mug::BrioEmitter::new(&emitter_node, unit, selector, on_payload, off_payload)
+        .map_err(|e| {
+            anyhow!(
+                "open the Brio IR emitter control {}: {e}",
+                emitter_node.display()
+            )
+        })?;
     Ok((source, emitter))
 }
 
@@ -802,6 +840,22 @@ mod tests {
         assert!(parse_hex_payload("0€").is_err());
         // Oversized input fails closed rather than allocating.
         assert!(parse_hex_payload(&"00".repeat(200)).is_err());
+    }
+
+    #[test]
+    fn parse_hex_u8_accepts_prefix_and_bare() {
+        assert_eq!(parse_hex_u8("0x04").unwrap(), 0x04);
+        assert_eq!(parse_hex_u8("0X0e").unwrap(), 0x0e);
+        assert_eq!(parse_hex_u8("6").unwrap(), 0x06);
+        assert_eq!(parse_hex_u8(" ff ").unwrap(), 0xff);
+    }
+
+    #[test]
+    fn parse_hex_u8_rejects_malformed_or_out_of_range() {
+        assert!(parse_hex_u8("").is_err());
+        assert!(parse_hex_u8("0x").is_err());
+        assert!(parse_hex_u8("zz").is_err());
+        assert!(parse_hex_u8("100").is_err()); // 0x100 overflows u8
     }
 
     #[test]

@@ -172,9 +172,15 @@ the convenience path.
   UVC extension-unit IR emitter. When no camera is present the factor reports unavailable and unlock
   degrades to the PIN. (Identity matching requires the real `tract` ONNX matcher (`face-model`
   feature + `MUG_MODEL_PATH`); without a model the face factor fails closed and unlock falls back to
-  the PIN — see below.) The Brio emitter SET_CUR payloads default to a starting value and
-  are overridable with `MUG_IR_EMITTER_ON_HEX` / `MUG_IR_EMITTER_OFF_HEX` (hex, e.g. `0x01`); a wrong
-  value fails safe (the emitter stays off, liveness can't pass, the factor degrades to the PIN).
+   the PIN — see below.) The Brio emitter SET_CUR payloads default to a starting value and
+   are overridable with `MUG_IR_EMITTER_ON_HEX` / `MUG_IR_EMITTER_OFF_HEX` (hex, e.g. `0x01`); a wrong
+   value fails safe (the emitter stays off, liveness can't pass, the factor degrades to the PIN). The
+   emitter's UVC extension-unit coordinates are also overridable — `MUG_IR_EMITTER_UNIT` and
+   `MUG_IR_EMITTER_SELECTOR` (hex u8, default `0x04`/`0x06`), and `MUG_IR_EMITTER_NODE` to target a
+   different Brio video node than capture. If `face-test`/`unlock --face` reports
+   `UVC SET_CUR … No such file or directory`, your Brio's coordinates differ from the defaults;
+   discover the working unit/selector/payload with
+   [`linux-enable-ir-emitter`](https://github.com/Emixam23/linux-enable-ir-emitter) and set these vars.
 
 **No model ships — face *identity* matching needs a user-supplied model, and is required for face
 unlock.** The model-free path is a deterministic **mock** with **no identity discrimination** — it
