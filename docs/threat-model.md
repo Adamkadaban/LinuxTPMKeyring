@@ -208,9 +208,12 @@ fails or hangs.
 ## Secret hygiene
 
 - The keyring key and PIN live in `zeroize`-on-drop buffers (`SecretBytes`), and key lifetime is
-  minimized to the unseal→handoff window. Locking those buffers into RAM (`mlock`) and disabling core
-  dumps (`PR_SET_DUMPABLE`/`RLIMIT_CORE`) are planned hardening, not yet shipped — until then, an
-  operator who wants the stronger guarantee can disable core dumps at the system level.
+  minimized to the unseal→handoff window. Those buffers are `mlock`ed into RAM (best-effort, via the
+  safe `region` crate) so the cleartext is never written to **swap**; if the OS refuses (a low
+  `RLIMIT_MEMLOCK`) the secret stays `zeroize`-on-drop and a note is logged. `mlock` does **not**
+  cover suspend-to-disk/hibernation (which snapshots all RAM to disk) or core dumps — disabling
+  hibernation / using encrypted swap, and disabling core dumps (`PR_SET_DUMPABLE`/`RLIMIT_CORE`),
+  remain operator-level mitigations.
 - The PIN is never logged and never reaches argv, the environment, or disk. The PAM module hands it
   to the helper over an anonymous in-memory file (`memfd`), not a pipe — eliminating a `SIGPIPE` that
   could kill the login process (see [ADR-0010](adr/0010-pam-helper-pin-transport-memfd.md)).
@@ -230,7 +233,7 @@ avoid.
 | Online PIN brute force / lockout abuse | Wrong PINs trip the hardware DA-lockout; the privileged reset is gated by the **recovery secret** (a sub-key never equal to `K`), so an attacker who trips the lockout cannot clear it ([ADR-0011](adr/0011-privileged-da-lockout-reset.md)) |
 | Biometric spoof (Windows Hello IR replay, CVE-2021-34466) | The fingerprint leg is **host-trusted, never the sole gate** (the PIN authValue is the real gate). Face unlock (Mug) *can* release the key but is **liveness-gated** — active IR-reflectance rejects photo/screen spoofs (not 3-D masks) — and keeps the PIN as an always-available fallback |
 | TOCTOU / confused deputy in PAM | Unseal is bound to the authenticated PAM session and gated by TPM policy; no replayable out-of-band "verify-match" |
-| Memory disclosure (cold boot, swap, ptrace, core dump) | `zeroize`-on-drop + minimal key lifetime today; `mlock` and core-dump disabling (`PR_SET_DUMPABLE`/`RLIMIT_CORE`) are planned hardening, available now as an operator-level recommendation |
+| Memory disclosure (cold boot, swap, ptrace, core dump) | `zeroize`-on-drop + minimal key lifetime + best-effort `mlock` (secrets pinned in RAM, never **swapped**); hibernation (suspend-to-disk) and core-dump disabling (`PR_SET_DUMPABLE`/`RLIMIT_CORE`) are **not** covered by `mlock` and remain operator-level mitigations |
 | Dependency FFI UAF (RUSTSEC-2023-0044) | Pin `tss-esapi ≥ 7.1.0`; `cargo audit` + `cargo deny` gate every PR |
 
 ## Non-goals (so they are never mistaken for gaps)

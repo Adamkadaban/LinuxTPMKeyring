@@ -43,32 +43,104 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// A zeroizing byte buffer for secret material (the sealed random key, the recovery secret, a PIN).
-/// Wiped on drop; never `Debug`-printed in the clear.
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
-pub struct SecretBytes(Vec<u8>);
+/// A zeroizing, RAM-locked byte buffer for secret material (the sealed random key, the recovery
+/// secret, a PIN). The backing buffer is `mlock`ed so the kernel can't page it to **swap**, and it
+/// is `zeroize`d then unlocked on drop. Never `Debug`-printed in the clear.
+///
+/// `mlock` stops swapping only; it does **not** protect against suspend-to-disk/hibernation, which
+/// snapshots all of RAM to disk regardless of memory locks (see `mlock(2)`). Disabling hibernation or
+/// using encrypted swap is a separate, operator-level mitigation.
+///
+/// Locking is **best-effort**: if the OS refuses (e.g. a low `RLIMIT_MEMLOCK`) the secret is still
+/// zeroized on drop and a one-line note is emitted once — locking never fails construction or blocks
+/// an auth path. The wipe-then-unlock-then-free ordering is enforced by field declaration order
+/// (`_lock` before `data`).
+pub struct SecretBytes {
+    // Drops before `data` (declaration order): after `Drop::drop` zeroizes `data`, the guard
+    // unlocks the pages while `data`'s buffer is still allocated, then `data` frees it.
+    _lock: Option<region::LockGuard>,
+    data: Vec<u8>,
+}
 
 impl SecretBytes {
     pub fn new(bytes: Vec<u8>) -> Self {
-        Self(bytes)
+        let lock = lock_buffer(&bytes);
+        Self {
+            _lock: lock,
+            data: bytes,
+        }
     }
 
     pub fn as_slice(&self) -> &[u8] {
-        &self.0
+        &self.data
     }
 
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.data.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.data.is_empty()
+    }
+
+    /// Whether this buffer's pages are currently `mlock`ed (test-only observability).
+    #[cfg(test)]
+    fn is_locked(&self) -> bool {
+        self._lock.is_some()
+    }
+}
+
+/// Best-effort `mlock` of `buf`'s backing pages. Returns `None` for an empty buffer or when the OS
+/// refuses to lock (logged once, never fatal — the secret stays zeroize-on-drop regardless).
+fn lock_buffer(buf: &[u8]) -> Option<region::LockGuard> {
+    if buf.is_empty() {
+        return None;
+    }
+    match region::lock(buf.as_ptr(), buf.len()) {
+        Ok(guard) => Some(guard),
+        Err(e) => {
+            // Warn once per process — a per-secret message would spam stderr on every unseal.
+            use std::sync::Once;
+            static WARNED: Once = Once::new();
+            WARNED.call_once(|| {
+                eprintln!(
+                    "tess: note: could not mlock a secret buffer ({e}); secrets stay \
+                     zeroize-on-drop but may be pageable. Raise RLIMIT_MEMLOCK to lock them in RAM."
+                );
+            });
+            None
+        }
+    }
+}
+
+impl Clone for SecretBytes {
+    fn clone(&self) -> Self {
+        // A clone gets its own freshly-locked buffer (the lock guard binds to a specific allocation).
+        Self::new(self.data.clone())
+    }
+}
+
+impl Zeroize for SecretBytes {
+    fn zeroize(&mut self) {
+        self.data.zeroize();
+    }
+}
+
+// Marker: the manual `Drop` below zeroizes the contents, so `SecretBytes` honors the
+// `ZeroizeOnDrop` contract.
+impl ZeroizeOnDrop for SecretBytes {}
+
+impl Drop for SecretBytes {
+    fn drop(&mut self) {
+        // Wipe while the pages are still locked; `_lock` then unlocks (field-drop order) before
+        // `data` frees its buffer.
+        self.data.zeroize();
     }
 }
 
 impl std::fmt::Debug for SecretBytes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SecretBytes({} bytes, redacted)", self.0.len())
+        write!(f, "SecretBytes({} bytes, redacted)", self.data.len())
     }
 }
 
@@ -150,6 +222,76 @@ mod tests {
         assert_eq!(format!("{s:?}"), "SecretBytes(4 bytes, redacted)");
         assert_eq!(s.len(), 4);
         assert!(!s.is_empty());
+    }
+
+    /// Locked-page count (kB) for this process from `/proc/self/status` (`VmLck`). Linux-only.
+    #[cfg(target_os = "linux")]
+    fn vmlck_kb() -> u64 {
+        let status = std::fs::read_to_string("/proc/self/status").expect("read /proc/self/status");
+        for line in status.lines() {
+            if let Some(rest) = line.strip_prefix("VmLck:") {
+                let kb = rest.split_whitespace().next().unwrap_or("0");
+                return kb.parse().unwrap_or(0);
+            }
+        }
+        0
+    }
+
+    #[test]
+    fn empty_secret_is_not_locked() {
+        // Nothing to lock; `region::lock` of a zero-length buffer is skipped.
+        assert!(!SecretBytes::new(Vec::new()).is_locked());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn secret_buffer_is_mlocked_and_unlocked_on_drop() {
+        // 64 KiB spans multiple pages so the VmLck delta is unambiguous when locking is permitted.
+        let before = vmlck_kb();
+        let secret = SecretBytes::new(vec![0xAB; 64 * 1024]);
+        let during = vmlck_kb();
+        if secret.is_locked() {
+            assert!(
+                during > before,
+                "VmLck should grow while a secret is locked ({before} -> {during} kB)"
+            );
+            drop(secret);
+            // `munlock` is synchronous in `drop`, so VmLck must fall back below `during`. Poll
+            // briefly: `cargo test` runs tests multithreaded in one process and VmLck is
+            // process-wide, so a sibling test's small lock can transiently perturb the reading (our
+            // 64 KiB release still dominates their ≤4 KiB locks).
+            let mut after = vmlck_kb();
+            for _ in 0..20 {
+                if after < during {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                after = vmlck_kb();
+            }
+            assert!(
+                after < during,
+                "VmLck must drop once the secret is unlocked on drop ({during} -> {after} kB)"
+            );
+        } else {
+            // A constrained sandbox (e.g. RLIMIT_MEMLOCK=0) denies locking; the secret is still
+            // zeroize-on-drop, just pageable. Don't fail — that's the documented best-effort path.
+            eprintln!("note: mlock denied in this environment; skipping the VmLck assertion");
+        }
+    }
+
+    #[test]
+    fn clone_allocates_a_distinct_buffer() {
+        let a = SecretBytes::new(vec![7u8; 4096]);
+        let b = a.clone();
+        assert_eq!(a.as_slice(), b.as_slice());
+        // The invariant that matters: `Clone` deep-copies into its own allocation (each is then
+        // locked independently). Don't assert both locks succeed — under a boundary `RLIMIT_MEMLOCK`
+        // one allocation can lock while the other can't.
+        assert_ne!(
+            a.as_slice().as_ptr(),
+            b.as_slice().as_ptr(),
+            "clone must own a distinct buffer"
+        );
     }
 
     #[test]
