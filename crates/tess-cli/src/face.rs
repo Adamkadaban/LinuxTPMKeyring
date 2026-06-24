@@ -218,6 +218,9 @@ fn emitter_payload(var: &str, default: &[u8]) -> Result<Vec<u8>> {
 
 /// Parse a hex `u8` (with or without a `0x` prefix), e.g. `0x04` or `4`.
 fn parse_hex_u8(raw: &str) -> std::result::Result<u8, String> {
+    if raw.len() > 16 {
+        return Err("value too long for a hex u8".into());
+    }
     let s = raw.trim();
     let s = s
         .strip_prefix("0x")
@@ -257,6 +260,11 @@ fn build_hardware_backend(node: Option<PathBuf>) -> Result<(mug::V4l2IrDevice, m
     let unit = emitter_coord(ENV_EMITTER_UNIT, mug::BRIO_EMITTER_UNIT)?;
     let selector = emitter_coord(ENV_EMITTER_SELECTOR, mug::BRIO_EMITTER_SELECTOR)?;
     let emitter_node = match std::env::var_os(ENV_EMITTER_NODE) {
+        Some(path) if path.is_empty() => {
+            return Err(anyhow!(
+                "{ENV_EMITTER_NODE} is set but empty; unset it to use the capture node"
+            ));
+        }
         Some(path) => PathBuf::from(path),
         None => node.clone(),
     };
@@ -856,6 +864,7 @@ mod tests {
         assert!(parse_hex_u8("0x").is_err());
         assert!(parse_hex_u8("zz").is_err());
         assert!(parse_hex_u8("100").is_err()); // 0x100 overflows u8
+        assert!(parse_hex_u8(&"0".repeat(64)).is_err()); // oversized input rejected without echo
     }
 
     #[test]
