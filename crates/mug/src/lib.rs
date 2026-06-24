@@ -30,6 +30,8 @@
 //!   traits, so a synthetic source ([`camera::VirtualIrDevice`]) drives headless tests while the
 //!   real Logitech Brio path ([`camera::V4l2IrDevice`] + [`camera::BrioEmitter`]) runs on hardware.
 //! - [`liveness`] — the active-illumination differential analysis; deterministic and unit-tested.
+//! - [`detect`] — locate the face + 5 landmarks ([`detect::FaceDetector`]); the real backend is a
+//!   YuNet ONNX run via `tract`, decoded/NMS-filtered in safe Rust. No model ships with tess.
 //! - [`align`] — landmark-based similarity-transform alignment of the IR crop to the canonical
 //!   ArcFace/SFace template, so the matcher embeds an aligned face rather than the whole frame.
 //! - [`matcher`] — a pluggable IR-frame embedding matcher ([`matcher::EmbeddingExtractor`]) with
@@ -48,6 +50,7 @@
 pub mod align;
 pub mod camera;
 pub mod config;
+pub mod detect;
 pub mod liveness;
 pub mod matcher;
 pub mod store;
@@ -67,6 +70,12 @@ pub use camera::{
     VirtualIrDevice, VirtualIrEmitter, VirtualIrSource, capture_liveness_pair, find_brio_ir_node,
 };
 pub use config::{MugConfig, PixelScale};
+#[cfg(feature = "face-model")]
+pub use detect::YuNetDetector;
+pub use detect::{
+    DEFAULT_NMS_IOU, DEFAULT_SCORE_THRESHOLD, Detection, FaceDetector, FixedDetector,
+    locate_and_align,
+};
 pub use gate::{FaceGate, verify};
 pub use liveness::{LivenessConfig, LivenessFeatures, LivenessReport, analyze as analyze_liveness};
 pub use matcher::{Embedding, EmbeddingExtractor, Matcher, PooledExtractor, cosine_distance};
