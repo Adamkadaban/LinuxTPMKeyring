@@ -30,6 +30,8 @@
 //!   traits, so a synthetic source ([`camera::VirtualIrDevice`]) drives headless tests while the
 //!   real Logitech Brio path ([`camera::V4l2IrDevice`] + [`camera::BrioEmitter`]) runs on hardware.
 //! - [`liveness`] — the active-illumination differential analysis; deterministic and unit-tested.
+//! - [`align`] — landmark-based similarity-transform alignment of the IR crop to the canonical
+//!   ArcFace/SFace template, so the matcher embeds an aligned face rather than the whole frame.
 //! - [`matcher`] — a pluggable IR-frame embedding matcher ([`matcher::EmbeddingExtractor`]) with
 //!   cosine-distance verification. No model ships with tess; CI uses a deterministic mock.
 //! - [`store`] — per-user enrollment (the IR embedding + liveness calibration, never a raw image),
@@ -43,6 +45,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod align;
 pub mod camera;
 pub mod config;
 pub mod liveness;
@@ -57,6 +60,7 @@ mod gate;
 
 pub use error::{MugError, Result};
 
+pub use align::{ALIGNED_FACE_SIZE, FaceLandmarks, Point, align_face};
 pub use camera::{
     BRIO_EMITTER_SELECTOR, BRIO_EMITTER_UNIT, BRIO_IR_HEIGHT, BRIO_IR_WIDTH, BRIO_PRODUCT_ID,
     BRIO_VENDOR_ID, BrioEmitter, FramePair, IrEmitter, IrFrame, IrSource, V4l2IrDevice,
