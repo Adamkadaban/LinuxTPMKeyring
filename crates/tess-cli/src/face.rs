@@ -219,7 +219,9 @@ fn emitter_payload(var: &str, default: &[u8]) -> Result<Vec<u8>> {
 /// Parse a hex `u8` (with or without a `0x` prefix), e.g. `0x04` or `4`.
 fn parse_hex_u8(raw: &str) -> std::result::Result<u8, String> {
     let s = raw.trim();
-    if s.len() > 8 {
+    // A generous DoS bound on a mispointed env var; a real u8 hex is short, but accept leading-zero
+    // forms like `0x00000004`. `from_str_radix` below does the actual validity/overflow check.
+    if s.len() > 64 {
         return Err("value too long for a hex u8".into());
     }
     let s = s
@@ -856,6 +858,7 @@ mod tests {
         assert_eq!(parse_hex_u8("0X0e").unwrap(), 0x0e);
         assert_eq!(parse_hex_u8("6").unwrap(), 0x06);
         assert_eq!(parse_hex_u8(" ff ").unwrap(), 0xff);
+        assert_eq!(parse_hex_u8("0x00000004").unwrap(), 0x04); // leading-zero form
     }
 
     #[test]
@@ -864,7 +867,7 @@ mod tests {
         assert!(parse_hex_u8("0x").is_err());
         assert!(parse_hex_u8("zz").is_err());
         assert!(parse_hex_u8("100").is_err()); // 0x100 overflows u8
-        assert!(parse_hex_u8(&"0".repeat(64)).is_err()); // oversized input rejected without echo
+        assert!(parse_hex_u8(&"0".repeat(100)).is_err()); // oversized input rejected without echo
     }
 
     #[test]
