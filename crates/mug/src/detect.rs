@@ -377,7 +377,9 @@ mod yunet {
                 let (Some(bbox), Some(kps)) = (&boxes[si], &kpss[si]) else {
                     continue;
                 };
-                if scores[si].len() < 2 || bbox.len() != n * 4 || kps.len() != n * 10 {
+                // Require exactly two score maps (cls + obj). Extra c==1 outputs would make the
+                // chosen pair order-dependent, so treat that as an incompatible model (fail closed).
+                if scores[si].len() != 2 || bbox.len() != n * 4 || kps.len() != n * 10 {
                     continue;
                 }
                 if scores[si][0].len() != n || scores[si][1].len() != n {
@@ -575,6 +577,6 @@ mod tests {
             score: 1.0,
         });
         let aligned = locate_and_align(&detector, &frame, ALIGNED_FACE_SIZE).unwrap();
-        assert_eq!(aligned.dimensions(), (112, 112));
+        assert_eq!(aligned.dimensions(), (ALIGNED_FACE_SIZE, ALIGNED_FACE_SIZE));
     }
 }
