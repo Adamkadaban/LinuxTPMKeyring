@@ -43,6 +43,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod align;
 pub mod camera;
 pub mod config;
 pub mod liveness;
@@ -57,6 +58,7 @@ mod gate;
 
 pub use error::{MugError, Result};
 
+pub use align::{ALIGNED_FACE_SIZE, FaceLandmarks, Point, align_face};
 pub use camera::{
     BRIO_EMITTER_SELECTOR, BRIO_EMITTER_UNIT, BRIO_IR_HEIGHT, BRIO_IR_WIDTH, BRIO_PRODUCT_ID,
     BRIO_VENDOR_ID, BrioEmitter, FramePair, IrEmitter, IrFrame, IrSource, V4l2IrDevice,
