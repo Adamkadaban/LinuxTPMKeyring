@@ -272,7 +272,7 @@ fn build_matcher(cfg: &MugConfig) -> Result<Matcher<Box<dyn EmbeddingExtractor>>
     if let Some(path) = model_path.as_deref() {
         // `from_path` already includes the path and detailed context in its error; convert directly
         // rather than wrapping with redundant text.
-        let extractor = mug::TractExtractor::from_path(path)?;
+        let extractor = mug::TractExtractor::from_path(path, cfg.pixel_scale)?;
         return Ok(Matcher::new(
             Box::new(extractor) as Box<dyn EmbeddingExtractor>,
             cfg.match_threshold,

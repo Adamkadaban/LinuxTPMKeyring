@@ -199,10 +199,16 @@ build time). To enable face identity matching:
    - **InsightFace ArcFace** model zoo: <https://github.com/deepinsight/insightface/tree/master/model_zoo>
 
    **Input contract** (what tess feeds the model): a single fixed-shape `[1, C, H, W]` input; the
-   GREY IR crop is resized to `H×W`, pixels mapped `(p − 127.5) / 127.5`, and replicated across `C`
-   channels. The output is flattened and L2-normalized to the embedding; matching is cosine distance
-   against the enrolled template. Pick a model whose preprocessing matches (most ArcFace/SFace
-   networks do); verify it end-to-end with the enroll self-test before relying on it.
+   GREY IR crop is resized to `H×W`, each pixel scaled, and the result replicated across `C` channels.
+   The output is flattened and L2-normalized to the embedding; matching is cosine distance against the
+   enrolled template. **Pixel scaling is configurable** via `MugConfig.pixel_scale` to match the
+   model's training-time normalization:
+   - `symmetric` (default) — `(p − 127.5) / 127.5` ≈ `[-1, 1]`, the common ArcFace/SFace convention;
+   - `unit` — `p / 255` → `[0, 1]`;
+   - `standardized` — `(p / 255 − mean) / std` for the given scalars.
+
+   Most ArcFace/SFace networks use `symmetric`; pick the mode matching your model and verify it
+   end-to-end with the enroll self-test before relying on it.
    ```sh
    MUG_MODEL_PATH=/path/to/face.onnx tess enroll --face
    ```

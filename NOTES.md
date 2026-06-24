@@ -876,3 +876,6 @@ Key facts / gotchas:
 
 ## 2026-06-23 — face identity matching now fails closed without a real model (#56)
 **Resolution:** the model-free mock does NO identity discrimination (accepts any live face), so `build_matcher` now errors instead of falling back to it for real enroll/unlock; the mock is gated behind a test-only `TESS_ALLOW_MOCK_FACE=1` opt-in (set in `face_unlock.rs`/`pam_helper_face.rs`; child PAM helper inherits it). README documents model download (OpenCV Zoo SFace / InsightFace ArcFace) + the `[1,C,H,W]`, `(p-127.5)/127.5`, channel-replicated input contract. `crates/tess-cli/src/face.rs` · `docs/adr/0016` · #56
+
+## 2026-06-24 — configurable face-model input scaling (#68)
+**Resolution:** added `MugConfig.pixel_scale` (`PixelScale`: `symmetric` default / `unit` / `standardized{mean,std}`); `TractExtractor::from_path` takes it and `extract` applies it per pixel (IR is single-channel, so channel order is moot — only scaling matters). `std=0`/non-finite rejected at load as `MatcherUnavailable`. `#[serde(default)]` keeps old configs loadable. `crates/mug/src/config.rs` · `crates/mug/src/matcher.rs` · #68
