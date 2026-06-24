@@ -566,8 +566,9 @@ fn print_face_test_outcome(outcome: &FaceTestOutcome) {
 
 /// Capture a reference then a probe pair, reporting liveness for each and (when both are live)
 /// comparing the probe to the reference. `pause` is invoked before each capture (the CLI waits for
-/// Enter; tests pass a no-op or a frame-swapping closure). Only an I/O/capture failure is an error;
-/// every diagnostic outcome is an `Ok(FaceTestOutcome)`.
+/// Enter; tests pass a no-op or a frame-swapping closure). A capture, embedding, or matching failure
+/// is an `Err`; every well-formed diagnostic outcome (liveness rejection, match, or no-match) is an
+/// `Ok(FaceTestOutcome)`.
 fn run_face_test<S, E>(
     source: &mut S,
     emitter: &mut E,
