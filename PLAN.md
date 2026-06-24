@@ -42,15 +42,19 @@ evidence of presence to something that doesn't already trust the machine.
 ## 2. Architecture
 
 A Cargo **workspace** of small crates with hard boundaries. Everything is `#![forbid(unsafe_code)]`
-**except** the PAM FFI crate, which confines `unsafe` to one `ffi` module.
+**except** three audited modules that confine `unsafe` to a single module each: `tess-pam::ffi` (PAM
+C ABI), `mug::sys` (V4L2/UVC ioctls), and `tess-testenv::env` (test-only env mutation).
+
+The table below lists the **core** crates delivered at bootstrap; two auxiliary crates were added
+later — `mug` (the Phase-5 face daemon) and `tess-testenv` (a test-only env helper).
 
 | Crate | Type | Responsibility | Key deps |
 |---|---|---|---|
-| `tess-core` | lib | Shared types, versioned `Metadata` schema, config, error types, secret hygiene (`zeroize`/`secrecy`/`mlock`), `SecretStash` trait | `serde`, `thiserror`, `zeroize`, `secrecy`, `nix`, `getrandom` |
+| `tess-core` | lib | Shared types, versioned `Metadata` schema, config, error types, secret hygiene (`zeroize`/`secrecy`; `mlock` planned, #87), `SecretStash` trait | `serde`, `thiserror`, `zeroize`, `secrecy`, `nix`, `getrandom` |
 | `tess-tpm` | lib | TPM2 seal/unseal of a random 256-bit key, bound to a **PolicyAuthValue (PIN)**; **mandatory HMAC + parameter-encryption sessions**; ECC primary; DA-lockout aware; swtpm (dev/CI) + real/vTPM | `tss-esapi ≥7.1.0`, `tess-core` |
 | `tess-keyring` | lib | `KeyringBackend` trait over the freedesktop **Secret Service** API (`org.freedesktop.secrets`) — GNOME reference impl; KWallet supported via `apiEnabled`. Rekey (enroll) + unlock (runtime) | `zbus`, `secret-service`, `tess-core` |
 | `tess-fprint` | lib | `fprintd` client over `net.reactivated.Fprint` (verify flow, **consumed unmodified**) + deterministic mock harness (libfprint virtual driver + `python-dbusmock`) | `zbus`, `tess-core` |
-| `tess-pam` | cdylib + rlib | `pam_tess.so`: **non-blocking** gate → unseal → unlock. Hand-rolled minimal PAM FFI (the only `unsafe`). Heavy work runs in a **watchdog'd helper process** under a hard timeout; fails open to password | `libc`, the libs above |
+| `tess-pam` | cdylib + rlib | `pam_tess.so`: **non-blocking** gate → unseal → unlock. Hand-rolled minimal PAM FFI (`ffi`, one of the three audited `unsafe` modules). Heavy work runs in a **watchdog'd helper process** under a hard timeout; fails open to password | `libc`, the libs above |
 | `tess-cli` | bin | `tess` binary (long form `tessera`): `enroll`, `unlock`, `status`, `doctor`, `test`, `install`, `recover`, `unenroll`. Atomic enrollment with a printed recovery secret | `clap`, the libs above |
 
 **Non-blocking PAM (hard requirement — Howdy's #1 flaw fixed).** The PAM module never does blocking
@@ -69,7 +73,7 @@ within N seconds and the helper PID is reaped.
 - **ECC (P-256)** for TPM objects; the sealed secret is **self-generated** (`getrandom` mixed with
   TPM RNG), never a TPM-born RSA key (sidesteps ROCA-class keygen flaws).
 - **Constant-time** PIN/secret handling; lean on DA-lockout, not comparison-timing secrecy.
-- **`mlock` + `zeroize`** the released key, disable core dumps (`PR_SET_DUMPABLE=0`), minimize key
+- **`zeroize`** the released key (and **`mlock`** — planned hardening, #87), disable core dumps (`PR_SET_DUMPABLE=0`), minimize key
   lifetime to the unseal→handoff window.
 - **Bind the unseal to the authenticated PAM session** (single-use, session-scoped) — no trusting a
   replayable out-of-band "verify-match" (defeats TOCTOU / confused-deputy).
@@ -149,15 +153,15 @@ passing; in CI a swtpm-backed `/dev/tpmrm0` that `tess-tpm` connects to is prese
 a provisioned Azure VM `tess doctor` reports the vTPM present.
 
 **Deliverables:**
-- [ ] Workspace `Cargo.toml` + `rust-toolchain.toml` + six crate skeletons; `#![forbid(unsafe_code)]` everywhere except `tess-pam`
-- [ ] `tess-core`: error enum, versioned `Metadata`, `SecretBytes` (zeroizing + mlock), `SecretStash`/`KeyringBackend`/`AuthGate` trait stubs
+- [x] Workspace `Cargo.toml` + `rust-toolchain.toml` + the six core crate skeletons; `#![forbid(unsafe_code)]` workspace-wide with audited per-module `unsafe` exceptions (listed in the crate overview above)
+- [x] `tess-core`: error enum, versioned `Metadata`, `SecretBytes` (zeroizing; `mlock` planned hardening, tracked in #87), `SecretStash`/`KeyringBackend`/`AuthGate` trait stubs
 - [x] `.github/workflows/test.yml`: `pull_request` + `workflow_dispatch`, concurrency-cancel, installs swtpm/tpm2-tss, runs fmt/clippy/test + **`cargo audit` + `cargo deny`**
 - [x] `deny.toml` (advisories deny, license allowlist MIT/Apache/BSD/ISC, sources crates.io-only); pin `tss-esapi ≥ 7.1.0`
 - [x] `testing/swtpm/run.sh` + mssim/socket TCTI helper; `tess-tpm` connect smoke test
 - [x] `deploy/qemu/up.sh`/`down.sh`: local Debian 13 KVM guest with `swtpm` vTPM, SSH key-only — optional, for external contributors (the agent uses CI + Azure, never this host)
 - [x] `deploy/azure/provision.sh` (+ Bicep) Gen2 Trusted-Launch Debian13 B-series, vTPM, SSH pubkey, tagged `project=LinuxTPMKeyring`; `teardown.sh`
 - [x] `tess doctor` skeleton: probes `/dev/tpmrm0` + `/dev/tpm0`, a Secret Service daemon binary on PATH, and fprintd on PATH
-- [ ] `README.md` (pretty) + `docs/architecture.md` + `docs/threat-model.md` stubs
+- [x] `README.md` (pretty) + `docs/architecture.md` + `docs/threat-model.md` stubs
 
 | Wave | Worktree slug | Depends on | Tasks |
 |---|---|---|---|
@@ -183,7 +187,7 @@ swtpm in CI (`--features sim`).
 - [x] ECC `create_primary()` under the owner hierarchy; deterministic template
 - [x] **Salted HMAC + parameter-encryption session** helper used by every seal/unseal
 - [x] `seal(secret, pin)`: `PolicyAuthValue` policy, authValue = PIN, encrypted session
-- [x] `unseal(pin)`: policy session → `unseal` → `SecretBytes` (mlock'd, zeroized)
+- [x] `unseal(pin)`: policy session → `unseal` → `SecretBytes` (zeroized; `mlock` planned, #87)
 - [x] Key-gen: `getrandom` mixed with TPM `GetRandom`; constant-time PIN handling
 - [x] Versioned blob+metadata persistence; **no secret/secret-hash ever on disk**
 - [x] DA-lockout error mapping + lockout-state read + PIN-holder recovery; **privileged lockout-hierarchy reset bound to the recovery secret, via `tpm2_dictionarylockout`** (#16 / ADR-0011, supersedes ADR-0008)
@@ -193,7 +197,7 @@ swtpm in CI (`--features sim`).
 | Wave | Worktree slug | Depends on | Tasks |
 |---|---|---|---|
 | 1 (solo) | tpm-sessions-primary | Phase 0 | `TctiConfig`, ECC primary, HMAC/param-encryption session helper, `sim`/`hw` flags |
-| 2 (parallel ×2) | tpm-seal-unseal | tpm-sessions-primary | `seal`/`unseal`, `PolicyAuthValue`, key-gen mix, constant-time, mlock/zeroize |
+| 2 (parallel ×2) | tpm-seal-unseal | tpm-sessions-primary | `seal`/`unseal`, `PolicyAuthValue`, key-gen mix, constant-time, zeroize (`mlock` planned, #87) |
 | 2 (parallel ×2) | tpm-persistence-lockout | tpm-sessions-primary | versioned persistence, DA-lockout mapping + reset |
 | 3 (solo) | tpm-hw-validation | wave 2 | vTPM exit-test harness, session-encryption assertion, `doctor` TPM detail |
 
@@ -390,6 +394,15 @@ audit`/`cargo deny`/`cargo vet` gate every PR; `cargo +nightly -Z minimal-versio
 - **Biometric spoof / host-trust (security).** Win Hello IR-replay (CVE-2021-34466); root can forge
   `verify-match`. *Mitigation:* biometric is **host-trusted convenience, never the sole gate**; PIN
   authValue is the real gate; IR-reflectance liveness in Mug. **No fprintd/libfprint changes.**
+- **Real-Brio capture & liveness calibration (materialized, Phase 5 bring-up).** The Brio IR node
+  does not behave like the design assumed: its emitter is *not* driven by a UVC `SET_CUR` (the wrong
+  unit wedges the node into `POLLERR`) but **auto-warms after ~1 s of streaming**, and the node
+  advertises streaming-only I/O (no `read()`). *Resolution (shipped):* streaming-warmup capture with
+  `SET_CUR` opt-in, plus V4L2 **MMAP** streaming in `mug::sys` (#80/#82). *Still open:* the
+  whole-frame liveness thresholds were tuned on synthetic noise and mis-fire on real IR (a live face
+  reads lower gradient than a flat photo), so liveness must move onto the **aligned crop** and be
+  **recalibrated on real live+spoof captures** — tracked in **#79** (needs the physical Brio; cannot
+  be done on swtpm/CI). Does not weaken the at-rest guarantee: the PIN authValue remains the real gate.
 - **TOCTOU / confused deputy (security).** *Mitigation:* unseal inside PAM auth gated by TPM policy;
   session-bound single-use match; strict gate ordering.
 - **Memory disclosure (security).** Cold boot, swap, ptrace, core dump. *Mitigation:* `mlock` +
