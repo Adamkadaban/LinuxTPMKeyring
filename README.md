@@ -199,12 +199,27 @@ build time). To enable face identity matching:
    - **InsightFace ArcFace** model zoo: <https://github.com/deepinsight/insightface/tree/master/model_zoo>
 
    **Input contract** (what tess feeds the model): a single fixed-shape `[1, C, H, W]` input; the
-   GREY IR crop is resized to `H×W`, pixels mapped `(p − 127.5) / 127.5`, and replicated across `C`
-   channels. The output is flattened and L2-normalized to the embedding; matching is cosine distance
-   against the enrolled template. Pick a model whose preprocessing matches (most ArcFace/SFace
-   networks do); verify it end-to-end with the enroll self-test before relying on it.
+   GREY IR crop is resized to `H×W`, each pixel scaled, and the result replicated across `C` channels.
+   The output is flattened and L2-normalized to the embedding; matching is cosine distance against the
+   enrolled template. **Pixel scaling is configurable** via `MugConfig.pixel_scale` to match the
+   model's training-time normalization:
+   - `symmetric` (default) — `(p − 127.5) / 127.5` ≈ `[-1, 1]`, the common ArcFace/SFace convention;
+   - `unit` — `p / 255` → `[0, 1]`;
+   - `standardized` — `(p / 255 − mean) / std` for the given scalars.
+
+   Most ArcFace/SFace networks use `symmetric`; pick the mode matching your model and verify it
+   end-to-end with the enroll self-test before relying on it. Set a non-default mode (or any other
+   `MugConfig` field) via a JSON config file pointed at by `MUG_CONFIG`:
    ```sh
-   MUG_MODEL_PATH=/path/to/face.onnx tess enroll --face
+   cat > mug.json <<'JSON'
+   { "capture_deadline_ms": 2500, "match_threshold": 0.34,
+     "liveness": { "min_mean_delta": 0, "min_delta_std": 0, "min_gradient_energy": 0,
+       "max_baseline_for_live": 0, "emission_min_delta": 0, "max_saturated_fraction": 0,
+       "score_threshold": 0 },
+     "model_path": null,
+     "pixel_scale": { "mode": "standardized", "mean": 0.5, "std": 0.5 } }
+   JSON
+   MUG_CONFIG=mug.json MUG_MODEL_PATH=/path/to/face.onnx tess enroll --face
    ```
 
 (See [ADR-0015](docs/adr/0015-tract-onnx-face-matcher.md); `tract` was chosen over `ort`, whose only

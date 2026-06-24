@@ -62,7 +62,7 @@ pub use camera::{
     BRIO_VENDOR_ID, BrioEmitter, FramePair, IrEmitter, IrFrame, IrSource, V4l2IrDevice,
     VirtualIrDevice, VirtualIrEmitter, VirtualIrSource, capture_liveness_pair, find_brio_ir_node,
 };
-pub use config::MugConfig;
+pub use config::{MugConfig, PixelScale};
 pub use gate::{FaceGate, verify};
 pub use liveness::{LivenessConfig, LivenessFeatures, LivenessReport, analyze as analyze_liveness};
 pub use matcher::{Embedding, EmbeddingExtractor, Matcher, PooledExtractor, cosine_distance};

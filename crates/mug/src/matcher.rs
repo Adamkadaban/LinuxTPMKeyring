@@ -249,9 +249,9 @@ const MAX_OUTPUT_ELEMS: usize = 1024 * 1024;
 /// Loads a user-supplied fixed-shape NCHW model (e.g. ArcFace/SFace) and runs it on the GREY IR
 /// crop. **No model ships with tess** — the path is supplied at runtime. Without a real model the
 /// caller (tess-cli) fails closed rather than fall back to the deterministic mock, which does no
-/// identity discrimination and is test-only. Pixels are mapped to `(p - 127.5) / 127.5` (the common
-/// ArcFace/SFace input scaling); a multi-channel model receives the grayscale plane replicated across
-/// channels.
+/// identity discrimination and is test-only. Pixels are mapped by the configured
+/// [`PixelScale`](crate::config::PixelScale) (default `(p - 127.5) / 127.5`, the common ArcFace/SFace
+/// scaling); a multi-channel model receives the grayscale plane replicated across channels.
 #[cfg(feature = "face-model")]
 pub struct TractExtractor {
     model: std::sync::Arc<tract_onnx::prelude::TypedRunnableModel>,
@@ -259,14 +259,25 @@ pub struct TractExtractor {
     height: usize,
     width: usize,
     dim: usize,
+    scale: crate::config::PixelScale,
 }
 
 #[cfg(feature = "face-model")]
 impl TractExtractor {
     /// Load and optimize the ONNX model at `path`, deriving the input geometry and embedding
     /// dimensionality from the model's own input/output facts (which must be fully concrete).
-    pub fn from_path(path: &str) -> Result<Self> {
+    /// `scale` controls how raw `[0,255]` IR pixels map to the model's input values.
+    pub fn from_path(path: &str, scale: crate::config::PixelScale) -> Result<Self> {
         use tract_onnx::prelude::*;
+
+        if let crate::config::PixelScale::Standardized { mean, std } = scale
+            && (!mean.is_finite() || !std.is_finite() || std <= 0.0)
+        {
+            return Err(MugError::MatcherUnavailable(format!(
+                "pixel_scale standardized requires a finite mean and a finite std > 0, got \
+                 mean={mean} std={std}"
+            )));
+        }
 
         let typed = tract_onnx::onnx()
             .model_for_path(path)
@@ -353,6 +364,7 @@ impl TractExtractor {
             height,
             width,
             dim,
+            scale,
         })
     }
 }
@@ -386,7 +398,7 @@ impl EmbeddingExtractor for TractExtractor {
         }
         let mut input = vec![0f32; input_len];
         for (i, &p) in plane.iter().enumerate() {
-            let v = (p as f32 - 127.5) / 127.5;
+            let v = self.scale.apply(p);
             for c in 0..self.channels {
                 input[c * plane_len + i] = v;
             }
@@ -489,8 +501,25 @@ mod tests {
     fn tract_extractor_missing_model_errors_cleanly() {
         // A bad/absent model path must surface a MatcherUnavailable error (the caller degrades to the
         // PIN), never panic.
-        match TractExtractor::from_path("/nonexistent/model.onnx") {
+        match TractExtractor::from_path(
+            "/nonexistent/model.onnx",
+            crate::config::PixelScale::default(),
+        ) {
             Err(MugError::MatcherUnavailable(_)) => {}
+            other => panic!("expected MatcherUnavailable, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    #[cfg(feature = "face-model")]
+    #[test]
+    fn tract_extractor_rejects_zero_std_scale() {
+        // A degenerate Standardized scale (std = 0) would divide by zero per pixel; reject at load.
+        let scale = crate::config::PixelScale::Standardized {
+            mean: 0.5,
+            std: 0.0,
+        };
+        match TractExtractor::from_path("/nonexistent/model.onnx", scale) {
+            Err(MugError::MatcherUnavailable(m)) => assert!(m.contains("std"), "got {m}"),
             other => panic!("expected MatcherUnavailable, got {:?}", other.map(|_| ())),
         }
     }

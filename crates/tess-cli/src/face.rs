@@ -239,6 +239,45 @@ fn build_hardware_backend(node: Option<PathBuf>) -> Result<(mug::V4l2IrDevice, m
 /// test-only mock. No model ships with tess.
 const ENV_MODEL_PATH: &str = "MUG_MODEL_PATH";
 
+/// The env var pointing at a JSON [`MugConfig`] file (thresholds, `pixel_scale`, `model_path`, …).
+const ENV_CONFIG: &str = "MUG_CONFIG";
+
+/// Load the mug config: parse the JSON file at `MUG_CONFIG` if that var is set, otherwise use the
+/// secure defaults. A set-but-unreadable or malformed file is an error (never silently ignored) so a
+/// misconfiguration surfaces rather than reverting to defaults behind the operator's back.
+fn load_config() -> Result<MugConfig> {
+    use std::io::Read;
+    /// A `MugConfig` JSON is well under a kilobyte; cap the read so a mispointed `MUG_CONFIG`
+    /// (e.g. `/dev/zero` or a huge file) fails fast instead of hanging/OOMing on the auth path.
+    const MAX_CONFIG_BYTES: u64 = 64 * 1024;
+    match std::env::var(ENV_CONFIG) {
+        Ok(path) => {
+            let file =
+                std::fs::File::open(&path).with_context(|| format!("open mug config {path}"))?;
+            let meta = file
+                .metadata()
+                .with_context(|| format!("stat mug config {path}"))?;
+            if !meta.is_file() {
+                return Err(anyhow!("mug config {path} is not a regular file"));
+            }
+            let mut data = String::new();
+            file.take(MAX_CONFIG_BYTES + 1)
+                .read_to_string(&mut data)
+                .with_context(|| format!("read mug config {path}"))?;
+            if data.len() as u64 > MAX_CONFIG_BYTES {
+                return Err(anyhow!(
+                    "mug config {path} exceeds the {MAX_CONFIG_BYTES}-byte cap"
+                ));
+            }
+            serde_json::from_str(&data).with_context(|| format!("parse mug config {path}"))
+        }
+        Err(std::env::VarError::NotPresent) => Ok(MugConfig::default()),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err(anyhow!("{ENV_CONFIG} is set but is not valid UTF-8"))
+        }
+    }
+}
+
 /// Test/CI-only opt-in (`TESS_ALLOW_MOCK_FACE=1`) allowing the model-free mock matcher to stand in
 /// for a real model. The mock does **no** identity discrimination, so this must never be set in a
 /// real deployment; the hermetic virtual-IR test substrate sets it so the pipeline is exercisable
@@ -272,7 +311,7 @@ fn build_matcher(cfg: &MugConfig) -> Result<Matcher<Box<dyn EmbeddingExtractor>>
     if let Some(path) = model_path.as_deref() {
         // `from_path` already includes the path and detailed context in its error; convert directly
         // rather than wrapping with redundant text.
-        let extractor = mug::TractExtractor::from_path(path)?;
+        let extractor = mug::TractExtractor::from_path(path, cfg.pixel_scale)?;
         return Ok(Matcher::new(
             Box::new(extractor) as Box<dyn EmbeddingExtractor>,
             cfg.match_threshold,
@@ -380,7 +419,7 @@ where
 /// transaction drives once. Errors (no backend selectable) leave the PIN enrollment untouched — the
 /// transaction rolls the whole thing back.
 pub fn template_source_from_env() -> Result<Box<dyn FaceTemplateSource>> {
-    let cfg = MugConfig::default();
+    let cfg = load_config()?;
     match select_backend()? {
         CaptureBackend::Virtual => {
             let (source, emitter) = VirtualIrDevice::split_from_env()
@@ -421,7 +460,7 @@ where
 /// environment. `Ok(())` means a live, matching face; any error is the caller's cue to fall back to
 /// the PIN.
 pub fn verify_from_env(enrolled: &FaceEnrollment) -> Result<()> {
-    let cfg = MugConfig::default();
+    let cfg = load_config()?;
     match select_backend()? {
         CaptureBackend::Virtual => {
             let (mut source, mut emitter) = VirtualIrDevice::split_from_env()
@@ -634,5 +673,54 @@ mod tests {
             Ok(_) => panic!("expected an error for a non-UTF-8 model path"),
         };
         assert!(err.contains("not valid UTF-8"), "unexpected message: {err}");
+    }
+
+    #[test]
+    fn load_config_defaults_without_env() {
+        let _lock = tess_testenv::env_lock();
+        let _cfg = tess_testenv::EnvGuard::remove(ENV_CONFIG);
+        assert_eq!(
+            load_config().unwrap().pixel_scale,
+            mug::PixelScale::Symmetric
+        );
+    }
+
+    #[test]
+    fn load_config_reads_pixel_scale_from_file() {
+        let _lock = tess_testenv::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mug.json");
+        let cfg = MugConfig {
+            pixel_scale: mug::PixelScale::Unit,
+            ..MugConfig::default()
+        };
+        std::fs::write(&path, serde_json::to_string(&cfg).unwrap()).unwrap();
+        let _cfg = tess_testenv::EnvGuard::set_path(ENV_CONFIG, &path);
+        assert_eq!(load_config().unwrap().pixel_scale, mug::PixelScale::Unit);
+    }
+
+    #[test]
+    fn load_config_malformed_file_errors() {
+        let _lock = tess_testenv::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mug.json");
+        std::fs::write(&path, "{ not json").unwrap();
+        let _cfg = tess_testenv::EnvGuard::set_path(ENV_CONFIG, &path);
+        assert!(load_config().is_err());
+    }
+
+    #[test]
+    fn load_config_oversized_file_errors() {
+        let _lock = tess_testenv::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mug.json");
+        // A mispointed MUG_CONFIG (huge file) must fail fast, not be slurped on the auth path.
+        std::fs::write(&path, vec![b' '; 128 * 1024]).unwrap();
+        let _cfg = tess_testenv::EnvGuard::set_path(ENV_CONFIG, &path);
+        let err = match load_config() {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected an error for an oversized config"),
+        };
+        assert!(err.contains("cap"), "unexpected message: {err}");
     }
 }
