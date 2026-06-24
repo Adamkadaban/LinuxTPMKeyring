@@ -218,10 +218,10 @@ fn emitter_payload(var: &str, default: &[u8]) -> Result<Vec<u8>> {
 
 /// Parse a hex `u8` (with or without a `0x` prefix), e.g. `0x04` or `4`.
 fn parse_hex_u8(raw: &str) -> std::result::Result<u8, String> {
-    if raw.len() > 16 {
+    let s = raw.trim();
+    if s.len() > 8 {
         return Err("value too long for a hex u8".into());
     }
-    let s = raw.trim();
     let s = s
         .strip_prefix("0x")
         .or_else(|| s.strip_prefix("0X"))
@@ -229,7 +229,7 @@ fn parse_hex_u8(raw: &str) -> std::result::Result<u8, String> {
     if s.is_empty() {
         return Err("empty value".into());
     }
-    u8::from_str_radix(s, 16).map_err(|e| format!("invalid hex u8 {raw:?}: {e}"))
+    u8::from_str_radix(s, 16).map_err(|e| format!("invalid hex u8 {s:?}: {e}"))
 }
 
 /// Resolve a hex-`u8` emitter coordinate from `var`, falling back to `default`.
