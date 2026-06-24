@@ -42,11 +42,12 @@ evidence of presence to something that doesn't already trust the machine.
 ## 2. Architecture
 
 A Cargo **workspace** of small crates with hard boundaries. Everything is `#![forbid(unsafe_code)]`
-**except** the PAM FFI crate, which confines `unsafe` to one `ffi` module.
+**except** three audited modules that confine `unsafe` to a single module each: `tess-pam::ffi` (PAM
+C ABI), `mug::sys` (V4L2/UVC ioctls), and `tess-testenv::env` (test-only env mutation).
 
 | Crate | Type | Responsibility | Key deps |
 |---|---|---|---|
-| `tess-core` | lib | Shared types, versioned `Metadata` schema, config, error types, secret hygiene (`zeroize`/`secrecy`/`mlock`), `SecretStash` trait | `serde`, `thiserror`, `zeroize`, `secrecy`, `nix`, `getrandom` |
+| `tess-core` | lib | Shared types, versioned `Metadata` schema, config, error types, secret hygiene (`zeroize`/`secrecy`; `mlock` planned, #87), `SecretStash` trait | `serde`, `thiserror`, `zeroize`, `secrecy`, `nix`, `getrandom` |
 | `tess-tpm` | lib | TPM2 seal/unseal of a random 256-bit key, bound to a **PolicyAuthValue (PIN)**; **mandatory HMAC + parameter-encryption sessions**; ECC primary; DA-lockout aware; swtpm (dev/CI) + real/vTPM | `tss-esapi ≥7.1.0`, `tess-core` |
 | `tess-keyring` | lib | `KeyringBackend` trait over the freedesktop **Secret Service** API (`org.freedesktop.secrets`) — GNOME reference impl; KWallet supported via `apiEnabled`. Rekey (enroll) + unlock (runtime) | `zbus`, `secret-service`, `tess-core` |
 | `tess-fprint` | lib | `fprintd` client over `net.reactivated.Fprint` (verify flow, **consumed unmodified**) + deterministic mock harness (libfprint virtual driver + `python-dbusmock`) | `zbus`, `tess-core` |
@@ -69,7 +70,7 @@ within N seconds and the helper PID is reaped.
 - **ECC (P-256)** for TPM objects; the sealed secret is **self-generated** (`getrandom` mixed with
   TPM RNG), never a TPM-born RSA key (sidesteps ROCA-class keygen flaws).
 - **Constant-time** PIN/secret handling; lean on DA-lockout, not comparison-timing secrecy.
-- **`mlock` + `zeroize`** the released key, disable core dumps (`PR_SET_DUMPABLE=0`), minimize key
+- **`zeroize`** the released key (and **`mlock`** — planned hardening, #87), disable core dumps (`PR_SET_DUMPABLE=0`), minimize key
   lifetime to the unseal→handoff window.
 - **Bind the unseal to the authenticated PAM session** (single-use, session-scoped) — no trusting a
   replayable out-of-band "verify-match" (defeats TOCTOU / confused-deputy).
@@ -183,7 +184,7 @@ swtpm in CI (`--features sim`).
 - [x] ECC `create_primary()` under the owner hierarchy; deterministic template
 - [x] **Salted HMAC + parameter-encryption session** helper used by every seal/unseal
 - [x] `seal(secret, pin)`: `PolicyAuthValue` policy, authValue = PIN, encrypted session
-- [x] `unseal(pin)`: policy session → `unseal` → `SecretBytes` (mlock'd, zeroized)
+- [x] `unseal(pin)`: policy session → `unseal` → `SecretBytes` (zeroized; `mlock` planned, #87)
 - [x] Key-gen: `getrandom` mixed with TPM `GetRandom`; constant-time PIN handling
 - [x] Versioned blob+metadata persistence; **no secret/secret-hash ever on disk**
 - [x] DA-lockout error mapping + lockout-state read + PIN-holder recovery; **privileged lockout-hierarchy reset bound to the recovery secret, via `tpm2_dictionarylockout`** (#16 / ADR-0011, supersedes ADR-0008)
@@ -193,7 +194,7 @@ swtpm in CI (`--features sim`).
 | Wave | Worktree slug | Depends on | Tasks |
 |---|---|---|---|
 | 1 (solo) | tpm-sessions-primary | Phase 0 | `TctiConfig`, ECC primary, HMAC/param-encryption session helper, `sim`/`hw` flags |
-| 2 (parallel ×2) | tpm-seal-unseal | tpm-sessions-primary | `seal`/`unseal`, `PolicyAuthValue`, key-gen mix, constant-time, mlock/zeroize |
+| 2 (parallel ×2) | tpm-seal-unseal | tpm-sessions-primary | `seal`/`unseal`, `PolicyAuthValue`, key-gen mix, constant-time, zeroize (`mlock` planned, #87) |
 | 2 (parallel ×2) | tpm-persistence-lockout | tpm-sessions-primary | versioned persistence, DA-lockout mapping + reset |
 | 3 (solo) | tpm-hw-validation | wave 2 | vTPM exit-test harness, session-encryption assertion, `doctor` TPM detail |
 
