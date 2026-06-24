@@ -149,15 +149,15 @@ passing; in CI a swtpm-backed `/dev/tpmrm0` that `tess-tpm` connects to is prese
 a provisioned Azure VM `tess doctor` reports the vTPM present.
 
 **Deliverables:**
-- [ ] Workspace `Cargo.toml` + `rust-toolchain.toml` + six crate skeletons; `#![forbid(unsafe_code)]` everywhere except `tess-pam`
-- [ ] `tess-core`: error enum, versioned `Metadata`, `SecretBytes` (zeroizing + mlock), `SecretStash`/`KeyringBackend`/`AuthGate` trait stubs
+- [x] Workspace `Cargo.toml` + `rust-toolchain.toml` + six crate skeletons; `#![forbid(unsafe_code)]` everywhere except `tess-pam`
+- [x] `tess-core`: error enum, versioned `Metadata`, `SecretBytes` (zeroizing + mlock), `SecretStash`/`KeyringBackend`/`AuthGate` trait stubs
 - [x] `.github/workflows/test.yml`: `pull_request` + `workflow_dispatch`, concurrency-cancel, installs swtpm/tpm2-tss, runs fmt/clippy/test + **`cargo audit` + `cargo deny`**
 - [x] `deny.toml` (advisories deny, license allowlist MIT/Apache/BSD/ISC, sources crates.io-only); pin `tss-esapi ≥ 7.1.0`
 - [x] `testing/swtpm/run.sh` + mssim/socket TCTI helper; `tess-tpm` connect smoke test
 - [x] `deploy/qemu/up.sh`/`down.sh`: local Debian 13 KVM guest with `swtpm` vTPM, SSH key-only — optional, for external contributors (the agent uses CI + Azure, never this host)
 - [x] `deploy/azure/provision.sh` (+ Bicep) Gen2 Trusted-Launch Debian13 B-series, vTPM, SSH pubkey, tagged `project=LinuxTPMKeyring`; `teardown.sh`
 - [x] `tess doctor` skeleton: probes `/dev/tpmrm0` + `/dev/tpm0`, a Secret Service daemon binary on PATH, and fprintd on PATH
-- [ ] `README.md` (pretty) + `docs/architecture.md` + `docs/threat-model.md` stubs
+- [x] `README.md` (pretty) + `docs/architecture.md` + `docs/threat-model.md` stubs
 
 | Wave | Worktree slug | Depends on | Tasks |
 |---|---|---|---|
@@ -390,6 +390,15 @@ audit`/`cargo deny`/`cargo vet` gate every PR; `cargo +nightly -Z minimal-versio
 - **Biometric spoof / host-trust (security).** Win Hello IR-replay (CVE-2021-34466); root can forge
   `verify-match`. *Mitigation:* biometric is **host-trusted convenience, never the sole gate**; PIN
   authValue is the real gate; IR-reflectance liveness in Mug. **No fprintd/libfprint changes.**
+- **Real-Brio capture & liveness calibration (materialized, Phase 5 bring-up).** The Brio IR node
+  does not behave like the design assumed: its emitter is *not* driven by a UVC `SET_CUR` (the wrong
+  unit wedges the node into `POLLERR`) but **auto-warms after ~1 s of streaming**, and the node
+  advertises streaming-only I/O (no `read()`). *Resolution (shipped):* streaming-warmup capture with
+  `SET_CUR` opt-in, plus V4L2 **MMAP** streaming in `mug::sys` (#80/#82). *Still open:* the
+  whole-frame liveness thresholds were tuned on synthetic noise and mis-fire on real IR (a live face
+  reads lower gradient than a flat photo), so liveness must move onto the **aligned crop** and be
+  **recalibrated on real live+spoof captures** — tracked in **#79** (needs the physical Brio; cannot
+  be done on swtpm/CI). Does not weaken the at-rest guarantee: the PIN authValue remains the real gate.
 - **TOCTOU / confused deputy (security).** *Mitigation:* unseal inside PAM auth gated by TPM policy;
   session-bound single-use match; strict gate ordering.
 - **Memory disclosure (security).** Cold boot, swap, ptrace, core dump. *Mitigation:* `mlock` +
