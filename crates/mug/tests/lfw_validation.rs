@@ -122,7 +122,8 @@ fn lfw_pairs_separate_genuine_from_impostor() {
             skipped += 1;
             continue;
         };
-        let d = cosine_distance(&ea, &eb).expect("cosine distance");
+        let d = cosine_distance(&ea, &eb)
+            .unwrap_or_else(|e| panic!("pairs.tsv line {}: cosine {a} vs {b}: {e}", i + 1));
         if genuine_label {
             genuine.push(d);
         } else {
@@ -143,11 +144,12 @@ fn lfw_pairs_separate_genuine_from_impostor() {
     let ta = genuine.iter().filter(|&&d| d <= MATCH_TH).count() as f32 / genuine.len() as f32;
     let tr = impostor.iter().filter(|&&d| d > MATCH_TH).count() as f32 / impostor.len() as f32;
 
-    // Best-accuracy threshold sweep + EER.
+    // Best-balanced-accuracy threshold sweep + EER, over an integer grid (0.10..=1.20 step 0.005)
+    // to keep the sweep deterministic and free of float-accumulation/lint issues.
     let (mut best_acc, mut best_t) = (0.0f32, 0.0f32);
     let (mut eer, mut eer_gap) = (1.0f32, f32::INFINITY);
-    let mut t = 0.10;
-    while t <= 1.20 {
+    for k in 20u32..=240 {
+        let t = k as f32 * 0.005;
         let atr = impostor.iter().filter(|&&d| d > t).count() as f32 / impostor.len() as f32;
         let ata = genuine.iter().filter(|&&d| d <= t).count() as f32 / genuine.len() as f32;
         let acc = (ata + atr) / 2.0;
@@ -161,7 +163,6 @@ fn lfw_pairs_separate_genuine_from_impostor() {
             eer_gap = (far - frr).abs();
             eer = (far + frr) / 2.0;
         }
-        t += 0.005;
     }
 
     eprintln!("=== LFW (grayscale) through the real mug pipeline ===");
