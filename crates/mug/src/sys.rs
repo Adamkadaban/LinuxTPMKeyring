@@ -170,9 +170,10 @@ nix::ioctl_write_ptr!(vidioc_streamoff, b'V', 19, i32);
 
 // The `_IOWR` request codes above bake `size_of::<T>()` into the ioctl number, so a struct whose
 // layout drifts from the kernel ABI would silently issue the wrong ioctl. These compile-time checks
-// pin the sizes the kernel `videodev2.h`/`uvcvideo.h` headers define. The first three are u32-only
-// (target-independent); `uvc_xu_control_query` ends in a pointer, so its size is gated to the LP64
-// x86_64 ABI this crate targets.
+// pin the sizes the kernel `videodev2.h`/`uvcvideo.h` headers define. All but the last are built
+// from explicitly-sized fields (the `v4l2_buffer` timestamp/`m` are modelled as fixed `i64`/`u64`),
+// so their sizes are target-independent; `uvc_xu_control_query` ends in a real pointer, so its size
+// is gated to the LP64 x86_64 ABI this crate targets.
 const _: () = assert!(core::mem::size_of::<v4l2_format>() == 208);
 const _: () = assert!(core::mem::size_of::<v4l2_pix_format>() == 48);
 const _: () = assert!(core::mem::size_of::<v4l2_fmtdesc>() == 64);
