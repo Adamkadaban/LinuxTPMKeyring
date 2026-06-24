@@ -187,8 +187,11 @@ fn sample_bilinear(data: &[u8], w: u32, h: u32, sx: f64, sy: f64) -> u8 {
     let fx = sx - x0;
     let fy = sy - y0;
     let (x0, y0) = (x0 as i64, y0 as i64);
+    let (w, h) = (i64::from(w), i64::from(h));
     let at = |x: i64, y: i64| -> f64 {
-        if x >= 0 && y >= 0 && (x as u32) < w && (y as u32) < h {
+        // Bounds-check in signed space: casting to u32 first could wrap a large positive coordinate
+        // past the `< w` check and then panic on the `as usize` index.
+        if x >= 0 && y >= 0 && x < w && y < h {
             f64::from(data[(y as usize) * (w as usize) + (x as usize)])
         } else {
             0.0
@@ -367,6 +370,16 @@ mod tests {
             align_face(&frame, &lm, MAX_ALIGNED_SIZE + 1),
             Err(MugError::InvalidFrame(_))
         ));
+    }
+
+    #[test]
+    fn sample_bilinear_huge_coords_are_border_not_panic() {
+        // A coordinate beyond u32 range must read as border 0 (not wrap past the bounds check and
+        // panic on index). 4.3e9 > 2^32.
+        let data = vec![200u8; 16 * 16];
+        assert_eq!(sample_bilinear(&data, 16, 16, 4_300_000_000.0, 1.0), 0);
+        assert_eq!(sample_bilinear(&data, 16, 16, 1.0, -4_300_000_000.0), 0);
+        assert_eq!(sample_bilinear(&data, 16, 16, f64::INFINITY, 1.0), 0);
     }
 
     #[test]
