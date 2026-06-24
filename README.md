@@ -274,6 +274,25 @@ permits these detector-/model-free paths because it seals nothing; the real `enr
 fails closed without both.) This is the recommended way to iterate on enrollment/lighting/threshold
 before committing to `enroll --face`.
 
+#### Watch the pipeline live with `face-preview` (dev/eval tool)
+
+For real-time bring-up there is a live viewer: a window showing the IR feed, the detection box and
+landmarks, the aligned 112×112 crop the embedder sees, and the live match verdict. It drives the
+**exact shipped `mug` pipeline** (detect → align → embed → cosine-distance), touches neither the
+keyring nor the TPM, and is a standalone crate kept **out of the workspace** so its GUI dependency
+stack never enters the shipped build or the supply-chain gates (see [ADR-0018](docs/adr/0018-face-preview-separate-crate.md)):
+
+```sh
+MUG_DETECTOR_MODEL=/path/to/yunet.onnx MUG_MODEL_PATH=/path/to/face.onnx \
+  cargo run --manifest-path tools/face-preview/Cargo.toml --release
+```
+
+Press **E** to enroll the face currently in view, then move around / hold up a photo to watch the
+distance and the `MATCH` / `NO MATCH` border update; **Q** quits. The Brio IR emitter warms over the
+first ~1 s of streaming. Set `MUG_IR_NODE` to override node auto-discovery, `MUG_MATCH_THRESHOLD` to
+override the SFace-calibrated default. It needs the desktop GUI libraries (`libwayland`/`libxkbcommon`
+or X11) present.
+
 #### Manual real-Brio smoke (maintainer, dedicated test machine — never CI)
 
 The hardware path is validated by a manual smoke on a **dedicated test machine** with the Brio

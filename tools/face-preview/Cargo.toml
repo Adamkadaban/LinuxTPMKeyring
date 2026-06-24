@@ -1,0 +1,22 @@
+[package]
+name = "face-preview"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+authors = ["Adam Hassan"]
+repository = "https://github.com/Adamkadaban/LinuxTPMKeyring"
+publish = false
+description = "Dev/eval-only live IR face-recognition viewer driving the shipped mug pipeline. Not part of the tess workspace; never shipped."
+
+[[bin]]
+name = "face-preview"
+path = "src/main.rs"
+
+# Path-depends on the shipped `mug` crate (with its real ONNX matcher) so the viewer exercises the
+# exact detect→align→embed→match code, not a re-implementation. Deliberately outside the workspace so
+# minifb's GUI dependency stack stays out of the workspace lockfile and supply-chain gates.
+[dependencies]
+mug = { path = "../../crates/mug", features = ["face-model"] }
+anyhow = "1"
+minifb = "0.28"
