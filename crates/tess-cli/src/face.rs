@@ -341,11 +341,20 @@ fn build_matcher(
         ));
     }
     if allow_mock {
-        eprintln!(
-            "tess: note — no real model configured; identity matching uses the model-free mock and \
-             is meaningless (liveness is still real). Set {ENV_MODEL_PATH} to a real model for \
-             identity discrimination."
-        );
+        if model_path.is_some() {
+            eprintln!(
+                "tess: note — a model path is configured but this build lacks the `face-model` \
+                 feature, so identity matching uses the model-free mock and is meaningless (liveness \
+                 is still real). Rebuild with `cargo build -p tess-cli --features face-model` for \
+                 real identity."
+            );
+        } else {
+            eprintln!(
+                "tess: note — no model configured; identity matching uses the model-free mock and \
+                 is meaningless (liveness is still real). Set {ENV_MODEL_PATH} to a real model for \
+                 identity discrimination."
+            );
+        }
     } else {
         eprintln!(
             "tess: WARNING — {ENV_ALLOW_MOCK_FACE} is set; using the model-free mock matcher. \
