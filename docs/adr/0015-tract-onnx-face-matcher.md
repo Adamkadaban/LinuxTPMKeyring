@@ -28,8 +28,10 @@ NCHW model (e.g. ArcFace/SFace) on the GREY IR crop.
   `tess-cli`), so the CI/default build stays the deterministic model-free mock and never compiles
   tract.
 - **No model ships with tess** — the path is user-supplied at runtime via `MUG_MODEL_PATH` /
-  `MugConfig.model_path`; absent or unbuilt, the mock is used and face is a liveness-gated
-  convenience that always degrades to the PIN.
+  `MugConfig.model_path`. Absent or unbuilt, face identity matching is unavailable; the caller
+  degrades to the PIN. (ADR-0016 makes this **fail closed**: rather than silently fall back to the
+  no-discrimination mock, a real enroll/unlock errors; the mock is test-only behind
+  `TESS_ALLOW_MOCK_FACE`.)
 - The matcher is held as `Matcher<Box<dyn EmbeddingExtractor>>` so the mock and tract backends share
   one type at the call sites. Implementation: `crates/mug/src/matcher.rs` (`TractExtractor`),
   selection in `crates/tess-cli/src/face.rs` (`build_matcher`).

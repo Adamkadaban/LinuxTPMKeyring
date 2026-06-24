@@ -247,10 +247,11 @@ const MAX_OUTPUT_ELEMS: usize = 1024 * 1024;
 /// though `tract` builds some SIMD kernels via `cc`, so a build-time C toolchain is required).
 ///
 /// Loads a user-supplied fixed-shape NCHW model (e.g. ArcFace/SFace) and runs it on the GREY IR
-/// crop. **No model ships with tess** — the path is supplied at runtime; when absent the caller
-/// uses the deterministic mock and face is a liveness-gated convenience. Pixels are mapped to
-/// `(p - 127.5) / 127.5` (the common ArcFace/SFace input scaling); a multi-channel model receives
-/// the grayscale plane replicated across channels.
+/// crop. **No model ships with tess** — the path is supplied at runtime. Without a real model the
+/// caller (tess-cli) fails closed rather than fall back to the deterministic mock, which does no
+/// identity discrimination and is test-only. Pixels are mapped to `(p - 127.5) / 127.5` (the common
+/// ArcFace/SFace input scaling); a multi-channel model receives the grayscale plane replicated across
+/// channels.
 #[cfg(feature = "face-model")]
 pub struct TractExtractor {
     model: std::sync::Arc<tract_onnx::prelude::TypedRunnableModel>,

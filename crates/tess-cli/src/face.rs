@@ -234,9 +234,9 @@ fn build_hardware_backend(node: Option<PathBuf>) -> Result<(mug::V4l2IrDevice, m
 
 /// The env var pointing at a user-supplied ONNX face-embedding model. A configured `model_path`
 /// takes precedence; the env var is consulted only when no path is configured, and even then it only
-/// loads a model when mug is built with the `face-model` feature. When it is consulted, a non-UTF-8
-/// value errors and an otherwise-set value (without the feature) logs a warning that the mock is
-/// used. No model ships with tess.
+/// loads a model when mug is built with the `face-model` feature. A non-UTF-8 value errors. Without a
+/// loadable model the matcher fails closed (an error) unless `TESS_ALLOW_MOCK_FACE` opts into the
+/// test-only mock. No model ships with tess.
 const ENV_MODEL_PATH: &str = "MUG_MODEL_PATH";
 
 /// Test/CI-only opt-in (`TESS_ALLOW_MOCK_FACE=1`) allowing the model-free mock matcher to stand in
@@ -354,7 +354,8 @@ where
 }
 
 /// Assemble a [`MugTemplateSource`] for the given source/emitter with the configured matcher (the
-/// real `tract` ONNX backend when built and configured, otherwise the model-free mock).
+/// real `tract` ONNX backend when built and configured; otherwise this fails closed unless the
+/// test-only `TESS_ALLOW_MOCK_FACE` opt-in is set — see [`build_matcher`]).
 fn mug_template_source<S, E>(
     source: S,
     emitter: E,
