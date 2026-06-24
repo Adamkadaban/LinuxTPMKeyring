@@ -336,8 +336,8 @@ mod yunet {
             // score maps, one 4-wide box map, one 10-wide landmark map). Order-independent so the
             // decode is robust to the model's output ordering.
             let mut scores: [Vec<Vec<f32>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-            let mut boxes: [Option<Vec<f32>>; 3] = [None, None, None];
-            let mut kpss: [Option<Vec<f32>>; 3] = [None, None, None];
+            let mut boxes: [Vec<Vec<f32>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+            let mut kpss: [Vec<Vec<f32>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
             for out in outputs.into_iter() {
                 let tensor = out.into_tensor();
                 let shape = tensor.shape();
@@ -363,8 +363,8 @@ mod yunet {
                 let data: Vec<f32> = slice.to_vec();
                 match c {
                     1 => scores[si].push(data),
-                    4 => boxes[si] = Some(data),
-                    10 => kpss[si] = Some(data),
+                    4 => boxes[si].push(data),
+                    10 => kpss[si].push(data),
                     _ => {}
                 }
             }
@@ -374,15 +374,18 @@ mod yunet {
             for (si, &s) in STRIDES.iter().enumerate() {
                 let (cols, rows) = (self.width / s, self.height / s);
                 let n = cols * rows;
-                let (Some(bbox), Some(kps)) = (&boxes[si], &kpss[si]) else {
-                    continue;
-                };
-                // Require exactly two score maps (cls + obj). Extra c==1 outputs would make the
-                // chosen pair order-dependent, so treat that as an incompatible model (fail closed).
-                if scores[si].len() != 2 || bbox.len() != n * 4 || kps.len() != n * 10 {
+                // Require exactly two score maps (cls + obj) and exactly one bbox and one landmark
+                // tensor for the stride. Extra/duplicate tensors would make the chosen pair
+                // order-dependent, so treat them as an incompatible model (fail closed).
+                if scores[si].len() != 2 || boxes[si].len() != 1 || kpss[si].len() != 1 {
                     continue;
                 }
-                if scores[si][0].len() != n || scores[si][1].len() != n {
+                let (bbox, kps) = (&boxes[si][0], &kpss[si][0]);
+                if bbox.len() != n * 4
+                    || kps.len() != n * 10
+                    || scores[si][0].len() != n
+                    || scores[si][1].len() != n
+                {
                     continue;
                 }
                 any_stride_complete = true;
@@ -497,7 +500,11 @@ mod tests {
         let kps = vec![0f32; n * 10];
         let mut out = Vec::new();
         decode_stride(&sa, &sb, &bbox, &kps, cols, rows, 8, 0.5, &mut out);
-        assert_eq!(out.len(), 2, "NaN-score and inf-box cells must be skipped");
+        assert_eq!(
+            out.len(),
+            2,
+            "only the 2 finite cells should decode; the NaN-score and inf-box cells are skipped"
+        );
         assert!(
             out.iter()
                 .all(|d| d.w.is_finite() && d.h.is_finite() && d.score.is_finite()),
