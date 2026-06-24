@@ -13,6 +13,7 @@ thiserror.workspace = true
 serde.workspace = true
 zeroize.workspace = true
 secrecy.workspace = true
+region.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

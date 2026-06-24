@@ -43,6 +43,9 @@ anyhow = "1"
 zeroize = { version = "1.9", features = ["derive"] }
 secrecy = "0.10"
 getrandom = "0.4"
+# Safe (no caller-side `unsafe`) page-locking so `tess-core` can `mlock` secret buffers while staying
+# `#![forbid(unsafe_code)]`.
+region = "3"
 
 # Serde / config
 serde = { version = "1", features = ["derive"] }
