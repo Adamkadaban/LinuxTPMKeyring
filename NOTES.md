@@ -882,3 +882,6 @@ Key facts / gotchas:
 
 ## 2026-06-24 — pixel_scale was inert without a config loader (#68)
 **Resolution:** `template_source_from_env`/`verify_from_env` built `MugConfig::default()`, so `pixel_scale` (and all tunables) couldn't be set at runtime. Added `load_config()` reading a JSON `MugConfig` from `MUG_CONFIG` (malformed/unreadable = error, never silent default); both entrypoints use it. Also tightened `Standardized` validation: reject non-finite `mean` and `std <= 0` at load. `crates/tess-cli/src/face.rs` · #68
+
+## 2026-06-24 — cargo-vet certified the security-critical crates (#58)
+**Resolution:** focused safe-to-deploy source reviews (build.rs, unsafe, side-effects, RustSec/OSV) of the 5 critical groups → `cargo vet certify`: tss-esapi 7.7.0 + tss-esapi-sys 0.6.0, secret-service 5.1.0 + zbus 5.16.0, chacha20poly1305 0.10.1 + hkdf 0.12.4/0.13.0 + getrandom 0.2.17/0.4.3, rpassword 7.5.4, nix 0.31.3 (11 audits; exemptions 271→260). `certify --accept-all` auto-drops the matching exemption. **Gotcha:** kept the store imports-free (CI runs `cargo vet --locked`, no upstream fetch, per the workflow comment) — `cargo vet import`+`prune` strips exemptions for import-covered crates, which then strand when imports are removed; certify-only avoids that. `supply-chain/audits.toml` · #58

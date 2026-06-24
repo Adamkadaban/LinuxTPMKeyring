@@ -1,4 +1,68 @@
 
 # cargo-vet audits file
 
-[audits]
+[[audits.chacha20poly1305]]
+who = "Adam Hassan <adamkadaban@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.10.1"
+notes = "Focused safe-to-deploy source review. RustCrypto AEAD; textbook RFC 8439 (X)ChaCha20-Poly1305, constant-time tag verify via subtle, Poly1305 key zeroized after use; no build.rs, no I/O, no in-crate unsafe; no RustSec/OSV advisory."
+
+[[audits.getrandom]]
+who = "Adam Hassan <adamkadaban@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.2.17"
+notes = "Focused safe-to-deploy source review. OS-entropy RNG shim; unsafe confined to libc/syscall FFI (/dev/urandom + getrandom syscall) with correct MaybeUninit handling; no build.rs; no advisory."
+
+[[audits.getrandom]]
+who = "Adam Hassan <adamkadaban@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.4.3"
+notes = "Focused safe-to-deploy source review. OS-entropy RNG shim; build.rs only detects MSan cfg; unsafe is libc plus a bounded linux_raw asm syscall path; no advisory."
+
+[[audits.hkdf]]
+who = "Adam Hassan <adamkadaban@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.12.4"
+notes = "Focused safe-to-deploy source review. RustCrypto HKDF; #![forbid(unsafe_code)], faithful RFC 5869 extract/expand with output cap; no build.rs, no I/O; no advisory."
+
+[[audits.hkdf]]
+who = "Adam Hassan <adamkadaban@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.13.0"
+notes = "Focused safe-to-deploy source review. RustCrypto HKDF; no unsafe, faithful RFC 5869 (same construction as 0.12.4); no build.rs, no I/O; no advisory."
+
+[[audits.nix]]
+who = "Adam Hassan <adamkadaban@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.31.3"
+notes = "Focused safe-to-deploy source review. Canonical safe-FFI Unix syscall wrapper; build.rs only sets cfg aliases; high unsafe count is inherent libc syscall bindings; no network/process/blob behavior; no advisory affecting 0.31.3."
+
+[[audits.rpassword]]
+who = "Adam Hassan <adamkadaban@gmail.com>"
+criteria = "safe-to-deploy"
+version = "7.5.4"
+notes = "Focused safe-to-deploy source review. Reads the password only from terminal/stdin into a zeroizing buffer and returns it (confirmed not persisted to file/env/network/log); disables then restores terminal echo via Drop; unsafe confined to termios/console/file FFI; no advisory."
+
+[[audits.secret-service]]
+who = "Adam Hassan <adamkadaban@gmail.com>"
+criteria = "safe-to-deploy"
+version = "5.1.0"
+notes = "Focused safe-to-deploy source review. Thin org.freedesktop.secrets D-Bus client; no build script, no unsafe, no process/network of its own; standard spec DH + AES-128-CBC + HKDF session crypto; no advisory."
+
+[[audits.tss-esapi]]
+who = "Adam Hassan <adamkadaban@gmail.com>"
+criteria = "safe-to-deploy"
+version = "7.7.0"
+notes = "Focused safe-to-deploy source review. Idiomatic Rust TSS2 ESAPI wrapper (parallaxsecond/Parsec); build.rs only emits a TSS-major-version cfg; unsafe confined to Esys_* C FFI; no network/process/filesystem side effects (std::net is config-only for the MSSIM TCTI, sockets opened by the C lib); no advisory affecting 7.7.0."
+
+[[audits.tss-esapi-sys]]
+who = "Adam Hassan <adamkadaban@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.6.0"
+notes = "Focused safe-to-deploy source review. Bindgen-generated FFI to the TSS2 C libraries; build.rs only pkg-config-links libtss2-{sys,esys,tctildr,mu} and (opt-in feature) runs bindgen into OUT_DIR, no network/download/process/fs side effects; unsafe is generated extern C; no advisory."
+
+[[audits.zbus]]
+who = "Adam Hassan <adamkadaban@gmail.com>"
+criteria = "safe-to-deploy"
+version = "5.16.0"
+notes = "Focused safe-to-deploy source review. Pure-Rust D-Bus library; process/socket usage limited to documented D-Bus transports (unix/unixexec/tcp from the operator-controlled bus address); no build script; unsafe confined to Win32 FFI and SCM_RIGHTS fd passing; no advisory."
