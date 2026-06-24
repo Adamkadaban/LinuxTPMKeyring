@@ -8,11 +8,14 @@
 //! - the real **Logitech Brio** IR path (the GREY IR node + the UVC-XU emitter), opt-in and validated
 //!   only by a manual smoke on a dedicated test machine (throwaway keyring/TPM) — never the daily-driver host, never in CI.
 //!
-//! Both run the same liveness gate. Identity matching uses the model-free mock by default; the real
-//! `tract` ONNX matcher is opt-in behind the `face-model` feature with a runtime model path
-//! (`MUG_MODEL_PATH`/config). tess ships no face model, so absent the feature or the model the mock
-//! is used. When no backend is available (no substrate, no camera) the factor reports unavailable and
-//! the caller degrades to the PIN.
+//! Both run the same liveness gate. Identity matching requires the real `tract` ONNX matcher (the
+//! `face-model` feature plus a runtime model path via `MUG_MODEL_PATH`/config); tess ships no model,
+//! so you supply one (see the README for where to download a compatible network). Without a real
+//! model the face factor **fails closed** — it refuses to enroll or unlock rather than fall back to
+//! the model-free mock, which does no identity discrimination and would accept essentially any live
+//! face. The mock is a hermetic test-only substrate, gated behind `TESS_ALLOW_MOCK_FACE`. When no
+//! backend is available (no substrate, no camera) the factor reports unavailable and the caller
+//! degrades to the PIN.
 
 use std::path::PathBuf;
 
@@ -229,15 +232,30 @@ fn build_hardware_backend(node: Option<PathBuf>) -> Result<(mug::V4l2IrDevice, m
     Ok((source, emitter))
 }
 
-/// The env var pointing at a user-supplied ONNX face-embedding model. It only takes effect when mug
-/// is built with the `face-model` feature; without it, a set value is still read and validated (a
-/// non-UTF-8 value errors, and an otherwise-set value logs a warning that the mock is used). No model
-/// ships with tess.
+/// The env var pointing at a user-supplied ONNX face-embedding model. A configured `model_path`
+/// takes precedence; the env var is consulted only when no path is configured, and even then it only
+/// loads a model when mug is built with the `face-model` feature. When it is consulted, a non-UTF-8
+/// value errors and an otherwise-set value (without the feature) logs a warning that the mock is
+/// used. No model ships with tess.
 const ENV_MODEL_PATH: &str = "MUG_MODEL_PATH";
 
-/// Build the identity matcher. With the `face-model` feature and a configured model path, this is the
-/// real `tract` ONNX matcher; otherwise it is the deterministic model-free mock (the CI/default), so
-/// face stays a liveness-gated convenience. Returns a boxed extractor so both share one matcher type.
+/// Test/CI-only opt-in (`TESS_ALLOW_MOCK_FACE=1`) allowing the model-free mock matcher to stand in
+/// for a real model. The mock does **no** identity discrimination, so this must never be set in a
+/// real deployment; the hermetic virtual-IR test substrate sets it so the pipeline is exercisable
+/// without shipping a model.
+pub const ENV_ALLOW_MOCK_FACE: &str = "TESS_ALLOW_MOCK_FACE";
+
+/// Whether the model-free mock matcher may stand in for a real model (fail-closed by default).
+fn mock_face_allowed() -> bool {
+    std::env::var(ENV_ALLOW_MOCK_FACE)
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
+/// Build the identity matcher: the real `tract` ONNX matcher when built with the `face-model` feature
+/// and given a model path. Without a real model this **fails closed** (returns an error) unless
+/// `TESS_ALLOW_MOCK_FACE` opts into the test-only mock — the mock does no identity discrimination, so
+/// it must never gate a real unlock. Returns a boxed extractor so both share one matcher type.
 fn build_matcher(cfg: &MugConfig) -> Result<Matcher<Box<dyn EmbeddingExtractor>>> {
     let model_path = match cfg.model_path.clone() {
         Some(path) => Some(path),
@@ -259,14 +277,28 @@ fn build_matcher(cfg: &MugConfig) -> Result<Matcher<Box<dyn EmbeddingExtractor>>
             cfg.match_threshold,
         ));
     }
-    #[cfg(not(feature = "face-model"))]
-    if model_path.is_some() {
-        eprintln!(
-            "tess: {ENV_MODEL_PATH}/model_path is set but this build lacks the `face-model` \
-             feature; using the model-free mock matcher"
-        );
-    }
 
+    // No real model is loaded. The only remaining matcher is the deterministic mock, which performs
+    // NO identity discrimination — it would accept essentially any live face. Fail closed so it can
+    // never silently gate a real enroll/unlock; allow it solely for the hermetic test substrate
+    // behind an explicit opt-in.
+    if !mock_face_allowed() {
+        let detail = if model_path.is_some() {
+            "a model path is configured but this build lacks the `face-model` feature"
+        } else {
+            "no model is configured"
+        };
+        return Err(anyhow!(
+            "face identity matching requires a model ({detail}). Build with \
+             `cargo build -p tess-cli --features face-model` and point {ENV_MODEL_PATH} at a \
+             fixed-shape NCHW ONNX face model (see the README for where to download one). Refusing \
+             to use the model-free mock, which would accept any live face."
+        ));
+    }
+    eprintln!(
+        "tess: WARNING — {ENV_ALLOW_MOCK_FACE} is set, using the model-free mock matcher. Identity \
+         matching is DISABLED; this accepts essentially any live face and is for testing only."
+    );
     let mock =
         PooledExtractor::new(MOCK_DIM).map_err(|e| anyhow!("build the mock matcher: {e}"))?;
     Ok(Matcher::new(
@@ -556,11 +588,29 @@ mod tests {
     }
 
     #[test]
-    fn build_matcher_falls_back_to_mock_without_a_model() {
-        // No configured path and no env var: the matcher must build (the model-free mock) so face
-        // stays available as a liveness-gated convenience and degrades to the PIN for identity.
+    fn build_matcher_fails_closed_without_a_model() {
+        // No model and no opt-in: building the matcher must error rather than fall back to the mock,
+        // so a real enroll/unlock can never silently accept any live face.
         let _lock = tess_testenv::env_lock();
         let _model = tess_testenv::EnvGuard::remove(ENV_MODEL_PATH);
+        let _mock = tess_testenv::EnvGuard::remove(ENV_ALLOW_MOCK_FACE);
+        let cfg = MugConfig::default();
+        let err = match build_matcher(&cfg) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected a fail-closed error without a model"),
+        };
+        assert!(
+            err.contains("requires a model"),
+            "unexpected message: {err}"
+        );
+    }
+
+    #[test]
+    fn build_matcher_allows_mock_only_with_explicit_optin() {
+        // The hermetic test substrate opts into the mock; only then does building succeed model-free.
+        let _lock = tess_testenv::env_lock();
+        let _model = tess_testenv::EnvGuard::remove(ENV_MODEL_PATH);
+        let _mock = tess_testenv::EnvGuard::set(ENV_ALLOW_MOCK_FACE, "1");
         let cfg = MugConfig::default();
         assert!(build_matcher(&cfg).is_ok());
     }

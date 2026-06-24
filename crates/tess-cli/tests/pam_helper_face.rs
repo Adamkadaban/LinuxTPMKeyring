@@ -149,6 +149,9 @@ fn with_face_fixture(
     let _ir = EnvGuard::set_path(VirtualIrDevice::ENV_DIR, ir_dir.path());
     let _store = EnvGuard::set_path("MUG_STORE_DIR", store_dir.path());
     let _user = EnvGuard::set("USER", FACE_USER);
+    // No real model in tests: opt into the model-free mock matcher (the child helper inherits this;
+    // production fails closed without a real model).
+    let _mock = EnvGuard::set(tess_cli::face::ENV_ALLOW_MOCK_FACE, "1");
 
     let service = SecretService::connect(EncryptionType::Dh).expect("connect Secret Service");
     let collection_path = login_collection_path(&service);

@@ -873,3 +873,6 @@ Key facts / gotchas:
 
 ## 2026-06-23 — wired the real ONNX face matcher with self-contained tract (#56)
 **Resolution:** `ort` was unusable (1.x yanked, 2.x rc-only + non-hermetic native download — fails deny/the no-prerelease rule). Used `tract-onnx` (self-contained, hermetic, stable — builds SIMD kernels via `cc`) behind the off-by-default `face-model` feature instead; `Matcher<Box<dyn EmbeddingExtractor>>` picks mock vs `TractExtractor` (model from `MUG_MODEL_PATH`, none ships). tract Tensor data access is `into_tensor().try_as_plain()?.as_slice::<f32>()` (no `to_array_view`/`as_slice` on the codegenerated Tensor). deny ok; vet regenerated (271 exempted). `crates/mug/src/matcher.rs` · `docs/adr/0015` · #56
+
+## 2026-06-23 — face identity matching now fails closed without a real model (#56)
+**Resolution:** the model-free mock does NO identity discrimination (accepts any live face), so `build_matcher` now errors instead of falling back to it for real enroll/unlock; the mock is gated behind a test-only `TESS_ALLOW_MOCK_FACE=1` opt-in (set in `face_unlock.rs`/`pam_helper_face.rs`; child PAM helper inherits it). README documents model download (OpenCV Zoo SFace / InsightFace ArcFace) + the `[1,C,H,W]`, `(p-127.5)/127.5`, channel-replicated input contract. `crates/tess-cli/src/face.rs` · `docs/adr/0016` · #56

@@ -170,21 +170,45 @@ the convenience path.
 - **real Logitech Brio** — opt-in with `MUG_IR_BACKEND=hardware` (or auto-selected when no virtual
   dir is set and a Brio GREY IR node is discoverable). It drives the by-id GREY IR node and the
   UVC extension-unit IR emitter. When no camera is present the factor reports unavailable and unlock
-  degrades to the PIN. (Identity matching uses the model-free mock by default; the real `tract` ONNX matcher (self-contained; build-time C toolchain) is opt-in via the `face-model` feature + `MUG_MODEL_PATH`.) The Brio emitter SET_CUR payloads default to a starting value and
+  degrades to the PIN. (Identity matching requires the real `tract` ONNX matcher (`face-model`
+  feature + `MUG_MODEL_PATH`); without a model the face factor fails closed and unlock falls back to
+  the PIN — see below.) The Brio emitter SET_CUR payloads default to a starting value and
   are overridable with `MUG_IR_EMITTER_ON_HEX` / `MUG_IR_EMITTER_OFF_HEX` (hex, e.g. `0x01`); a wrong
   value fails safe (the emitter stays off, liveness can't pass, the factor degrades to the PIN).
 
-**No model ships — face *matching* needs a user-supplied model.** Identity matching is a deterministic
-model-free **mock** by default (the security-critical *liveness* gate is real on both backends). A real
-ArcFace/SFace ONNX matcher is available behind the **`face-model`** cargo feature, implemented with the
-self-contained [`tract`](https://github.com/sonos/tract) inference engine — no native ONNX Runtime at
-runtime (it builds some SIMD kernels via `cc`, so a C toolchain is needed at build time). Build
-with `cargo build -p tess-cli --features face-model` (the feature lives on `tess-cli`, so a bare
-`--features face-model` from the workspace root won't resolve) and point `MUG_MODEL_PATH` at a
-fixed-shape NCHW model (none is bundled); absent the feature or the model, the mock is used and face
-degrades to the PIN. The default/CI build
-stays model-free. (See [ADR-0015](docs/adr/0015-tract-onnx-face-matcher.md); `tract` was chosen over
-`ort`, whose only releases are yanked or pre-release with a non-hermetic native download.)
+**No model ships — face *identity* matching needs a user-supplied model, and is required for face
+unlock.** The model-free path is a deterministic **mock** with **no identity discrimination** — it
+would accept essentially any live face — so it is **never** used for a real unlock: without a real
+model, `enroll --face` and `unlock --face` **fail closed** (error / fall back to the PIN) rather than
+silently accept any face. The mock exists only as a hermetic test substrate, gated behind the
+explicit `TESS_ALLOW_MOCK_FACE=1` opt-in (CI sets it; never set it on a real machine). The
+security-critical *liveness* gate is real on both backends regardless.
+
+The real matcher uses the self-contained [`tract`](https://github.com/sonos/tract) ONNX engine — no
+native ONNX Runtime at runtime (it builds some SIMD kernels via `cc`, so a C toolchain is needed at
+build time). To enable face identity matching:
+
+1. **Build with the feature** (it lives on `tess-cli`, so a bare `--features face-model` from the
+   workspace root won't resolve):
+   ```sh
+   cargo build -p tess-cli --release --features face-model
+   ```
+2. **Download a model** and point `MUG_MODEL_PATH` at it. tess ships none (licensing/size); supply a
+   fixed-shape **NCHW** ONNX face-embedding network. Known sources of compatible models:
+   - **OpenCV Zoo SFace** (Apache-2.0): <https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface>
+   - **InsightFace ArcFace** model zoo: <https://github.com/deepinsight/insightface/tree/master/model_zoo>
+
+   **Input contract** (what tess feeds the model): a single fixed-shape `[1, C, H, W]` input; the
+   GREY IR crop is resized to `H×W`, pixels mapped `(p − 127.5) / 127.5`, and replicated across `C`
+   channels. The output is flattened and L2-normalized to the embedding; matching is cosine distance
+   against the enrolled template. Pick a model whose preprocessing matches (most ArcFace/SFace
+   networks do); verify it end-to-end with the enroll self-test before relying on it.
+   ```sh
+   MUG_MODEL_PATH=/path/to/face.onnx tess enroll --face
+   ```
+
+(See [ADR-0015](docs/adr/0015-tract-onnx-face-matcher.md); `tract` was chosen over `ort`, whose only
+releases are yanked or pre-release with a non-hermetic native download.)
 
 #### Manual real-Brio smoke (maintainer, dedicated test machine — never CI)
 
@@ -194,6 +218,9 @@ against a **throwaway keyring/TPM** (a test VM with the Brio passed through, or 
 **never the daily-driver keyring/TPM** (`enroll --face` rekeys it):
 
 ```sh
+# 0. Use a face-model build with a real model (face unlock fails closed without one).
+export MUG_MODEL_PATH=/path/to/face.onnx        # see the model contract above
+
 # 1. Enroll against the real camera (look at the Brio; the IR emitter toggles during capture).
 MUG_IR_BACKEND=hardware tess enroll --face
 # (If the emitter does not light, tune MUG_IR_EMITTER_ON_HEX/OFF_HEX to the device's SET_CUR bytes.)
@@ -202,12 +229,15 @@ MUG_IR_BACKEND=hardware tess enroll --face
 #    held to the lens must be REJECTED (emitter-on/off IR differential), falling back to the PIN.
 MUG_IR_BACKEND=hardware tess unlock --face            # live face → unlock, no PIN typed
 MUG_IR_BACKEND=hardware tess unlock --face            # hold up a printed photo → rejected → PIN
+# 3. Identity check: a *different* live person must be REJECTED (→ PIN), not unlocked.
+MUG_IR_BACKEND=hardware tess unlock --face            # someone else's live face → rejected → PIN
 ```
 
 A pass is: live face unlocks with no PIN typed; the photo/screen is rejected by liveness and the PIN
-fallback engages. (Real *identity* discrimination — rejecting a different live person — requires a
-real model: build with `cargo build -p tess-cli --features face-model` and set `MUG_MODEL_PATH`;
-with the default mock matcher this smoke proves capture + liveness only.)
+fallback engages; and a *different* live person is rejected (PIN fallback). Identity discrimination
+requires a real model (`MUG_MODEL_PATH`, above); without one this smoke can't run at all (face fails
+closed) unless you set `TESS_ALLOW_MOCK_FACE=1`, which disables identity matching and proves capture +
+liveness only.)
 
 
 **Honest at-rest trade-off — read before enrolling `--face`.** With a typed PIN, *nothing* that
