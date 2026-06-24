@@ -577,8 +577,10 @@ matcher and compared by cosine distance. A frame with no detectable face is reje
 PIN), so a faceless/background frame can never false-match. Both models are supplied at runtime —
 tess ships none — and an absent/invalid model degrades the face factor to the PIN (fail closed); the
 real enroll/unlock path refuses to embed a whole frame (which does not discriminate a face). The
-model-free `PooledExtractor` mock + detector-free path remain for the hermetic test substrate
-(`TESS_ALLOW_MOCK_FACE`) and the `face-test` diagnostic only. (`tract` was chosen over `ort` — see
+detector-free path — **whole-frame embedding, with either the real embedder or the model-free
+`PooledExtractor` mock** — is permitted only for the hermetic test substrate (`TESS_ALLOW_MOCK_FACE`)
+and the `face-test` diagnostic, and is meaningless for identity regardless of which embedder it uses.
+(`tract` was chosen over `ort` — see
 ADR-0015 — because no stable `ort` is published and its default feature fetches a native ONNX Runtime
 that breaks a hermetic build and can't pass `cargo deny`/`cargo vet`.)
 

@@ -258,10 +258,12 @@ score for each and, when both are live, the cosine **distance** and a `MATCH` / 
 - **Identity:** reference = your face, probe = your face → `MATCH`; probe = a different person → `NO MATCH`.
 - **Liveness / IR:** probe = a printed photo or a phone screen → rejected by liveness (`Probe REJECTED…`).
 
-Without `MUG_MODEL_PATH`/`MUG_DETECTOR_MODEL` it still runs (liveness is real), but identity matching
-falls back to the model-free whole-frame mock and is meaningless — supply both models to test
-identity. This is the recommended way to iterate on enrollment/lighting/threshold before committing
-to `enroll --face`.
+Identity matching needs **both** models. With **no embedder** (`MUG_MODEL_PATH`) it falls back to the
+model-free mock; with an embedder but **no detector** (`MUG_DETECTOR_MODEL`) it embeds the whole frame
+(no face crop). Either way identity is meaningless — supply both models to test identity. (`face-test`
+permits these detector-/model-free paths because it seals nothing; the real `enroll`/`unlock` path
+fails closed without both.) This is the recommended way to iterate on enrollment/lighting/threshold
+before committing to `enroll --face`.
 
 #### Manual real-Brio smoke (maintainer, dedicated test machine — never CI)
 

@@ -493,9 +493,10 @@ fn build_detector(cfg: &MugConfig, allow_mock: bool) -> Result<Option<Box<dyn Fa
         return Ok(Some(Box::new(detector) as Box<dyn FaceDetector>));
     }
 
-    // No detector is loaded. Identity matching would then embed the whole frame, which encodes the
-    // background and does not discriminate a face — fail closed on the real path so it can never
-    // silently gate a real enroll/unlock; permit it only for the test substrate or the diagnostic.
+    // No detector is loaded. Identity matching would then embed the whole frame (with the real
+    // embedder or the mock), which encodes the background and does not discriminate a face — fail
+    // closed on the real path so it can never silently gate a real enroll/unlock; permit it only for
+    // the test substrate or the diagnostic.
     if !allow_mock && !mock_face_allowed() {
         let detail = if detector_path.is_some() {
             "a detector path is configured but this build lacks the `face-model` feature"
@@ -509,11 +510,25 @@ fn build_detector(cfg: &MugConfig, allow_mock: bool) -> Result<Option<Box<dyn Fa
              does not discriminate a face."
         ));
     }
-    eprintln!(
-        "tess: note — no face detector configured; identity matching embeds the whole frame and \
-         does not discriminate a face (liveness is still real). Set {ENV_DETECTOR_MODEL} to a YuNet \
-         model (and build with `--features face-model`) for real recognition."
-    );
+    let cause = if detector_path.is_some() {
+        "a detector path is configured but this build lacks the `face-model` feature"
+    } else {
+        "no detector is configured"
+    };
+    if allow_mock {
+        eprintln!(
+            "tess: note — {cause}; identity matching embeds the WHOLE frame and does not \
+             discriminate a face (liveness is still real). Set {ENV_DETECTOR_MODEL} to a YuNet model \
+             (built with `--features face-model`) for real recognition."
+        );
+    } else {
+        // Reached only because TESS_ALLOW_MOCK_FACE opted into the detector-free path on a real flow.
+        eprintln!(
+            "tess: WARNING — {ENV_ALLOW_MOCK_FACE} is set and {cause}; running WITHOUT a face \
+             detector. Identity matching embeds the whole frame and does NOT discriminate a face — \
+             unset it for fail-closed behavior. For testing only."
+        );
+    }
     Ok(None)
 }
 
@@ -1050,6 +1065,51 @@ mod tests {
         assert!(
             err.contains("requires a model"),
             "unexpected message: {err}"
+        );
+    }
+
+    #[test]
+    fn build_detector_fails_closed_without_a_detector() {
+        // No detector and no opt-in: the real enroll/unlock path must error rather than silently
+        // embed the whole frame (which does not discriminate a face).
+        let _lock = tess_testenv::env_lock();
+        let _det = tess_testenv::EnvGuard::remove(ENV_DETECTOR_MODEL);
+        let _mock = tess_testenv::EnvGuard::remove(ENV_ALLOW_MOCK_FACE);
+        let cfg = MugConfig::default();
+        let err = match build_detector(&cfg, false) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected a fail-closed error without a detector"),
+        };
+        assert!(
+            err.contains("requires a face detector"),
+            "unexpected message: {err}"
+        );
+    }
+
+    #[test]
+    fn build_detector_allows_detector_free_path_for_diagnostic() {
+        // The read-only diagnostic (allow_mock) may run detector-free: returns Ok(None) so callers
+        // embed the whole frame (meaningless identity) without gating a real unlock.
+        let _lock = tess_testenv::env_lock();
+        let _det = tess_testenv::EnvGuard::remove(ENV_DETECTOR_MODEL);
+        let _mock = tess_testenv::EnvGuard::remove(ENV_ALLOW_MOCK_FACE);
+        let cfg = MugConfig::default();
+        assert!(
+            matches!(build_detector(&cfg, true), Ok(None)),
+            "diagnostic path should permit a detector-free None"
+        );
+    }
+
+    #[test]
+    fn build_detector_allows_detector_free_path_with_mock_optin() {
+        // The test-substrate opt-in permits the detector-free path even on the !allow_mock path.
+        let _lock = tess_testenv::env_lock();
+        let _det = tess_testenv::EnvGuard::remove(ENV_DETECTOR_MODEL);
+        let _mock = tess_testenv::EnvGuard::set(ENV_ALLOW_MOCK_FACE, "1");
+        let cfg = MugConfig::default();
+        assert!(
+            matches!(build_detector(&cfg, false), Ok(None)),
+            "TESS_ALLOW_MOCK_FACE should permit a detector-free None"
         );
     }
 
