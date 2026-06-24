@@ -270,11 +270,12 @@ impl TractExtractor {
     pub fn from_path(path: &str, scale: crate::config::PixelScale) -> Result<Self> {
         use tract_onnx::prelude::*;
 
-        if let crate::config::PixelScale::Standardized { std, .. } = scale
-            && (!std.is_finite() || std.abs() < f32::EPSILON)
+        if let crate::config::PixelScale::Standardized { mean, std } = scale
+            && (!mean.is_finite() || !std.is_finite() || std <= 0.0)
         {
             return Err(MugError::MatcherUnavailable(format!(
-                "pixel_scale std must be finite and non-zero, got {std}"
+                "pixel_scale standardized requires a finite mean and a finite std > 0, got \
+                 mean={mean} std={std}"
             )));
         }
 

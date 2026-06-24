@@ -239,6 +239,26 @@ fn build_hardware_backend(node: Option<PathBuf>) -> Result<(mug::V4l2IrDevice, m
 /// test-only mock. No model ships with tess.
 const ENV_MODEL_PATH: &str = "MUG_MODEL_PATH";
 
+/// The env var pointing at a JSON [`MugConfig`] file (thresholds, `pixel_scale`, `model_path`, …).
+const ENV_CONFIG: &str = "MUG_CONFIG";
+
+/// Load the mug config: parse the JSON file at `MUG_CONFIG` if that var is set, otherwise use the
+/// secure defaults. A set-but-unreadable or malformed file is an error (never silently ignored) so a
+/// misconfiguration surfaces rather than reverting to defaults behind the operator's back.
+fn load_config() -> Result<MugConfig> {
+    match std::env::var(ENV_CONFIG) {
+        Ok(path) => {
+            let data = std::fs::read_to_string(&path)
+                .with_context(|| format!("read mug config {path}"))?;
+            serde_json::from_str(&data).with_context(|| format!("parse mug config {path}"))
+        }
+        Err(std::env::VarError::NotPresent) => Ok(MugConfig::default()),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err(anyhow!("{ENV_CONFIG} is set but is not valid UTF-8"))
+        }
+    }
+}
+
 /// Test/CI-only opt-in (`TESS_ALLOW_MOCK_FACE=1`) allowing the model-free mock matcher to stand in
 /// for a real model. The mock does **no** identity discrimination, so this must never be set in a
 /// real deployment; the hermetic virtual-IR test substrate sets it so the pipeline is exercisable
@@ -380,7 +400,7 @@ where
 /// transaction drives once. Errors (no backend selectable) leave the PIN enrollment untouched — the
 /// transaction rolls the whole thing back.
 pub fn template_source_from_env() -> Result<Box<dyn FaceTemplateSource>> {
-    let cfg = MugConfig::default();
+    let cfg = load_config()?;
     match select_backend()? {
         CaptureBackend::Virtual => {
             let (source, emitter) = VirtualIrDevice::split_from_env()
@@ -421,7 +441,7 @@ where
 /// environment. `Ok(())` means a live, matching face; any error is the caller's cue to fall back to
 /// the PIN.
 pub fn verify_from_env(enrolled: &FaceEnrollment) -> Result<()> {
-    let cfg = MugConfig::default();
+    let cfg = load_config()?;
     match select_backend()? {
         CaptureBackend::Virtual => {
             let (mut source, mut emitter) = VirtualIrDevice::split_from_env()
@@ -634,5 +654,39 @@ mod tests {
             Ok(_) => panic!("expected an error for a non-UTF-8 model path"),
         };
         assert!(err.contains("not valid UTF-8"), "unexpected message: {err}");
+    }
+
+    #[test]
+    fn load_config_defaults_without_env() {
+        let _lock = tess_testenv::env_lock();
+        let _cfg = tess_testenv::EnvGuard::remove(ENV_CONFIG);
+        assert_eq!(
+            load_config().unwrap().pixel_scale,
+            mug::PixelScale::Symmetric
+        );
+    }
+
+    #[test]
+    fn load_config_reads_pixel_scale_from_file() {
+        let _lock = tess_testenv::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mug.json");
+        let cfg = MugConfig {
+            pixel_scale: mug::PixelScale::Unit,
+            ..MugConfig::default()
+        };
+        std::fs::write(&path, serde_json::to_string(&cfg).unwrap()).unwrap();
+        let _cfg = tess_testenv::EnvGuard::set_path(ENV_CONFIG, &path);
+        assert_eq!(load_config().unwrap().pixel_scale, mug::PixelScale::Unit);
+    }
+
+    #[test]
+    fn load_config_malformed_file_errors() {
+        let _lock = tess_testenv::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mug.json");
+        std::fs::write(&path, "{ not json").unwrap();
+        let _cfg = tess_testenv::EnvGuard::set_path(ENV_CONFIG, &path);
+        assert!(load_config().is_err());
     }
 }
