@@ -176,10 +176,6 @@ criteria = "safe-to-deploy"
 version = "0.10.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.chacha20poly1305]]
-version = "0.10.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.cipher]]
 version = "0.4.4"
 criteria = "safe-to-deploy"
@@ -372,14 +368,6 @@ criteria = "safe-to-deploy"
 version = "0.14.7"
 criteria = "safe-to-deploy"
 
-[[exemptions.getrandom]]
-version = "0.2.17"
-criteria = "safe-to-deploy"
-
-[[exemptions.getrandom]]
-version = "0.4.3"
-criteria = "safe-to-deploy"
-
 [[exemptions.half]]
 version = "2.7.1"
 criteria = "safe-to-deploy"
@@ -402,14 +390,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.hex]]
 version = "0.4.3"
-criteria = "safe-to-deploy"
-
-[[exemptions.hkdf]]
-version = "0.12.4"
-criteria = "safe-to-deploy"
-
-[[exemptions.hkdf]]
-version = "0.13.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.hmac]]
@@ -518,10 +498,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.ndarray]]
 version = "0.17.2"
-criteria = "safe-to-deploy"
-
-[[exemptions.nix]]
-version = "0.31.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.nom]]
@@ -708,10 +684,6 @@ criteria = "safe-to-deploy"
 version = "0.8.11"
 criteria = "safe-to-deploy"
 
-[[exemptions.rpassword]]
-version = "7.5.4"
-criteria = "safe-to-deploy"
-
 [[exemptions.rtoolbox]]
 version = "0.0.5"
 criteria = "safe-to-deploy"
@@ -746,10 +718,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.secrecy]]
 version = "0.10.3"
-criteria = "safe-to-deploy"
-
-[[exemptions.secret-service]]
-version = "5.1.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.serde]]
@@ -920,14 +888,6 @@ criteria = "safe-to-deploy"
 version = "0.2.3"
 criteria = "safe-to-deploy"
 
-[[exemptions.tss-esapi]]
-version = "7.7.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.tss-esapi-sys]]
-version = "0.6.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.typeid]]
 version = "1.0.3"
 criteria = "safe-to-deploy"
@@ -1042,10 +1002,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.xattr]]
 version = "1.6.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.zbus]]
-version = "5.16.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.zbus_macros]]
