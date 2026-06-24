@@ -1,7 +1,7 @@
 //! Landmark-based face alignment to the canonical ArcFace/SFace template.
 //!
 //! ArcFace-family embedders (SFace included) are trained on faces warped so the eyes, nose, and
-//! mouth corners sit at fixed pixel positions in the model's input. Feeding an un-aligned crop makes
+//! mouth corners sit at fixed pixel positions in the model's input. Feeding an unaligned crop makes
 //! the embedding encode pose/position rather than identity, collapsing same-vs-different separation.
 //! This module estimates the 2-D **similarity transform** (rotation + uniform scale + translation,
 //! no shear) mapping five detected landmarks onto the canonical 112×112 template, then warps the
