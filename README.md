@@ -171,7 +171,8 @@ the convenience path.
   dir is set and a Brio GREY IR node is discoverable). It drives the by-id GREY IR node and the
   UVC extension-unit IR emitter. When no camera is present the factor reports unavailable and unlock
   degrades to the PIN. (Identity matching requires the real `tract` ONNX matcher (`face-model`
-  feature + `MUG_MODEL_PATH`); without a model the face factor fails closed and unlock falls back to
+  feature) plus **both** a face-embedding model (`MUG_MODEL_PATH`) and a face **detector** model
+  (`MUG_DETECTOR_MODEL`); without them the face factor fails closed and unlock falls back to
   the PIN — see below.) The Brio emitter SET_CUR payloads default to a starting value and
   are overridable with `MUG_IR_EMITTER_ON_HEX` / `MUG_IR_EMITTER_OFF_HEX` (hex, e.g. `0x01`); a wrong
   value fails safe (the emitter stays off, liveness can't pass, the factor degrades to the PIN). The
@@ -204,6 +205,15 @@ build time). To enable face identity matching:
    - **OpenCV Zoo SFace** (Apache-2.0): <https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface>
    - **InsightFace ArcFace** model zoo: <https://github.com/deepinsight/insightface/tree/master/model_zoo>
 
+3. **Download a face detector** (YuNet) and point `MUG_DETECTOR_MODEL` at it. Recognition models
+   (ArcFace/SFace) expect a **detected, aligned** face crop — not a whole frame — so a detector is
+   **required** for real identity matching; without it the real enroll/unlock path fails closed.
+   tess runs the detector via `tract`, decodes + NMS-filters its outputs in safe Rust, locates the 5
+   facial landmarks, aligns the crop to the canonical template, and rejects a frame with no face
+   (`NoFace` → PIN fallback) so a faceless/background frame can never false-match. Source:
+   - **OpenCV Zoo YuNet** (MIT): <https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet>
+     (the `face_detection_yunet_2023mar.onnx`, fixed `[1,3,640,640]` input).
+
    **Input contract** (what tess feeds the model): a single fixed-shape `[1, C, H, W]` input; the
    GREY IR crop is resized to `H×W`, each pixel scaled, and the result replicated across `C` channels.
    The output is flattened and L2-normalized to the embedding; matching is cosine distance against the
@@ -225,7 +235,8 @@ build time). To enable face identity matching:
      "model_path": null,
      "pixel_scale": { "mode": "standardized", "mean": 0.5, "std": 0.5 } }
    JSON
-   MUG_CONFIG=mug.json MUG_MODEL_PATH=/path/to/face.onnx tess enroll --face
+   MUG_CONFIG=mug.json MUG_MODEL_PATH=/path/to/face.onnx MUG_DETECTOR_MODEL=/path/to/yunet.onnx \
+     tess enroll --face
    ```
 
 (See [ADR-0015](docs/adr/0015-tract-onnx-face-matcher.md); `tract` was chosen over `ort`, whose only
@@ -237,7 +248,8 @@ To check that the camera recognizes you and that liveness rejects a photo **with
 keyring rekey, no TPM sealing — it touches neither), use the read-only diagnostic:
 
 ```sh
-MUG_IR_BACKEND=hardware MUG_MODEL_PATH=/path/to/face.onnx tess face-test
+MUG_IR_BACKEND=hardware MUG_MODEL_PATH=/path/to/face.onnx \
+  MUG_DETECTOR_MODEL=/path/to/yunet.onnx tess face-test
 ```
 
 It captures a **reference** then a **probe** (pressing Enter between each), printing the liveness
@@ -246,9 +258,10 @@ score for each and, when both are live, the cosine **distance** and a `MATCH` / 
 - **Identity:** reference = your face, probe = your face → `MATCH`; probe = a different person → `NO MATCH`.
 - **Liveness / IR:** probe = a printed photo or a phone screen → rejected by liveness (`Probe REJECTED…`).
 
-Without `MUG_MODEL_PATH` it still runs (liveness is real), but identity matching falls back to the
-model-free mock and is meaningless — supply a model to test identity. This is the recommended way to
-iterate on enrollment/lighting/threshold before committing to `enroll --face`.
+Without `MUG_MODEL_PATH`/`MUG_DETECTOR_MODEL` it still runs (liveness is real), but identity matching
+falls back to the model-free whole-frame mock and is meaningless — supply both models to test
+identity. This is the recommended way to iterate on enrollment/lighting/threshold before committing
+to `enroll --face`.
 
 #### Manual real-Brio smoke (maintainer, dedicated test machine — never CI)
 
@@ -258,8 +271,9 @@ against a **throwaway keyring/TPM** (a test VM with the Brio passed through, or 
 **never the daily-driver keyring/TPM** (`enroll --face` rekeys it):
 
 ```sh
-# 0. Use a face-model build with a real model (face unlock fails closed without one).
-export MUG_MODEL_PATH=/path/to/face.onnx        # see the model contract above
+# 0. Use a face-model build with real models (face unlock fails closed without them).
+export MUG_MODEL_PATH=/path/to/face.onnx        # embedder; see the model contract above
+export MUG_DETECTOR_MODEL=/path/to/yunet.onnx   # YuNet detector; required for identity
 
 # 1. Enroll against the real camera (look at the Brio; the IR emitter toggles during capture).
 MUG_IR_BACKEND=hardware tess enroll --face

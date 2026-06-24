@@ -12,20 +12,34 @@ use std::cell::RefCell;
 
 use tess_core::AuthGate;
 
-use crate::camera::{IrEmitter, IrSource, capture_liveness_pair};
+use crate::align::ALIGNED_FACE_SIZE;
+use crate::camera::{IrEmitter, IrFrame, IrSource, capture_liveness_pair};
+use crate::detect::{FaceDetector, locate_and_align};
 use crate::error::{MugError, Result};
 use crate::liveness::{LivenessConfig, analyze};
 use crate::matcher::{EmbeddingExtractor, Matcher};
 use crate::store::FaceEnrollment;
 
+/// Prepare the emitter-ON frame for embedding: when a detector is configured, locate the face and
+/// align it to the canonical template; otherwise embed the frame as-is (the model-free mock path,
+/// which does no identity discrimination anyway).
+fn prepare_probe(detector: Option<&dyn FaceDetector>, frame: &IrFrame) -> Result<IrFrame> {
+    match detector {
+        Some(d) => locate_and_align(d, frame, ALIGNED_FACE_SIZE),
+        None => Ok(frame.clone()),
+    }
+}
+
 /// Run the full face-verification pipeline within `deadline_ms`. Returns `Ok(())` only when the
 /// captured pair is live *and* matches `enrolled` within `enrolled.match_threshold`; otherwise a
-/// typed [`MugError`] (timeout, liveness rejection, or no match). The distance is checked against the
-/// per-enrollment threshold (calibrated at enroll), not the matcher's global default.
+/// typed [`MugError`] (timeout, liveness rejection, no face, or no match). When `detector` is set the
+/// emitter-ON frame is located + aligned before embedding (so the embedding describes the face, not
+/// the whole scene); the distance is checked against the per-enrollment threshold.
 pub fn verify<S, E, X>(
     source: &mut S,
     emitter: &mut E,
     matcher: &Matcher<X>,
+    detector: Option<&dyn FaceDetector>,
     enrolled: &FaceEnrollment,
     liveness_cfg: &LivenessConfig,
     deadline_ms: u64,
@@ -45,7 +59,8 @@ where
     };
     analyze(&pair, &effective_cfg)?.into_result()?;
 
-    let distance = matcher.distance(&pair.emitter_on, &enrolled.embedding)?;
+    let probe = prepare_probe(detector, &pair.emitter_on)?;
+    let distance = matcher.distance(&probe, &enrolled.embedding)?;
     if distance <= enrolled.match_threshold {
         Ok(())
     } else {
@@ -69,6 +84,7 @@ where
 {
     devices: RefCell<(S, E)>,
     matcher: Matcher<X>,
+    detector: Option<Box<dyn FaceDetector>>,
     enrollment: FaceEnrollment,
     liveness_cfg: LivenessConfig,
 }
@@ -83,12 +99,14 @@ where
         source: S,
         emitter: E,
         matcher: Matcher<X>,
+        detector: Option<Box<dyn FaceDetector>>,
         enrollment: FaceEnrollment,
         liveness_cfg: LivenessConfig,
     ) -> Self {
         Self {
             devices: RefCell::new((source, emitter)),
             matcher,
+            detector,
             enrollment,
             liveness_cfg,
         }
@@ -110,6 +128,7 @@ where
             source,
             emitter,
             &self.matcher,
+            self.detector.as_deref(),
             &self.enrollment,
             &self.liveness_cfg,
             deadline_ms,
@@ -170,6 +189,7 @@ mod tests {
             &mut source,
             &mut emitter,
             &matcher,
+            None,
             &enrolled,
             &LivenessConfig::default(),
             2000,
@@ -191,6 +211,7 @@ mod tests {
             &mut source,
             &mut emitter,
             &matcher,
+            None,
             &enrolled,
             &LivenessConfig::default(),
             2000,
@@ -218,6 +239,7 @@ mod tests {
             &mut source,
             &mut emitter,
             &matcher,
+            None,
             &enrolled,
             &LivenessConfig::default(),
             2000,
@@ -239,9 +261,56 @@ mod tests {
             source,
             emitter,
             matcher,
+            None,
             enrolled,
             LivenessConfig::default(),
         );
         gate.authorize(2000).expect("face gate authorizes");
+    }
+
+    #[test]
+    fn verify_aligns_with_a_detector_before_matching() {
+        use crate::align::ALIGNED_FACE_SIZE;
+        use crate::detect::{Detection, FixedDetector, locate_and_align};
+
+        let dir = tempfile::tempdir().unwrap();
+        let pair = synth::live_pair(W, H);
+        write_pair(dir.path(), &pair);
+        let matcher = Matcher::new(PooledExtractor::new(64).unwrap(), 0.34);
+
+        // A detector that returns the canonical template landmarks => the aligned crop is
+        // deterministic. Enroll from that same aligned crop so verify's aligned probe matches.
+        let detector = FixedDetector::new(Detection {
+            bbox: (0.0, 0.0, W as f32, H as f32),
+            landmarks: crate::align::FaceLandmarks::new([
+                (38.2946, 51.6963),
+                (73.5318, 51.5014),
+                (56.0252, 71.7366),
+                (41.5493, 92.3655),
+                (70.7299, 92.2041),
+            ]),
+            score: 1.0,
+        });
+        let aligned = locate_and_align(&detector, &pair.emitter_on, ALIGNED_FACE_SIZE).unwrap();
+        let enrolled = FaceEnrollment::new(
+            matcher.embed(&aligned).unwrap(),
+            0.34,
+            LivenessCalibration {
+                enrolled_score: 0.9,
+                score_threshold: LivenessConfig::default().score_threshold,
+            },
+        );
+
+        let (mut source, mut emitter) = VirtualIrDevice::split(dir.path(), W, H);
+        verify(
+            &mut source,
+            &mut emitter,
+            &matcher,
+            Some(&detector),
+            &enrolled,
+            &LivenessConfig::default(),
+            2000,
+        )
+        .expect("the detector-aligned face must verify against its aligned enrollment");
     }
 }
