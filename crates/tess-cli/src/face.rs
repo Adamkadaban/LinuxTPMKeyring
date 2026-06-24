@@ -8,17 +8,21 @@
 //! - the real **Logitech Brio** IR path (the GREY IR node + the UVC-XU emitter), opt-in and validated
 //!   only by a manual smoke on a dedicated test machine (throwaway keyring/TPM) — never the daily-driver host, never in CI.
 //!
-//! Both run the same liveness gate and, today, the same model-free mock matcher: tess ships no face
-//! model, so identity matching stays a deterministic mock until an ONNX matcher backend lands. When
-//! no backend is available (no substrate, no camera) the factor reports unavailable and the caller
+//! Both run the same liveness gate. Identity matching requires the real `tract` ONNX matcher (the
+//! `face-model` feature plus a runtime model path via `MUG_MODEL_PATH`/config); tess ships no model,
+//! so you supply one (see the README for where to download a compatible network). Without a real
+//! model the face factor **fails closed** — it refuses to enroll or unlock rather than fall back to
+//! the model-free mock, which does no identity discrimination and would accept essentially any live
+//! face. The mock is a hermetic test-only substrate, gated behind `TESS_ALLOW_MOCK_FACE`. When no
+//! backend is available (no substrate, no camera) the factor reports unavailable and the caller
 //! degrades to the PIN.
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow};
 use mug::{
-    EnrollStore, FaceEnrollment, IrEmitter, IrSource, LivenessCalibration, LivenessConfig, Matcher,
-    MugConfig, PooledExtractor, VirtualIrDevice,
+    EmbeddingExtractor, EnrollStore, FaceEnrollment, IrEmitter, IrSource, LivenessCalibration,
+    LivenessConfig, Matcher, MugConfig, PooledExtractor, VirtualIrDevice,
 };
 use tess_core::SecretBytes;
 
@@ -228,11 +232,78 @@ fn build_hardware_backend(node: Option<PathBuf>) -> Result<(mug::V4l2IrDevice, m
     Ok((source, emitter))
 }
 
-/// Build the model-free CI/default matcher. The real ONNX matcher backend is a tracked follow-up; no
-/// model ships, so identity matching is the deterministic mock today.
-fn build_mock_matcher(cfg: &MugConfig) -> Result<Matcher<PooledExtractor>> {
+/// The env var pointing at a user-supplied ONNX face-embedding model. A configured `model_path`
+/// takes precedence; the env var is consulted only when no path is configured, and even then it only
+/// loads a model when mug is built with the `face-model` feature. A non-UTF-8 value errors. Without a
+/// loadable model the matcher fails closed (an error) unless `TESS_ALLOW_MOCK_FACE` opts into the
+/// test-only mock. No model ships with tess.
+const ENV_MODEL_PATH: &str = "MUG_MODEL_PATH";
+
+/// Test/CI-only opt-in (`TESS_ALLOW_MOCK_FACE=1`) allowing the model-free mock matcher to stand in
+/// for a real model. The mock does **no** identity discrimination, so this must never be set in a
+/// real deployment; the hermetic virtual-IR test substrate sets it so the pipeline is exercisable
+/// without shipping a model.
+pub const ENV_ALLOW_MOCK_FACE: &str = "TESS_ALLOW_MOCK_FACE";
+
+/// Whether the model-free mock matcher may stand in for a real model (fail-closed by default).
+fn mock_face_allowed() -> bool {
+    std::env::var(ENV_ALLOW_MOCK_FACE)
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
+/// Build the identity matcher: the real `tract` ONNX matcher when built with the `face-model` feature
+/// and given a model path. Without a real model this **fails closed** (returns an error) unless
+/// `TESS_ALLOW_MOCK_FACE` opts into the test-only mock — the mock does no identity discrimination, so
+/// it must never gate a real unlock. Returns a boxed extractor so both share one matcher type.
+fn build_matcher(cfg: &MugConfig) -> Result<Matcher<Box<dyn EmbeddingExtractor>>> {
+    let model_path = match cfg.model_path.clone() {
+        Some(path) => Some(path),
+        None => match std::env::var(ENV_MODEL_PATH) {
+            Ok(path) => Some(path),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(anyhow!("{ENV_MODEL_PATH} is set but is not valid UTF-8"));
+            }
+        },
+    };
+
+    #[cfg(feature = "face-model")]
+    if let Some(path) = model_path.as_deref() {
+        // `from_path` already includes the path and detailed context in its error; convert directly
+        // rather than wrapping with redundant text.
+        let extractor = mug::TractExtractor::from_path(path)?;
+        return Ok(Matcher::new(
+            Box::new(extractor) as Box<dyn EmbeddingExtractor>,
+            cfg.match_threshold,
+        ));
+    }
+
+    // No real model is loaded. The only remaining matcher is the deterministic mock, which performs
+    // NO identity discrimination — it would accept essentially any live face. Fail closed so it can
+    // never silently gate a real enroll/unlock; allow it solely for the hermetic test substrate
+    // behind an explicit opt-in.
+    if !mock_face_allowed() {
+        let detail = if model_path.is_some() {
+            "a model path is configured but this build lacks the `face-model` feature"
+        } else {
+            "no model is configured"
+        };
+        return Err(anyhow!(
+            "face identity matching requires a model ({detail}). Build with \
+             `cargo build -p tess-cli --features face-model` and point {ENV_MODEL_PATH} at a \
+             fixed-shape NCHW ONNX face model (see the README for where to download one). Refusing \
+             to use the model-free mock, which would accept any live face."
+        ));
+    }
+    eprintln!(
+        "tess: WARNING — {ENV_ALLOW_MOCK_FACE} is set, using the model-free mock matcher. Identity \
+         matching is DISABLED; this accepts essentially any live face and is for testing only."
+    );
+    let mock =
+        PooledExtractor::new(MOCK_DIM).map_err(|e| anyhow!("build the mock matcher: {e}"))?;
     Ok(Matcher::new(
-        PooledExtractor::new(MOCK_DIM).map_err(|e| anyhow!("build the mock matcher: {e}"))?,
+        Box::new(mock) as Box<dyn EmbeddingExtractor>,
         cfg.match_threshold,
     ))
 }
@@ -283,12 +354,14 @@ where
     }
 }
 
-/// Assemble a [`MugTemplateSource`] for the given source/emitter with the model-free matcher.
+/// Assemble a [`MugTemplateSource`] for the given source/emitter with the configured matcher (the
+/// real `tract` ONNX backend when built and configured; otherwise this fails closed unless the
+/// test-only `TESS_ALLOW_MOCK_FACE` opt-in is set — see [`build_matcher`]).
 fn mug_template_source<S, E>(
     source: S,
     emitter: E,
     cfg: &MugConfig,
-) -> Result<MugTemplateSource<S, E, PooledExtractor>>
+) -> Result<MugTemplateSource<S, E, Box<dyn EmbeddingExtractor>>>
 where
     S: IrSource,
     E: IrEmitter,
@@ -296,7 +369,7 @@ where
     Ok(MugTemplateSource {
         source,
         emitter,
-        matcher: build_mock_matcher(cfg)?,
+        matcher: build_matcher(cfg)?,
         liveness_cfg: cfg.liveness_config(),
         match_threshold: cfg.match_threshold,
         deadline_ms: cfg.capture_deadline_ms,
@@ -332,7 +405,7 @@ where
     S: IrSource,
     E: IrEmitter,
 {
-    let matcher = build_mock_matcher(cfg)?;
+    let matcher = build_matcher(cfg)?;
     mug::verify(
         source,
         emitter,
@@ -489,6 +562,9 @@ mod tests {
         let _lock = tess_testenv::env_lock();
         let _backend = tess_testenv::EnvGuard::remove(ENV_BACKEND);
         let _dir = tess_testenv::EnvGuard::set(VirtualIrDevice::ENV_DIR, "/nonexistent-ir-dir");
+        // No real model in tests: opt into the mock so building the matcher succeeds (production
+        // fails closed without a model).
+        let _mock = tess_testenv::EnvGuard::set(ENV_ALLOW_MOCK_FACE, "1");
         assert_eq!(select_backend().unwrap(), CaptureBackend::Virtual);
         // Building the source only reads the env var, not the directory contents.
         assert!(template_source_from_env().is_ok());
@@ -514,5 +590,49 @@ mod tests {
         assert!(parse_hex_payload("0€").is_err());
         // Oversized input fails closed rather than allocating.
         assert!(parse_hex_payload(&"00".repeat(200)).is_err());
+    }
+
+    #[test]
+    fn build_matcher_fails_closed_without_a_model() {
+        // No model and no opt-in: building the matcher must error rather than fall back to the mock,
+        // so a real enroll/unlock can never silently accept any live face.
+        let _lock = tess_testenv::env_lock();
+        let _model = tess_testenv::EnvGuard::remove(ENV_MODEL_PATH);
+        let _mock = tess_testenv::EnvGuard::remove(ENV_ALLOW_MOCK_FACE);
+        let cfg = MugConfig::default();
+        let err = match build_matcher(&cfg) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected a fail-closed error without a model"),
+        };
+        assert!(
+            err.contains("requires a model"),
+            "unexpected message: {err}"
+        );
+    }
+
+    #[test]
+    fn build_matcher_allows_mock_only_with_explicit_optin() {
+        // The hermetic test substrate opts into the mock; only then does building succeed model-free.
+        let _lock = tess_testenv::env_lock();
+        let _model = tess_testenv::EnvGuard::remove(ENV_MODEL_PATH);
+        let _mock = tess_testenv::EnvGuard::set(ENV_ALLOW_MOCK_FACE, "1");
+        let cfg = MugConfig::default();
+        assert!(build_matcher(&cfg).is_ok());
+    }
+
+    #[test]
+    fn build_matcher_rejects_non_utf8_model_path_env() {
+        use std::os::unix::ffi::OsStrExt;
+        // A non-UTF-8 MUG_MODEL_PATH is an error regardless of the `face-model` feature (the check
+        // runs before the feature gate), never a silent fallback or a panic.
+        let _lock = tess_testenv::env_lock();
+        let bad = std::ffi::OsStr::from_bytes(&[0x66, 0x6f, 0xff]);
+        let _model = tess_testenv::EnvGuard::set_path(ENV_MODEL_PATH, std::path::Path::new(bad));
+        let cfg = MugConfig::default();
+        let err = match build_matcher(&cfg) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected an error for a non-UTF-8 model path"),
+        };
+        assert!(err.contains("not valid UTF-8"), "unexpected message: {err}");
     }
 }

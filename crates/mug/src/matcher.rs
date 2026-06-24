@@ -1,8 +1,9 @@
 //! Pluggable IR face matcher.
 //!
 //! tess ships **no** face model. The embedding extractor is abstracted behind
-//! [`EmbeddingExtractor`] so the real backend (an ArcFace/SFace ONNX network run via `ort`, operating
-//! on the GREY IR crop, Hello-style) is a drop-in whose model path comes from configuration — and so
+//! [`EmbeddingExtractor`] so the real backend (an ArcFace/SFace ONNX network run via `tract`,
+//! operating on the GREY IR crop, Hello-style) is a drop-in whose model path comes from
+//! configuration — and so
 //! the headless test suite needs no model at all, driving a deterministic mock instead. When no
 //! extractor is configured the face factor is simply unavailable and the caller degrades to the PIN.
 //!
@@ -167,6 +168,269 @@ impl EmbeddingExtractor for PooledExtractor {
     }
 }
 
+/// Lets a `Matcher` hold a boxed trait object, so a caller can pick the mock or a real backend at
+/// runtime behind one `Matcher<Box<dyn EmbeddingExtractor>>` type.
+impl EmbeddingExtractor for Box<dyn EmbeddingExtractor> {
+    fn dim(&self) -> usize {
+        (**self).dim()
+    }
+    fn extract(&self, frame: &IrFrame) -> Result<Embedding> {
+        (**self).extract(frame)
+    }
+}
+
+/// L2-normalize in place; returns an error if the vector has (near-)zero norm.
+#[cfg(feature = "face-model")]
+fn l2_normalize(emb: &mut [f32]) -> Result<()> {
+    let norm = emb
+        .iter()
+        .map(|v| (*v as f64) * (*v as f64))
+        .sum::<f64>()
+        .sqrt();
+    if !norm.is_finite() || norm <= f64::EPSILON {
+        return Err(MugError::MatcherUnavailable(format!(
+            "model produced a degenerate embedding (norm {norm}); not finite or near zero"
+        )));
+    }
+    for v in emb.iter_mut() {
+        *v = (*v as f64 / norm) as f32;
+    }
+    Ok(())
+}
+
+/// Nearest-neighbour resize of a GREY frame to `dst_w` x `dst_h`. Returns an empty `Vec` (rejected
+/// by the caller) if the destination area overflows `usize` or the source frame is too small for its
+/// declared geometry, so a hostile model's dimensions can never panic the unlock path.
+#[cfg(feature = "face-model")]
+fn resize_gray(frame: &IrFrame, dst_w: usize, dst_h: usize) -> Vec<u8> {
+    let (sw, sh) = (frame.width() as usize, frame.height() as usize);
+    let src = frame.as_bytes();
+    let out_len = match dst_w.checked_mul(dst_h) {
+        Some(n) => n,
+        None => return Vec::new(),
+    };
+    if sw == 0 || sh == 0 || src.len() < sw.saturating_mul(sh) {
+        return Vec::new();
+    }
+    let mut out = vec![0u8; out_len];
+    for y in 0..dst_h {
+        let sy = if dst_h == 1 {
+            0
+        } else {
+            (y as u64 * sh as u64 / dst_h as u64) as usize
+        };
+        for x in 0..dst_w {
+            let sx = if dst_w == 1 {
+                0
+            } else {
+                (x as u64 * sw as u64 / dst_w as u64) as usize
+            };
+            out[y * dst_w + x] = src[sy.min(sh - 1) * sw + sx.min(sw - 1)];
+        }
+    }
+    out
+}
+
+/// Upper bound on a model's input element count (`C * H * W`). Any realistic face network is far
+/// smaller (e.g. `3 * 112 * 112`); rejecting larger shapes at load time keeps a hostile or
+/// misconfigured model from triggering a giant allocation — and a process abort — on the unlock path.
+#[cfg(feature = "face-model")]
+const MAX_INPUT_ELEMS: usize = 16 * 1024 * 1024;
+
+/// Upper bound on a model's output (embedding) element count. Face embeddings are tiny (hundreds to a
+/// few thousand floats); capping the declared output shape stops a hostile model from forcing a huge
+/// output allocation that would OOM/abort the unlock helper instead of degrading to the PIN.
+#[cfg(feature = "face-model")]
+const MAX_OUTPUT_ELEMS: usize = 1024 * 1024;
+
+/// A `tract`-backed ONNX face-embedding extractor (self-contained inference; no native ONNX Runtime,
+/// though `tract` builds some SIMD kernels via `cc`, so a build-time C toolchain is required).
+///
+/// Loads a user-supplied fixed-shape NCHW model (e.g. ArcFace/SFace) and runs it on the GREY IR
+/// crop. **No model ships with tess** — the path is supplied at runtime. Without a real model the
+/// caller (tess-cli) fails closed rather than fall back to the deterministic mock, which does no
+/// identity discrimination and is test-only. Pixels are mapped to `(p - 127.5) / 127.5` (the common
+/// ArcFace/SFace input scaling); a multi-channel model receives the grayscale plane replicated across
+/// channels.
+#[cfg(feature = "face-model")]
+pub struct TractExtractor {
+    model: std::sync::Arc<tract_onnx::prelude::TypedRunnableModel>,
+    channels: usize,
+    height: usize,
+    width: usize,
+    dim: usize,
+}
+
+#[cfg(feature = "face-model")]
+impl TractExtractor {
+    /// Load and optimize the ONNX model at `path`, deriving the input geometry and embedding
+    /// dimensionality from the model's own input/output facts (which must be fully concrete).
+    pub fn from_path(path: &str) -> Result<Self> {
+        use tract_onnx::prelude::*;
+
+        let typed = tract_onnx::onnx()
+            .model_for_path(path)
+            .map_err(|e| MugError::MatcherUnavailable(format!("load ONNX model {path}: {e}")))?
+            .into_optimized()
+            .map_err(|e| {
+                MugError::MatcherUnavailable(format!("optimize ONNX model {path}: {e}"))
+            })?;
+
+        let input_shape = typed
+            .input_fact(0)
+            .map_err(|e| MugError::MatcherUnavailable(format!("read model input fact: {e}")))?
+            .shape
+            .as_concrete()
+            .ok_or_else(|| {
+                MugError::MatcherUnavailable(
+                    "model input shape is not fully concrete; supply a fixed-shape face model"
+                        .into(),
+                )
+            })?
+            .to_vec();
+        if input_shape.len() != 4 || input_shape[0] != 1 {
+            return Err(MugError::MatcherUnavailable(format!(
+                "expected an NCHW input of shape [1, C, H, W], got {input_shape:?}"
+            )));
+        }
+        let (channels, height, width) = (input_shape[1], input_shape[2], input_shape[3]);
+        let input_elems = channels
+            .checked_mul(height)
+            .and_then(|n| n.checked_mul(width))
+            .ok_or_else(|| {
+                MugError::MatcherUnavailable("model input dimensions overflow usize".into())
+            })?;
+        if input_elems == 0 {
+            return Err(MugError::MatcherUnavailable(format!(
+                "model input [1, {channels}, {height}, {width}] has a zero-sized dimension"
+            )));
+        }
+        if input_elems > MAX_INPUT_ELEMS {
+            return Err(MugError::MatcherUnavailable(format!(
+                "model input [1, {channels}, {height}, {width}] = {input_elems} elements exceeds \
+                 the {MAX_INPUT_ELEMS}-element cap"
+            )));
+        }
+
+        let dim = {
+            let out_shape = typed
+                .output_fact(0)
+                .map_err(|e| MugError::MatcherUnavailable(format!("read model output fact: {e}")))?
+                .shape
+                .as_concrete()
+                .ok_or_else(|| {
+                    MugError::MatcherUnavailable("model output shape is not concrete".into())
+                })?
+                .to_vec();
+            // The embedding is the flattened output; its length is the product of every output
+            // dimension (so `[1, D]` and `[1, D, 1, 1]` both give D). Checked so a hostile model with
+            // huge dims can't overflow.
+            let mut n: usize = 1;
+            for d in &out_shape {
+                n = n.checked_mul(*d).ok_or_else(|| {
+                    MugError::MatcherUnavailable("model output dimensions overflow usize".into())
+                })?;
+            }
+            if n == 0 {
+                return Err(MugError::MatcherUnavailable(
+                    "model output has a zero-length dimension".into(),
+                ));
+            }
+            if n > MAX_OUTPUT_ELEMS {
+                return Err(MugError::MatcherUnavailable(format!(
+                    "model output of {n} elements exceeds the {MAX_OUTPUT_ELEMS}-element cap"
+                )));
+            }
+            n
+        };
+
+        let model = typed
+            .into_runnable()
+            .map_err(|e| MugError::MatcherUnavailable(format!("make ONNX model runnable: {e}")))?;
+        Ok(Self {
+            model,
+            channels,
+            height,
+            width,
+            dim,
+        })
+    }
+}
+
+#[cfg(feature = "face-model")]
+impl EmbeddingExtractor for TractExtractor {
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    fn extract(&self, frame: &IrFrame) -> Result<Embedding> {
+        use tract_onnx::prelude::*;
+
+        if frame.as_bytes().is_empty() {
+            return Err(MugError::InvalidFrame("empty frame".into()));
+        }
+        let plane_len = self
+            .height
+            .checked_mul(self.width)
+            .ok_or_else(|| MugError::MatcherUnavailable("input H*W overflows usize".into()))?;
+        let input_len = self
+            .channels
+            .checked_mul(plane_len)
+            .ok_or_else(|| MugError::MatcherUnavailable("input C*H*W overflows usize".into()))?;
+        let plane = resize_gray(frame, self.width, self.height);
+        if plane.len() != plane_len {
+            return Err(MugError::MatcherUnavailable(format!(
+                "resized input plane has {} bytes, expected {plane_len}",
+                plane.len()
+            )));
+        }
+        let mut input = vec![0f32; input_len];
+        for (i, &p) in plane.iter().enumerate() {
+            let v = (p as f32 - 127.5) / 127.5;
+            for c in 0..self.channels {
+                input[c * plane_len + i] = v;
+            }
+        }
+        let tensor: Tensor = tract_ndarray::Array4::from_shape_vec(
+            (1, self.channels, self.height, self.width),
+            input,
+        )
+        .map_err(|e| MugError::MatcherUnavailable(format!("build input tensor: {e}")))?
+        .into();
+        let mut result = self
+            .model
+            .run(tvec!(tensor.into()))
+            .map_err(|e| MugError::MatcherUnavailable(format!("run ONNX inference: {e}")))?;
+        if result.is_empty() {
+            return Err(MugError::MatcherUnavailable(
+                "model produced no outputs".into(),
+            ));
+        }
+        let out = result.remove(0).into_tensor();
+        let plain = out
+            .try_as_plain()
+            .map_err(|e| MugError::MatcherUnavailable(format!("view model output: {e}")))?;
+        let slice = plain
+            .as_slice::<f32>()
+            .map_err(|e| MugError::MatcherUnavailable(format!("read model output as f32: {e}")))?;
+        let mut emb: Vec<f32> = slice.to_vec();
+        if emb.is_empty() {
+            return Err(MugError::MatcherUnavailable(
+                "model produced an empty embedding".into(),
+            ));
+        }
+        if emb.len() != self.dim {
+            return Err(MugError::MatcherUnavailable(format!(
+                "model output length {} does not match the declared embedding dim {}",
+                emb.len(),
+                self.dim
+            )));
+        }
+        l2_normalize(&mut emb)?;
+        Ok(emb)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,5 +482,32 @@ mod tests {
             Err(MugError::MatcherUnavailable(_)) => {}
             other => panic!("expected MatcherUnavailable, got {:?}", other.map(|_| ())),
         }
+    }
+
+    #[cfg(feature = "face-model")]
+    #[test]
+    fn tract_extractor_missing_model_errors_cleanly() {
+        // A bad/absent model path must surface a MatcherUnavailable error (the caller degrades to the
+        // PIN), never panic.
+        match TractExtractor::from_path("/nonexistent/model.onnx") {
+            Err(MugError::MatcherUnavailable(_)) => {}
+            other => panic!("expected MatcherUnavailable, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    #[cfg(feature = "face-model")]
+    #[test]
+    fn resize_gray_returns_empty_on_overflowing_destination() {
+        let frame = on_frame(synth::live_pair(64, 64));
+        // A destination area that overflows usize must yield an empty plane (the caller rejects it),
+        // not a panic on the unlock path.
+        assert!(resize_gray(&frame, usize::MAX, 2).is_empty());
+    }
+
+    #[cfg(feature = "face-model")]
+    #[test]
+    fn resize_gray_produces_expected_length() {
+        let frame = on_frame(synth::live_pair(64, 64));
+        assert_eq!(resize_gray(&frame, 32, 16).len(), 32 * 16);
     }
 }

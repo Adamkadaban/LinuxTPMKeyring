@@ -68,6 +68,13 @@ jobs:
       - name: Test (enroll transaction — swtpm + keyring)
         run: cargo test -p tess-cli --features sim,daemon-tests
 
+      - name: Build + test the optional tract face-model matcher
+        run: |
+          cargo clippy -p mug --features face-model --all-targets -- -D warnings
+          cargo test -p mug --features face-model
+          cargo clippy -p tess-cli --features face-model --all-targets -- -D warnings
+          cargo test -p tess-cli --features face-model
+
       - name: PAM module load smoke test (pamtester)
         env:
           # Keep resolution deterministic regardless of the runner environment (the debug build

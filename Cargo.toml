@@ -69,6 +69,10 @@ tempfile = "3"
 futures-util = "0.3"
 async-io = "2"
 
+# Optional face matcher: self-contained ONNX inference (no native ONNX Runtime). Enabled only by
+# mug's `face-model` feature; no model ships with tess. tract chosen over ort (ADR-0015).
+tract-onnx = "0.23.3"
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
