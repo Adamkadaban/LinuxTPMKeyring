@@ -2,10 +2,13 @@
 //! extension-unit IR-emitter enable. None of this is exercised in CI (no camera); the orchestrator
 //! validates it against the physical Brio. It is plain safe Rust over the `sys` ioctl boundary.
 
+use std::cell::RefCell;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use crate::camera::{BRIO_IR_HEIGHT, BRIO_IR_WIDTH, IrEmitter, IrFrame, IrSource};
 use crate::error::{MugError, Result};
@@ -183,5 +186,253 @@ impl IrEmitter for BrioEmitter {
         };
         sys::uvc_set_cur(self.file.as_raw_fd(), self.unit, self.selector, payload)
             .map_err(|e| MugError::Emitter(format!("UVC SET_CUR (on={on}): {e}")))
+    }
+}
+
+// Streaming warmup thresholds. On at least some Logitech Brios the IR emitter is *not* driven by a
+// UVC `SET_CUR`; it auto-enables after ~1 s of continuous streaming and stays on while streaming,
+// so the natural emitter-OFF/ON differential is "cold first frame" vs "a later, warmed frame". These
+// decide when a streamed frame counts as warm (emitter on). The streaming-warmup technique is also
+// what `linux-enable-ir-emitter` (GPL-3.0) relies on for detection; this is an independent
+// implementation, no code shared.
+/// Absolute mean brightness (0..255) at/above which a streamed IR frame is considered emitter-on.
+const WARM_MIN_MEAN: f32 = 24.0;
+/// Brightness a warm frame must clear over the cold baseline (guards a merely bright ambient scene).
+const WARM_MIN_DELTA: f32 = 14.0;
+/// Per-frame poll slice (ms) while waiting for the emitter to warm, so the wait stays responsive to
+/// the overall deadline.
+const WARM_POLL_MS: u64 = 200;
+
+/// Phase of the warmup capture: the next frame is either the cold (emitter-off) baseline or a warmed
+/// (emitter-on) frame to be streamed up to.
+#[derive(Clone, Copy, PartialEq)]
+enum Phase {
+    Cold,
+    Warm,
+}
+
+struct WarmingShared<S: IrSource, E: IrEmitter> {
+    device: S,
+    emitter: Option<E>,
+    phase: Phase,
+    cold_mean: f32,
+}
+
+/// An IR device whose emitter is driven by **streaming warmup** rather than a `SET_CUR` toggle. It
+/// presents the standard [`IrSource`] / [`IrEmitter`] split (so
+/// [`capture_liveness_pair`](crate::camera::capture_liveness_pair) and the gate use it unchanged):
+/// `set_enabled(false)` then capture yields the cold/dark baseline; after `set_enabled(true)`,
+/// capture streams frames until one brightens (the emitter has auto-warmed) or the deadline elapses.
+/// An optional inner [`IrEmitter`] is still poked best-effort for devices that *do* need `SET_CUR` —
+/// a failure there is non-fatal because streaming is the primary mechanism and a never-lit emitter is
+/// caught downstream by liveness/timeout (→ PIN). Generic over the inner source/emitter so the
+/// warmup logic is unit-tested with synthetic frames; [`WarmingBrioDevice`] is the concrete Brio
+/// wiring.
+pub struct WarmingDevice;
+
+impl WarmingDevice {
+    /// Split an inner capture device (and optional best-effort `SET_CUR` emitter) into warming
+    /// source/emitter handles.
+    pub fn split<S: IrSource, E: IrEmitter>(
+        device: S,
+        emitter: Option<E>,
+    ) -> (WarmingSource<S, E>, WarmingEmitter<S, E>) {
+        let shared = Rc::new(RefCell::new(WarmingShared {
+            device,
+            emitter,
+            phase: Phase::Cold,
+            cold_mean: 0.0,
+        }));
+        (
+            WarmingSource {
+                shared: Rc::clone(&shared),
+            },
+            WarmingEmitter { shared },
+        )
+    }
+}
+
+/// The [`IrSource`] half of [`WarmingDevice`].
+pub struct WarmingSource<S: IrSource, E: IrEmitter> {
+    shared: Rc<RefCell<WarmingShared<S, E>>>,
+}
+
+impl<S: IrSource, E: IrEmitter> IrSource for WarmingSource<S, E> {
+    fn dimensions(&self) -> (u32, u32) {
+        self.shared.borrow().device.dimensions()
+    }
+
+    fn capture(&mut self, deadline_ms: u64) -> Result<IrFrame> {
+        let mut s = self.shared.borrow_mut();
+        match s.phase {
+            // Cold: the first frame after a fresh open, before the emitter has warmed — the dark
+            // emitter-OFF baseline for the liveness differential.
+            Phase::Cold => {
+                let frame = s.device.capture(deadline_ms)?;
+                s.cold_mean = frame.mean();
+                Ok(frame)
+            }
+            // Warm: stream frames until the emitter has auto-warmed (brightness rises) or the deadline
+            // elapses, returning the warmed emitter-ON frame.
+            Phase::Warm => {
+                let deadline = Instant::now() + Duration::from_millis(deadline_ms);
+                let baseline = s.cold_mean;
+                let mut brightest: Option<IrFrame> = None;
+                loop {
+                    let remaining = deadline
+                        .saturating_duration_since(Instant::now())
+                        .as_millis() as u64;
+                    if remaining == 0 {
+                        break;
+                    }
+                    let slice = remaining.min(WARM_POLL_MS);
+                    let frame = match s.device.capture(slice) {
+                        Ok(f) => f,
+                        // A poll slice with no frame: keep waiting within the overall deadline.
+                        Err(MugError::Timeout(_)) => continue,
+                        Err(e) => return Err(e),
+                    };
+                    let m = frame.mean();
+                    if m >= WARM_MIN_MEAN && m >= baseline + WARM_MIN_DELTA {
+                        return Ok(frame);
+                    }
+                    if brightest.as_ref().is_none_or(|b| m > b.mean()) {
+                        brightest = Some(frame);
+                    }
+                }
+                // Never warmed within the deadline: hand the brightest frame seen to liveness (a
+                // still-dark frame is rejected → PIN), or time out if nothing was captured at all.
+                brightest.ok_or(MugError::Timeout(deadline_ms))
+            }
+        }
+    }
+}
+
+/// The [`IrEmitter`] half of [`WarmingDevice`]: selects the cold/warm phase the paired
+/// [`WarmingSource`] captures, and best-effort pokes a real `SET_CUR` emitter if one was given.
+pub struct WarmingEmitter<S: IrSource, E: IrEmitter> {
+    shared: Rc<RefCell<WarmingShared<S, E>>>,
+}
+
+impl<S: IrSource, E: IrEmitter> IrEmitter for WarmingEmitter<S, E> {
+    fn set_enabled(&mut self, on: bool) -> Result<()> {
+        let mut s = self.shared.borrow_mut();
+        s.phase = if on { Phase::Warm } else { Phase::Cold };
+        if let Some(em) = s.emitter.as_mut()
+            && let Err(e) = em.set_enabled(on)
+        {
+            eprintln!(
+                "mug: note: IR-emitter SET_CUR (on={on}) failed; relying on streaming warmup: {e}"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Concrete [`IrSource`] half of [`WarmingBrioDevice`].
+pub type WarmingBrioSource = WarmingSource<V4l2IrDevice, BrioEmitter>;
+/// Concrete [`IrEmitter`] half of [`WarmingBrioDevice`].
+pub type WarmingBrioEmitter = WarmingEmitter<V4l2IrDevice, BrioEmitter>;
+
+/// The Brio wiring of [`WarmingDevice`]: a real [`V4l2IrDevice`] capture node plus an optional
+/// best-effort [`BrioEmitter`] `SET_CUR`, driven by streaming warmup.
+pub struct WarmingBrioDevice;
+
+impl WarmingBrioDevice {
+    /// Split a Brio capture node (and optional best-effort `SET_CUR` emitter) into the source/emitter
+    /// handles [`capture_liveness_pair`](crate::camera::capture_liveness_pair) needs.
+    pub fn split(
+        device: V4l2IrDevice,
+        emitter: Option<BrioEmitter>,
+    ) -> (WarmingBrioSource, WarmingBrioEmitter) {
+        WarmingDevice::split(device, emitter)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::camera::{IrEmitter, IrSource, capture_liveness_pair};
+
+    /// A synthetic source returning a fixed brightness per call, advancing through a ramp (last value
+    /// repeats) — models the Brio's cold→warm streaming.
+    struct RampSource {
+        means: Vec<u8>,
+        idx: usize,
+        w: u32,
+        h: u32,
+    }
+    impl IrSource for RampSource {
+        fn dimensions(&self) -> (u32, u32) {
+            (self.w, self.h)
+        }
+        fn capture(&mut self, _deadline_ms: u64) -> Result<IrFrame> {
+            let v = self.means[self.idx.min(self.means.len() - 1)];
+            self.idx += 1;
+            IrFrame::new(self.w, self.h, vec![v; (self.w * self.h) as usize])
+        }
+    }
+    struct NoEmitter;
+    impl IrEmitter for NoEmitter {
+        fn set_enabled(&mut self, _on: bool) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn cold_capture_is_the_first_dark_frame_then_warm_streams_to_bright() {
+        // Dark for several frames, then a bright (warmed) frame.
+        let src = RampSource {
+            means: vec![2, 2, 2, 2, 2, 60],
+            idx: 0,
+            w: 8,
+            h: 8,
+        };
+        let (mut s, mut e) = WarmingDevice::split(src, None::<NoEmitter>);
+        e.set_enabled(false).unwrap();
+        let off = s.capture(1000).unwrap();
+        assert!(off.mean() < WARM_MIN_MEAN, "cold frame should be dark");
+        e.set_enabled(true).unwrap();
+        let on = s.capture(1000).unwrap();
+        assert!(
+            on.mean() >= WARM_MIN_MEAN,
+            "warm capture must stream to a bright frame, got {}",
+            on.mean()
+        );
+    }
+
+    #[test]
+    fn liveness_pair_through_warming_device_has_a_strong_differential() {
+        let src = RampSource {
+            means: vec![2, 2, 2, 80],
+            idx: 0,
+            w: 8,
+            h: 8,
+        };
+        let (mut s, mut e) = WarmingDevice::split(src, None::<NoEmitter>);
+        let pair = capture_liveness_pair(&mut s, &mut e, 1000).unwrap();
+        assert!(pair.emitter_off.mean() < WARM_MIN_MEAN);
+        assert!(pair.emitter_on.mean() >= WARM_MIN_MEAN);
+    }
+
+    #[test]
+    fn never_warming_returns_the_dark_frame_for_liveness_to_reject() {
+        // All frames stay dark: warm capture returns the brightest-seen (still dark), which liveness
+        // then rejects → PIN. It must not hang or error spuriously.
+        let src = RampSource {
+            means: vec![3, 3, 3],
+            idx: 0,
+            w: 8,
+            h: 8,
+        };
+        let (mut s, mut e) = WarmingDevice::split(src, None::<NoEmitter>);
+        e.set_enabled(false).unwrap();
+        let _ = s.capture(10).unwrap();
+        e.set_enabled(true).unwrap();
+        let on = s.capture(20).unwrap();
+        assert!(
+            on.mean() < WARM_MIN_MEAN,
+            "a never-warming frame stays dark"
+        );
     }
 }

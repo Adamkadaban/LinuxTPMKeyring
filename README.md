@@ -173,15 +173,16 @@ the convenience path.
   degrades to the PIN. (Identity matching requires the real `tract` ONNX matcher (`face-model`
   feature) plus **both** a face-embedding model (`MUG_MODEL_PATH`) and a face **detector** model
   (`MUG_DETECTOR_MODEL`); without them the face factor fails closed and unlock falls back to
-  the PIN — see below.) The Brio emitter SET_CUR payloads default to a starting value and
-  are overridable with `MUG_IR_EMITTER_ON_HEX` / `MUG_IR_EMITTER_OFF_HEX` (hex, e.g. `0x01`); a wrong
-  value fails safe (the emitter stays off, liveness can't pass, the factor degrades to the PIN). The
-  emitter's UVC extension-unit coordinates are also overridable — `MUG_IR_EMITTER_UNIT` and
-  `MUG_IR_EMITTER_SELECTOR` (hex u8, default `0x04`/`0x06`), and `MUG_IR_EMITTER_NODE` to target a
-  different Brio video node than capture. If `tess face-test`/`tess unlock --face` reports
-  `UVC SET_CUR … No such file or directory`, your Brio's coordinates differ from the defaults;
-  discover the working unit/selector/payload with
-  [`linux-enable-ir-emitter`](https://github.com/Emixam23/linux-enable-ir-emitter) and set these vars.
+   the PIN — see below.) **By default the IR emitter is driven by *streaming warmup*, not a UVC
+   control:** the Brio's emitter auto-enables after ~1 s of continuous streaming, so mug opens the
+   node cold (a dark emitter-OFF baseline), then streams until the frame brightens (emitter-ON) — no
+   `SET_CUR` is sent. `SET_CUR` is **opt-in** for Brios that genuinely need it (poking the wrong
+   unit/selector can put the capture node into `POLLERR`): set any of `MUG_IR_EMITTER_ON_HEX` /
+   `MUG_IR_EMITTER_OFF_HEX` (hex, e.g. `0x01`), `MUG_IR_EMITTER_UNIT` / `MUG_IR_EMITTER_SELECTOR`
+   (hex u8, default `0x04`/`0x06`), or `MUG_IR_EMITTER_NODE` (target a different Brio node) to enable
+   it; a wrong value fails safe (the differential can't pass, the factor degrades to the PIN). To
+   discover working `SET_CUR` coordinates if your Brio needs them, see
+   [`linux-enable-ir-emitter`](https://github.com/Emixam23/linux-enable-ir-emitter).
 
 **No model ships — face *identity* matching needs a user-supplied model, and is required for face
 unlock.** The model-free path is a deterministic **mock** with **no identity discrimination** — it

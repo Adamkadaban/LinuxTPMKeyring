@@ -289,38 +289,68 @@ fn emitter_coord(var: &str, default: u8) -> Result<u8> {
 /// extension unit may live on a different Brio node); its unit/selector default to the Brio values
 /// and are overridable via `MUG_IR_EMITTER_UNIT`/`MUG_IR_EMITTER_SELECTOR`. Any failure (no camera,
 /// permission denied) surfaces as an error the caller treats as "face unavailable → degrade to PIN".
-fn build_hardware_backend(node: Option<PathBuf>) -> Result<(mug::V4l2IrDevice, mug::BrioEmitter)> {
+fn build_hardware_backend(
+    node: Option<PathBuf>,
+) -> Result<(mug::WarmingBrioSource, mug::WarmingBrioEmitter)> {
     let node = match node {
         Some(node) => node,
         None => mug::find_brio_ir_node().map_err(|e| anyhow!("discover the Brio IR node: {e}"))?,
     };
     let source = mug::V4l2IrDevice::open(&node, mug::BRIO_IR_WIDTH, mug::BRIO_IR_HEIGHT)
         .map_err(|e| anyhow!("open the Brio IR capture node {}: {e}", node.display()))?;
-    let on_payload = emitter_payload(ENV_EMITTER_ON, DEFAULT_EMITTER_ON)?;
-    let off_payload = emitter_payload(ENV_EMITTER_OFF, DEFAULT_EMITTER_OFF)?;
-    let unit = emitter_coord(ENV_EMITTER_UNIT, mug::BRIO_EMITTER_UNIT)?;
-    let selector = emitter_coord(ENV_EMITTER_SELECTOR, mug::BRIO_EMITTER_SELECTOR)?;
-    let emitter_node = match std::env::var_os(ENV_EMITTER_NODE) {
-        Some(path) if path.is_empty() => {
-            return Err(anyhow!(
-                "{ENV_EMITTER_NODE} is set but empty; unset it to use the capture node"
-            ));
-        }
-        Some(path) => {
-            let path = PathBuf::from(path);
-            validate_device_node(ENV_EMITTER_NODE, &path)?;
-            path
-        }
-        None => node.clone(),
+
+    // SET_CUR emitter control is **opt-in**. The Brio's IR emitter auto-enables after ~1 s of
+    // streaming, so the warming device lights it without any control transfer. Poking a SET_CUR —
+    // especially the wrong unit/selector, which the defaults are on at least some Brios — can put the
+    // capture node into POLLERR (device hangup). So build a SET_CUR emitter only when the operator
+    // explicitly configures one via an emitter env var; otherwise rely purely on streaming warmup.
+    let emitter = if emitter_env_configured() {
+        let on_payload = emitter_payload(ENV_EMITTER_ON, DEFAULT_EMITTER_ON)?;
+        let off_payload = emitter_payload(ENV_EMITTER_OFF, DEFAULT_EMITTER_OFF)?;
+        let unit = emitter_coord(ENV_EMITTER_UNIT, mug::BRIO_EMITTER_UNIT)?;
+        let selector = emitter_coord(ENV_EMITTER_SELECTOR, mug::BRIO_EMITTER_SELECTOR)?;
+        let emitter_node = match std::env::var_os(ENV_EMITTER_NODE) {
+            Some(path) if path.is_empty() => {
+                return Err(anyhow!(
+                    "{ENV_EMITTER_NODE} is set but empty; unset it to use the capture node"
+                ));
+            }
+            Some(path) => {
+                let path = PathBuf::from(path);
+                validate_device_node(ENV_EMITTER_NODE, &path)?;
+                path
+            }
+            None => node.clone(),
+        };
+        Some(
+            mug::BrioEmitter::new(&emitter_node, unit, selector, on_payload, off_payload).map_err(
+                |e| {
+                    anyhow!(
+                        "open the Brio IR emitter control {}: {e}",
+                        emitter_node.display()
+                    )
+                },
+            )?,
+        )
+    } else {
+        None
     };
-    let emitter = mug::BrioEmitter::new(&emitter_node, unit, selector, on_payload, off_payload)
-        .map_err(|e| {
-            anyhow!(
-                "open the Brio IR emitter control {}: {e}",
-                emitter_node.display()
-            )
-        })?;
-    Ok((source, emitter))
+    Ok(mug::WarmingBrioDevice::split(source, emitter))
+}
+
+/// Whether the operator explicitly opted into the UVC `SET_CUR` IR-emitter path via any emitter env
+/// var. When none are set, the hardware backend relies purely on streaming warmup (no control
+/// transfer), which avoids the POLLERR a wrong-unit `SET_CUR` causes on auto-warming Brios.
+fn emitter_env_configured() -> bool {
+    [
+        ENV_EMITTER_ON,
+        ENV_EMITTER_OFF,
+        ENV_EMITTER_UNIT,
+        ENV_EMITTER_SELECTOR,
+        ENV_EMITTER_NODE,
+    ]
+    .iter()
+    .any(|v| std::env::var_os(v).is_some())
 }
 
 /// The env var pointing at a user-supplied ONNX face-embedding model. A configured `model_path`
