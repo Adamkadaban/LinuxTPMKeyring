@@ -246,10 +246,29 @@ const ENV_CONFIG: &str = "MUG_CONFIG";
 /// secure defaults. A set-but-unreadable or malformed file is an error (never silently ignored) so a
 /// misconfiguration surfaces rather than reverting to defaults behind the operator's back.
 fn load_config() -> Result<MugConfig> {
+    use std::io::Read;
+    /// A `MugConfig` JSON is well under a kilobyte; cap the read so a mispointed `MUG_CONFIG`
+    /// (e.g. `/dev/zero` or a huge file) fails fast instead of hanging/OOMing on the auth path.
+    const MAX_CONFIG_BYTES: u64 = 64 * 1024;
     match std::env::var(ENV_CONFIG) {
         Ok(path) => {
-            let data = std::fs::read_to_string(&path)
+            let file =
+                std::fs::File::open(&path).with_context(|| format!("open mug config {path}"))?;
+            let meta = file
+                .metadata()
+                .with_context(|| format!("stat mug config {path}"))?;
+            if !meta.is_file() {
+                return Err(anyhow!("mug config {path} is not a regular file"));
+            }
+            let mut data = String::new();
+            file.take(MAX_CONFIG_BYTES + 1)
+                .read_to_string(&mut data)
                 .with_context(|| format!("read mug config {path}"))?;
+            if data.len() as u64 > MAX_CONFIG_BYTES {
+                return Err(anyhow!(
+                    "mug config {path} exceeds the {MAX_CONFIG_BYTES}-byte cap"
+                ));
+            }
             serde_json::from_str(&data).with_context(|| format!("parse mug config {path}"))
         }
         Err(std::env::VarError::NotPresent) => Ok(MugConfig::default()),
@@ -688,5 +707,20 @@ mod tests {
         std::fs::write(&path, "{ not json").unwrap();
         let _cfg = tess_testenv::EnvGuard::set_path(ENV_CONFIG, &path);
         assert!(load_config().is_err());
+    }
+
+    #[test]
+    fn load_config_oversized_file_errors() {
+        let _lock = tess_testenv::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mug.json");
+        // A mispointed MUG_CONFIG (huge file) must fail fast, not be slurped on the auth path.
+        std::fs::write(&path, vec![b' '; 128 * 1024]).unwrap();
+        let _cfg = tess_testenv::EnvGuard::set_path(ENV_CONFIG, &path);
+        let err = match load_config() {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected an error for an oversized config"),
+        };
+        assert!(err.contains("cap"), "unexpected message: {err}");
     }
 }
