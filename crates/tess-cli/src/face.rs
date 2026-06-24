@@ -21,8 +21,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use mug::{
-    EmbeddingExtractor, EnrollStore, FaceEnrollment, IrEmitter, IrSource, LivenessCalibration,
-    LivenessConfig, Matcher, MugConfig, PooledExtractor, VirtualIrDevice,
+    EmbeddingExtractor, EnrollStore, FaceDetector, FaceEnrollment, IrEmitter, IrSource,
+    LivenessCalibration, LivenessConfig, Matcher, MugConfig, PooledExtractor, VirtualIrDevice,
 };
 use tess_core::SecretBytes;
 
@@ -330,6 +330,13 @@ fn build_hardware_backend(node: Option<PathBuf>) -> Result<(mug::V4l2IrDevice, m
 /// test-only mock. No model ships with tess.
 const ENV_MODEL_PATH: &str = "MUG_MODEL_PATH";
 
+/// The env var pointing at a user-supplied ONNX face-detector (YuNet) model. A configured
+/// `detector_model_path` takes precedence; the env var is consulted only when no path is configured,
+/// and even then it only loads a model when mug is built with the `face-model` feature. Without a
+/// loadable detector the real enroll/unlock path fails closed (an error) unless `TESS_ALLOW_MOCK_FACE`
+/// opts into the detector-free path (whole-frame embedding, identity meaningless). No model ships.
+const ENV_DETECTOR_MODEL: &str = "MUG_DETECTOR_MODEL";
+
 /// The env var pointing at a JSON [`MugConfig`] file (thresholds, `pixel_scale`, `model_path`, …).
 const ENV_CONFIG: &str = "MUG_CONFIG";
 
@@ -461,6 +468,70 @@ fn build_matcher(
     ))
 }
 
+/// Build the face detector (YuNet via `tract`) when built with the `face-model` feature and given a
+/// detector model path. Without one, the **real** enroll/unlock path fails closed; the detector-free
+/// path (whole-frame embedding, no identity discrimination) is permitted only for the test substrate
+/// (`TESS_ALLOW_MOCK_FACE`) or the `face-test` diagnostic (`allow_mock`), in which case `None` is
+/// returned so callers align only when a detector is present.
+fn build_detector(cfg: &MugConfig, allow_mock: bool) -> Result<Option<Box<dyn FaceDetector>>> {
+    let detector_path = match cfg.detector_model_path.clone() {
+        Some(path) => Some(path),
+        None => match std::env::var(ENV_DETECTOR_MODEL) {
+            Ok(path) => Some(path),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(anyhow!(
+                    "{ENV_DETECTOR_MODEL} is set but is not valid UTF-8"
+                ));
+            }
+        },
+    };
+
+    #[cfg(feature = "face-model")]
+    if let Some(path) = detector_path.as_deref() {
+        let detector = mug::YuNetDetector::from_path(path)?;
+        return Ok(Some(Box::new(detector) as Box<dyn FaceDetector>));
+    }
+
+    // No detector is loaded. Identity matching would then embed the whole frame (with the real
+    // embedder or the mock), which encodes the background and does not discriminate a face — fail
+    // closed on the real path so it can never silently gate a real enroll/unlock; permit it only for
+    // the test substrate or the diagnostic.
+    if !allow_mock && !mock_face_allowed() {
+        let detail = if detector_path.is_some() {
+            "a detector path is configured but this build lacks the `face-model` feature"
+        } else {
+            "no detector is configured"
+        };
+        return Err(anyhow!(
+            "face identity matching requires a face detector ({detail}). Build with \
+             `cargo build -p tess-cli --features face-model` and point {ENV_DETECTOR_MODEL} at a \
+             fixed-shape YuNet ONNX model (see the README). Refusing to embed the whole frame, which \
+             does not discriminate a face."
+        ));
+    }
+    let cause = if detector_path.is_some() {
+        "a detector path is configured but this build lacks the `face-model` feature"
+    } else {
+        "no detector is configured"
+    };
+    if allow_mock {
+        eprintln!(
+            "tess: note — {cause}; identity matching embeds the WHOLE frame and does not \
+             discriminate a face (liveness is still real). Set {ENV_DETECTOR_MODEL} to a YuNet model \
+             (built with `--features face-model`) for real recognition."
+        );
+    } else {
+        // Reached only because TESS_ALLOW_MOCK_FACE opted into the detector-free path on a real flow.
+        eprintln!(
+            "tess: WARNING — {ENV_ALLOW_MOCK_FACE} is set and {cause}; running WITHOUT a face \
+             detector. Identity matching embeds the whole frame and does NOT discriminate a face — \
+             unset it for fail-closed behavior. For testing only."
+        );
+    }
+    Ok(None)
+}
+
 /// A mug-backed [`FaceTemplateSource`]: capture a liveness-gated pair and embed the emitter-ON frame
 /// into an enrollment template. Generic over the capture/embedding backends so the same logic serves
 /// the virtual CI substrate and real hardware.
@@ -473,6 +544,7 @@ where
     source: S,
     emitter: E,
     matcher: Matcher<X>,
+    detector: Option<Box<dyn FaceDetector>>,
     liveness_cfg: LivenessConfig,
     match_threshold: f32,
     deadline_ms: u64,
@@ -492,10 +564,18 @@ where
             .map_err(|e| anyhow!("analyze liveness: {e}"))?
             .into_result()
             .map_err(|e| anyhow!("liveness check failed during enrollment: {e}"))?;
-        let embedding = self
-            .matcher
-            .embed(&pair.emitter_on)
-            .map_err(|e| anyhow!("embed the enrollment frame: {e}"))?;
+        // Locate + align the face before embedding so the template describes the face, not the
+        // whole scene. With no detector (test substrate) embed the frame by reference (no copy).
+        let embedding = match &self.detector {
+            Some(d) => {
+                let face =
+                    mug::locate_and_align(d.as_ref(), &pair.emitter_on, mug::ALIGNED_FACE_SIZE)
+                        .context("locate/align the enrollment face")?;
+                self.matcher.embed(&face)
+            }
+            None => self.matcher.embed(&pair.emitter_on),
+        }
+        .map_err(|e| anyhow!("embed the enrollment frame: {e}"))?;
         Ok(FaceEnrollment::new(
             embedding,
             self.match_threshold,
@@ -523,6 +603,7 @@ where
         source,
         emitter,
         matcher: build_matcher(cfg, false)?,
+        detector: build_detector(cfg, false)?,
         liveness_cfg: cfg.liveness_config(),
         match_threshold: cfg.match_threshold,
         deadline_ms: cfg.capture_deadline_ms,
@@ -559,10 +640,12 @@ where
     E: IrEmitter,
 {
     let matcher = build_matcher(cfg, false)?;
+    let detector = build_detector(cfg, false)?;
     mug::verify(
         source,
         emitter,
         &matcher,
+        detector.as_deref(),
         enrolled,
         &cfg.liveness_config(),
         cfg.capture_deadline_ms,
@@ -595,6 +678,7 @@ pub fn verify_from_env(enrolled: &FaceEnrollment) -> Result<()> {
 pub fn face_test_from_env() -> Result<()> {
     let cfg = load_config()?;
     let matcher = build_matcher(&cfg, true)?;
+    let detector = build_detector(&cfg, true)?;
     let pause = |msg: &str| {
         use std::io::Write as _;
         print!("{msg}, then press Enter… ");
@@ -606,13 +690,27 @@ pub fn face_test_from_env() -> Result<()> {
         CaptureBackend::Virtual => {
             let (mut source, mut emitter) = VirtualIrDevice::split_from_env()
                 .map_err(|e| anyhow!("open the virtual IR device: {e}"))?;
-            let outcome = run_face_test(&mut source, &mut emitter, &matcher, &cfg, &pause)?;
+            let outcome = run_face_test(
+                &mut source,
+                &mut emitter,
+                &matcher,
+                detector.as_deref(),
+                &cfg,
+                &pause,
+            )?;
             print_face_test_outcome(&outcome);
             Ok(())
         }
         CaptureBackend::Hardware(node) => {
             let (mut source, mut emitter) = build_hardware_backend(node)?;
-            let outcome = run_face_test(&mut source, &mut emitter, &matcher, &cfg, &pause)?;
+            let outcome = run_face_test(
+                &mut source,
+                &mut emitter,
+                &matcher,
+                detector.as_deref(),
+                &cfg,
+                &pause,
+            )?;
             print_face_test_outcome(&outcome);
             Ok(())
         }
@@ -664,6 +762,7 @@ fn run_face_test<S, E>(
     source: &mut S,
     emitter: &mut E,
     matcher: &Matcher<Box<dyn EmbeddingExtractor>>,
+    detector: Option<&dyn FaceDetector>,
     cfg: &MugConfig,
     pause: &dyn Fn(&str),
 ) -> Result<FaceTestOutcome>
@@ -677,9 +776,12 @@ where
     pause("Get into position for the REFERENCE capture (your face)");
     let reference = match capture_and_report("reference", source, emitter, &liveness_cfg, deadline)?
     {
-        Some(pair) => matcher
-            .embed(&pair.emitter_on)
-            .map_err(|e| anyhow!("embed the reference frame: {e}"))?,
+        Some(pair) => {
+            let face = align_for_embed(detector, &pair.emitter_on)?;
+            matcher
+                .embed(&face)
+                .map_err(|e| anyhow!("embed the reference frame: {e}"))?
+        }
         None => return Ok(FaceTestOutcome::ReferenceRejected),
     };
 
@@ -691,14 +793,30 @@ where
         None => return Ok(FaceTestOutcome::ProbeRejected),
     };
 
+    let probe_face = align_for_embed(detector, &probe.emitter_on)?;
     let distance = matcher
-        .distance(&probe.emitter_on, &reference)
+        .distance(&probe_face, &reference)
         .map_err(|e| anyhow!("match the probe against the reference: {e}"))?;
     Ok(FaceTestOutcome::Compared {
         distance,
         threshold: cfg.match_threshold,
         matched: distance <= cfg.match_threshold,
     })
+}
+
+/// Locate + align the face for embedding when a detector is present; otherwise borrow the frame
+/// through (the detector-free diagnostic path) without copying its pixel buffer.
+fn align_for_embed<'a>(
+    detector: Option<&dyn FaceDetector>,
+    frame: &'a mug::IrFrame,
+) -> Result<std::borrow::Cow<'a, mug::IrFrame>> {
+    match detector {
+        Some(d) => Ok(std::borrow::Cow::Owned(
+            mug::locate_and_align(d, frame, mug::ALIGNED_FACE_SIZE)
+                .context("locate/align the face")?,
+        )),
+        None => Ok(std::borrow::Cow::Borrowed(frame)),
+    }
 }
 
 /// Capture one IR pair and print its liveness report. Returns `Some(pair)` when it passed liveness,
@@ -954,6 +1072,51 @@ mod tests {
     }
 
     #[test]
+    fn build_detector_fails_closed_without_a_detector() {
+        // No detector and no opt-in: the real enroll/unlock path must error rather than silently
+        // embed the whole frame (which does not discriminate a face).
+        let _lock = tess_testenv::env_lock();
+        let _det = tess_testenv::EnvGuard::remove(ENV_DETECTOR_MODEL);
+        let _mock = tess_testenv::EnvGuard::remove(ENV_ALLOW_MOCK_FACE);
+        let cfg = MugConfig::default();
+        let err = match build_detector(&cfg, false) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected a fail-closed error without a detector"),
+        };
+        assert!(
+            err.contains("requires a face detector"),
+            "unexpected message: {err}"
+        );
+    }
+
+    #[test]
+    fn build_detector_allows_detector_free_path_for_diagnostic() {
+        // The read-only diagnostic (allow_mock) may run detector-free: returns Ok(None) so callers
+        // embed the whole frame (meaningless identity) without gating a real unlock.
+        let _lock = tess_testenv::env_lock();
+        let _det = tess_testenv::EnvGuard::remove(ENV_DETECTOR_MODEL);
+        let _mock = tess_testenv::EnvGuard::remove(ENV_ALLOW_MOCK_FACE);
+        let cfg = MugConfig::default();
+        assert!(
+            matches!(build_detector(&cfg, true), Ok(None)),
+            "diagnostic path should permit a detector-free None"
+        );
+    }
+
+    #[test]
+    fn build_detector_allows_detector_free_path_with_mock_optin() {
+        // The test-substrate opt-in permits the detector-free path even on the !allow_mock path.
+        let _lock = tess_testenv::env_lock();
+        let _det = tess_testenv::EnvGuard::remove(ENV_DETECTOR_MODEL);
+        let _mock = tess_testenv::EnvGuard::set(ENV_ALLOW_MOCK_FACE, "1");
+        let cfg = MugConfig::default();
+        assert!(
+            matches!(build_detector(&cfg, false), Ok(None)),
+            "TESS_ALLOW_MOCK_FACE should permit a detector-free None"
+        );
+    }
+
+    #[test]
     fn build_matcher_allows_mock_only_with_explicit_optin() {
         // The hermetic test substrate opts into the mock; only then does building succeed model-free.
         let _lock = tess_testenv::env_lock();
@@ -1063,7 +1226,7 @@ mod tests {
         let cfg = MugConfig::default();
         let matcher = build_matcher(&cfg, true).unwrap();
         // Same live frames for reference and probe → both live, compared (distance ~0 → matched).
-        let outcome = run_face_test(&mut s, &mut e, &matcher, &cfg, &|_: &str| {}).unwrap();
+        let outcome = run_face_test(&mut s, &mut e, &matcher, None, &cfg, &|_: &str| {}).unwrap();
         match outcome {
             FaceTestOutcome::Compared {
                 distance, matched, ..
@@ -1092,7 +1255,7 @@ mod tests {
                 write_grey_pair(&dirp, &synth::screen_pair(340, 340));
             }
         };
-        let outcome = run_face_test(&mut s, &mut e, &matcher, &cfg, &pause).unwrap();
+        let outcome = run_face_test(&mut s, &mut e, &matcher, None, &cfg, &pause).unwrap();
         assert!(
             matches!(outcome, FaceTestOutcome::ProbeRejected),
             "a photo probe must be rejected by liveness, got {outcome:?}"

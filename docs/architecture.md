@@ -568,13 +568,21 @@ single `mug::sys` ioctl boundary (ADR-0012); `tess-cli` adds no `unsafe`. Both b
 liveness gate and `Matcher`. `template_source_from_env` (enroll) and `verify_from_env` (unlock) select
 symmetrically.
 
-**Matcher: model-free mock today.** Both backends currently use the deterministic `PooledExtractor`
-mock — tess ships no face model. The real ArcFace/SFace ONNX matcher via `ort` (model path from
-`MUG_MODEL_PATH`; absent ⇒ matcher unavailable ⇒ degrade to PIN) is tracked in #56 and **not wired**:
-no stable `ort` is published on crates.io (the `1.x` line is yanked, `2.x` is `rc`-only) and `ort` 2.x's
-default `download-binaries` feature fetches a prebuilt native ONNX Runtime at build time, which breaks a
-hermetic build and cannot pass `cargo deny`/`cargo vet`. So real-Brio capture pairs live IR frames with
-the mock matcher: liveness is enforced, identity discrimination is weak until #56 lands.
+**Matcher: detect → align → embed → match.** With the `face-model` feature and both a face-detector
+(`MUG_DETECTOR_MODEL`, YuNet) and an embedder (`MUG_MODEL_PATH`, ArcFace/SFace) configured, the
+emitter-ON frame is run through a **YuNet** detector (via `tract`; decode + NMS in safe Rust), the 5
+landmarks are used to **align** the face to the canonical ArcFace template (closed-form 2-D Umeyama
+similarity transform + bilinear warp), and the aligned 112×112 crop is embedded by the `tract` ONNX
+matcher and compared by cosine distance. A frame with no detectable face is rejected (`NoFace` →
+PIN), so a faceless/background frame can never false-match. Both models are supplied at runtime —
+tess ships none — and an absent/invalid model degrades the face factor to the PIN (fail closed); the
+real enroll/unlock path refuses to embed a whole frame (which does not discriminate a face). The
+detector-free path — **whole-frame embedding, with either the real embedder or the model-free
+`PooledExtractor` mock** — is permitted only for the hermetic test substrate (`TESS_ALLOW_MOCK_FACE`)
+and the `face-test` diagnostic, and is meaningless for identity regardless of which embedder it uses.
+(`tract` was chosen over `ort` — see
+ADR-0015 — because no stable `ort` is published and its default feature fetches a native ONNX Runtime
+that breaks a hermetic build and can't pass `cargo deny`/`cargo vet`.)
 
 **Validation.** Selection logic is unit-tested with the virtual substrate (the hardware branch is
 *selected* but reports cleanly unavailable without a camera). Real capture + photo rejection is a
