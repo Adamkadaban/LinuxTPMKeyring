@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use std::io::Write as _;
 use std::path::PathBuf;
 
-use tess_cli::{doctor, enroll, install, lifecycle};
+use tess_cli::{doctor, enroll, face, install, lifecycle};
 
 /// tess — Windows-Hello-style unlocking for the Linux keyring.
 #[derive(Parser)]
@@ -62,6 +62,9 @@ enum Command {
     },
     /// Dry-run the session unlock path (no changes) and report what would happen.
     Test,
+    /// Diagnose the camera / IR liveness / face identity pipeline without touching the keyring or
+    /// TPM. Captures a reference then a probe and prints liveness scores and the match verdict.
+    FaceTest,
     /// Check TPM / keyring / fprintd / enrollment readiness. Exits non-zero when not ready.
     Doctor {
         /// Post-install verification: also require a Secret Service provider binary on PATH and a
@@ -95,6 +98,7 @@ fn main() -> anyhow::Result<()> {
         Command::Status => lifecycle::cli::run_status()?,
         Command::Unlock { pin, face } => lifecycle::cli::run_unlock(pin, face)?,
         Command::Test => lifecycle::cli::run_test()?,
+        Command::FaceTest => face::face_test_from_env()?,
         Command::Doctor { post_install } => {
             let ready = doctor::run(post_install);
             // `process::exit` skips normal shutdown; flush explicitly so a piped/captured readiness

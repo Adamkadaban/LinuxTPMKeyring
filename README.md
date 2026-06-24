@@ -225,6 +225,25 @@ build time). To enable face identity matching:
 (See [ADR-0015](docs/adr/0015-tract-onnx-face-matcher.md); `tract` was chosen over `ort`, whose only
 releases are yanked or pre-release with a non-hermetic native download.)
 
+#### Try the camera safely with `tess face-test`
+
+To check that the camera recognizes you and that liveness rejects a photo **without enrolling** (no
+keyring rekey, no TPM sealing — it touches neither), use the read-only diagnostic:
+
+```sh
+MUG_IR_BACKEND=hardware MUG_MODEL_PATH=/path/to/face.onnx tess face-test
+```
+
+It captures a **reference** then a **probe** (pressing Enter between each), printing the liveness
+score for each and, when both are live, the cosine **distance** and a `MATCH` / `NO MATCH` verdict:
+
+- **Identity:** reference = your face, probe = your face → `MATCH`; probe = a different person → `NO MATCH`.
+- **Liveness / IR:** probe = a printed photo or a phone screen → rejected by liveness (`Probe REJECTED…`).
+
+Without `MUG_MODEL_PATH` it still runs (liveness is real), but identity matching falls back to the
+model-free mock and is meaningless — supply a model to test identity. This is the recommended way to
+iterate on enrollment/lighting/threshold before committing to `enroll --face`.
+
 #### Manual real-Brio smoke (maintainer, dedicated test machine — never CI)
 
 The hardware path is validated by a manual smoke on a **dedicated test machine** with the Brio
