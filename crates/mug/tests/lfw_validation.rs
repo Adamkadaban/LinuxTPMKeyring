@@ -29,8 +29,8 @@
 
 use mug::camera::read_grey_file;
 use mug::{
-    ALIGNED_FACE_SIZE, Embedding, EmbeddingExtractor, FaceDetector, PixelScale, TractExtractor,
-    YuNetDetector, align_face, cosine_distance,
+    ALIGNED_FACE_SIZE, Embedding, EmbeddingExtractor, FaceDetector, MugError, PixelScale,
+    TractExtractor, YuNetDetector, align_face, cosine_distance,
 };
 use std::env;
 
@@ -47,6 +47,9 @@ const SCALE: PixelScale = PixelScale::Standardized {
 /// measures.
 const MATCH_TH: f32 = 0.60;
 
+/// Embed one image, or `Ok(None)` when **no face is detected** (a legitimate skip). Any other
+/// failure (I/O, bad frame size, alignment degeneracy, model incompatibility) is an `Err` so it
+/// fails the test rather than silently skewing the metrics.
 fn embed_one(
     detector: &YuNetDetector,
     extractor: &TractExtractor,
@@ -54,11 +57,16 @@ fn embed_one(
     name: &str,
     w: u32,
     h: u32,
-) -> Option<Embedding> {
-    let frame = read_grey_file(format!("{dir}/{name}"), w, h).ok()?;
-    let det = detector.detect(&frame).ok()?;
-    let aligned = align_face(&frame, &det.landmarks, ALIGNED_FACE_SIZE).ok()?;
-    extractor.extract(&aligned).ok()
+) -> mug::Result<Option<Embedding>> {
+    let frame = read_grey_file(format!("{dir}/{name}"), w, h)?;
+    match detector.detect(&frame) {
+        Ok(det) => {
+            let aligned = align_face(&frame, &det.landmarks, ALIGNED_FACE_SIZE)?;
+            Ok(Some(extractor.extract(&aligned)?))
+        }
+        Err(MugError::NoFace) => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 #[test]
@@ -104,12 +112,13 @@ fn lfw_pairs_separate_genuine_from_impostor() {
                 i + 1
             ),
         };
-        // A pair where a face isn't detected in one image is a legitimate skip (reported), not a
-        // manifest error.
-        let (Some(ea), Some(eb)) = (
-            embed_one(&detector, &extractor, &dir, a, w, h),
-            embed_one(&detector, &extractor, &dir, b, w, h),
-        ) else {
+        // A pair where a face isn't detected in one image is a legitimate skip (reported); any other
+        // pipeline error fails the test.
+        let ea = embed_one(&detector, &extractor, &dir, a, w, h)
+            .unwrap_or_else(|e| panic!("pairs.tsv line {}: embed {a}: {e}", i + 1));
+        let eb = embed_one(&detector, &extractor, &dir, b, w, h)
+            .unwrap_or_else(|e| panic!("pairs.tsv line {}: embed {b}: {e}", i + 1));
+        let (Some(ea), Some(eb)) = (ea, eb) else {
             skipped += 1;
             continue;
         };
@@ -165,13 +174,13 @@ fn lfw_pairs_separate_genuine_from_impostor() {
     eprintln!("genuine  cosine-distance mean {gm:.3}");
     eprintln!("impostor cosine-distance mean {im:.3}");
     eprintln!(
-        "@ evaluated threshold {MATCH_TH:.2}: true-accept {:.1}%  true-reject {:.1}%  acc {:.1}%",
+        "@ evaluated threshold {MATCH_TH:.2}: true-accept {:.1}%  true-reject {:.1}%  balanced-acc {:.1}%",
         ta * 100.0,
         tr * 100.0,
         (ta + tr) / 2.0 * 100.0
     );
     eprintln!(
-        "best-accuracy threshold {best_t:.3}: acc {:.1}%   EER ~ {:.1}%",
+        "best balanced-accuracy threshold {best_t:.3}: balanced-acc {:.1}%   EER ~ {:.1}%",
         best_acc * 100.0,
         eer * 100.0
     );
@@ -183,7 +192,7 @@ fn lfw_pairs_separate_genuine_from_impostor() {
     );
     assert!(
         best_acc >= 0.80,
-        "best-threshold accuracy {:.1}% < 80% — the pipeline is not discriminating",
+        "best-threshold balanced accuracy {:.1}% < 80% — the pipeline is not discriminating",
         best_acc * 100.0
     );
 }
