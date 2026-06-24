@@ -561,6 +561,9 @@ mod tests {
         let _lock = tess_testenv::env_lock();
         let _backend = tess_testenv::EnvGuard::remove(ENV_BACKEND);
         let _dir = tess_testenv::EnvGuard::set(VirtualIrDevice::ENV_DIR, "/nonexistent-ir-dir");
+        // No real model in tests: opt into the mock so building the matcher succeeds (production
+        // fails closed without a model).
+        let _mock = tess_testenv::EnvGuard::set(ENV_ALLOW_MOCK_FACE, "1");
         assert_eq!(select_backend().unwrap(), CaptureBackend::Virtual);
         // Building the source only reads the env var, not the directory contents.
         assert!(template_source_from_env().is_ok());
