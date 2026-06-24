@@ -124,8 +124,9 @@ pub struct v4l2_timecode {
 }
 
 /// `struct v4l2_buffer` (single-planar, MMAP). The `timestamp` is modelled as two `i64`s (`timeval`
-/// on LP64) and the `m` union as a `u64` (its `offset` member lives in the low 32 bits on
-/// little-endian). The size is pinned to the kernel ABI below.
+/// on LP64) and the `m` union as a `u64`; its MMAP `offset` member (`__u32`) is the first 4 bytes of
+/// the union in memory and is read endian-safely in [`MmapStream::start`]. The size is pinned to the
+/// kernel ABI below.
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct v4l2_buffer {
@@ -362,7 +363,12 @@ impl MmapStream {
             // its `length` and `m.offset` in place. On error `stream`'s Drop unmaps any earlier maps.
             unsafe { vidioc_querybuf(fd, &mut buf) }.map_err(errno_io)?;
             let length = buf.length as usize;
-            let offset = (buf.m & 0xffff_ffff) as libc::off_t;
+            // The C `m` union's MMAP `offset` member (`__u32`) occupies the first 4 bytes of the
+            // union in memory. Read those bytes in memory order so the value is correct regardless of
+            // host endianness (on big-endian the offset is the high half of the `u64`, not `& low32`).
+            let m_bytes = buf.m.to_ne_bytes();
+            let offset =
+                u32::from_ne_bytes([m_bytes[0], m_bytes[1], m_bytes[2], m_bytes[3]]) as libc::off_t;
             // SAFETY: map exactly the driver-reported buffer length at the driver-reported mmap
             // offset on the capture fd. The result is checked against MAP_FAILED before use and
             // unmapped in Drop with the same length.
