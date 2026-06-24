@@ -234,11 +234,19 @@ build time). To enable face identity matching:
        "max_baseline_for_live": 0, "emission_min_delta": 0, "max_saturated_fraction": 0,
        "score_threshold": 0 },
      "model_path": null,
-     "pixel_scale": { "mode": "standardized", "mean": 0.5, "std": 0.5 } }
+     "pixel_scale": { "mode": "standardized", "mean": 0.5, "std": 0.5 },
+     "warmup": { "min_mean": 24.0, "min_delta": 14.0, "poll_ms": 200 } }
    JSON
    MUG_CONFIG=mug.json MUG_MODEL_PATH=/path/to/face.onnx MUG_DETECTOR_MODEL=/path/to/yunet.onnx \
      tess enroll --face
    ```
+
+   The `warmup` block tunes the hardware IR streaming-warmup gate (when the Brio's emitter
+   auto-enables after a short stream rather than a UVC `SET_CUR`): a streamed frame counts as
+   emitter-on once its mean brightness reaches `min_mean` **and** clears the cold baseline by
+   `min_delta`; `poll_ms` is the per-frame poll slice. Defaults suit the validated Brio; raise the
+   thresholds for a brighter sensor, lower them for a dimmer one. The warm wait is always bounded by
+   `capture_deadline_ms`, so tuning these never risks stalling login.
 
 (See [ADR-0015](docs/adr/0015-tract-onnx-face-matcher.md); `tract` was chosen over `ort`, whose only
 releases are yanked or pre-release with a non-hermetic native download.)

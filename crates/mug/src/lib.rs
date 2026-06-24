@@ -68,7 +68,7 @@ pub use camera::{
     BRIO_EMITTER_SELECTOR, BRIO_EMITTER_UNIT, BRIO_IR_HEIGHT, BRIO_IR_WIDTH, BRIO_PRODUCT_ID,
     BRIO_VENDOR_ID, BrioEmitter, FramePair, IrEmitter, IrFrame, IrSource, V4l2IrDevice,
     VirtualIrDevice, VirtualIrEmitter, VirtualIrSource, WarmingBrioDevice, WarmingBrioEmitter,
-    WarmingBrioSource, capture_liveness_pair, find_brio_ir_node,
+    WarmingBrioSource, WarmupConfig, capture_liveness_pair, find_brio_ir_node,
 };
 pub use config::{MugConfig, PixelScale};
 #[cfg(feature = "face-model")]

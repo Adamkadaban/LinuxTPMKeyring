@@ -291,6 +291,7 @@ fn emitter_coord(var: &str, default: u8) -> Result<u8> {
 /// permission denied) surfaces as an error the caller treats as "face unavailable → degrade to PIN".
 fn build_hardware_backend(
     node: Option<PathBuf>,
+    cfg: &MugConfig,
 ) -> Result<(mug::WarmingBrioSource, mug::WarmingBrioEmitter)> {
     let node = match node {
         Some(node) => node,
@@ -335,7 +336,11 @@ fn build_hardware_backend(
     } else {
         None
     };
-    Ok(mug::WarmingBrioDevice::split(source, emitter))
+    Ok(mug::WarmingBrioDevice::split_with_config(
+        source,
+        emitter,
+        cfg.warmup_config(),
+    ))
 }
 
 /// Whether the operator explicitly opted into the UVC `SET_CUR` IR-emitter path via any emitter env
@@ -652,7 +657,7 @@ pub fn template_source_from_env() -> Result<Box<dyn FaceTemplateSource>> {
             Ok(Box::new(mug_template_source(source, emitter, &cfg)?))
         }
         CaptureBackend::Hardware(node) => {
-            let (source, emitter) = build_hardware_backend(node)?;
+            let (source, emitter) = build_hardware_backend(node, &cfg)?;
             Ok(Box::new(mug_template_source(source, emitter, &cfg)?))
         }
     }
@@ -695,7 +700,7 @@ pub fn verify_from_env(enrolled: &FaceEnrollment) -> Result<()> {
             run_verify(&mut source, &mut emitter, enrolled, &cfg)
         }
         CaptureBackend::Hardware(node) => {
-            let (mut source, mut emitter) = build_hardware_backend(node)?;
+            let (mut source, mut emitter) = build_hardware_backend(node, &cfg)?;
             run_verify(&mut source, &mut emitter, enrolled, &cfg)
         }
     }
@@ -732,7 +737,7 @@ pub fn face_test_from_env() -> Result<()> {
             Ok(())
         }
         CaptureBackend::Hardware(node) => {
-            let (mut source, mut emitter) = build_hardware_backend(node)?;
+            let (mut source, mut emitter) = build_hardware_backend(node, &cfg)?;
             let outcome = run_face_test(
                 &mut source,
                 &mut emitter,

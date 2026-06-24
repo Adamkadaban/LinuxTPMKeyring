@@ -193,13 +193,36 @@ impl IrEmitter for BrioEmitter {
 // decide when a streamed frame counts as warm (emitter on). The streaming-warmup technique is also
 // what `linux-enable-ir-emitter` (GPL-3.0) relies on for detection; this is an independent
 // implementation, no code shared.
-/// Absolute mean brightness (0..255) at/above which a streamed IR frame is considered emitter-on.
+/// Default absolute mean brightness (0..255) at/above which a streamed IR frame is emitter-on.
 const WARM_MIN_MEAN: f32 = 24.0;
-/// Brightness a warm frame must clear over the cold baseline (guards a merely bright ambient scene).
+/// Default brightness a warm frame must clear over the cold baseline (guards a bright ambient scene).
 const WARM_MIN_DELTA: f32 = 14.0;
-/// Per-frame poll slice (ms) while waiting for the emitter to warm, so the wait stays responsive to
-/// the overall deadline.
+/// Default per-frame poll slice (ms) while waiting for the emitter to warm, so the wait stays
+/// responsive to the overall deadline.
 const WARM_POLL_MS: u64 = 200;
+
+/// Tunable thresholds for the streaming-warmup capture (defaults are the device-confirmed Brio
+/// values). Operators tune these per sensor/lighting via the `warmup` block of the mug config — no
+/// rebuild. The warm wait is always bounded by the capture deadline regardless of these values.
+#[derive(Clone, Copy, Debug)]
+pub struct WarmupConfig {
+    /// Absolute mean brightness (0..255) at/above which a streamed frame counts as emitter-on.
+    pub min_mean: f32,
+    /// Brightness a warm frame must clear over the cold baseline.
+    pub min_delta: f32,
+    /// Per-frame poll slice (ms); clamped to at least 1 ms at use so a 0 can't busy-spin.
+    pub poll_ms: u64,
+}
+
+impl Default for WarmupConfig {
+    fn default() -> Self {
+        Self {
+            min_mean: WARM_MIN_MEAN,
+            min_delta: WARM_MIN_DELTA,
+            poll_ms: WARM_POLL_MS,
+        }
+    }
+}
 
 /// Phase of the warmup capture: the next frame is either the cold (emitter-off) baseline or a warmed
 /// (emitter-on) frame to be streamed up to.
@@ -214,6 +237,7 @@ struct WarmingShared<S: IrSource, E: IrEmitter> {
     emitter: Option<E>,
     phase: Phase,
     cold_mean: f32,
+    warmup: WarmupConfig,
 }
 
 /// An IR device whose emitter is driven by **streaming warmup** rather than a `SET_CUR` toggle. It
@@ -230,16 +254,26 @@ pub struct WarmingDevice;
 
 impl WarmingDevice {
     /// Split an inner capture device (and optional best-effort `SET_CUR` emitter) into warming
-    /// source/emitter handles.
+    /// source/emitter handles using the default warmup thresholds.
     pub fn split<S: IrSource, E: IrEmitter>(
         device: S,
         emitter: Option<E>,
+    ) -> (WarmingSource<S, E>, WarmingEmitter<S, E>) {
+        Self::split_with_config(device, emitter, WarmupConfig::default())
+    }
+
+    /// Split with explicit [`WarmupConfig`] thresholds (operator-tuned via the mug config).
+    pub fn split_with_config<S: IrSource, E: IrEmitter>(
+        device: S,
+        emitter: Option<E>,
+        warmup: WarmupConfig,
     ) -> (WarmingSource<S, E>, WarmingEmitter<S, E>) {
         let shared = Rc::new(RefCell::new(WarmingShared {
             device,
             emitter,
             phase: Phase::Cold,
             cold_mean: 0.0,
+            warmup,
         }));
         (
             WarmingSource {
@@ -275,6 +309,7 @@ impl<S: IrSource, E: IrEmitter> IrSource for WarmingSource<S, E> {
             Phase::Warm => {
                 let deadline = Instant::now() + Duration::from_millis(deadline_ms);
                 let baseline = s.cold_mean;
+                let warmup = s.warmup;
                 let mut brightest: Option<IrFrame> = None;
                 loop {
                     let remaining = deadline
@@ -283,7 +318,9 @@ impl<S: IrSource, E: IrEmitter> IrSource for WarmingSource<S, E> {
                     if remaining == 0 {
                         break;
                     }
-                    let slice = remaining.min(WARM_POLL_MS);
+                    // Clamp the poll slice to ≥1 ms so a misconfigured `poll_ms == 0` can't busy-spin
+                    // the warm loop.
+                    let slice = remaining.min(warmup.poll_ms.max(1));
                     let frame = match s.device.capture(slice) {
                         Ok(f) => f,
                         // A poll slice with no frame: keep waiting within the overall deadline.
@@ -291,7 +328,7 @@ impl<S: IrSource, E: IrEmitter> IrSource for WarmingSource<S, E> {
                         Err(e) => return Err(e),
                     };
                     let m = frame.mean();
-                    if m >= WARM_MIN_MEAN && m >= baseline + WARM_MIN_DELTA {
+                    if m >= warmup.min_mean && m >= baseline + warmup.min_delta {
                         return Ok(frame);
                     }
                     if brightest.as_ref().is_none_or(|b| m > b.mean()) {
@@ -338,12 +375,22 @@ pub struct WarmingBrioDevice;
 
 impl WarmingBrioDevice {
     /// Split a Brio capture node (and optional best-effort `SET_CUR` emitter) into the source/emitter
-    /// handles [`capture_liveness_pair`](crate::camera::capture_liveness_pair) needs.
+    /// handles [`capture_liveness_pair`](crate::camera::capture_liveness_pair) needs, with default
+    /// warmup thresholds.
     pub fn split(
         device: V4l2IrDevice,
         emitter: Option<BrioEmitter>,
     ) -> (WarmingBrioSource, WarmingBrioEmitter) {
         WarmingDevice::split(device, emitter)
+    }
+
+    /// As [`WarmingBrioDevice::split`], with operator-tuned [`WarmupConfig`] thresholds.
+    pub fn split_with_config(
+        device: V4l2IrDevice,
+        emitter: Option<BrioEmitter>,
+        warmup: WarmupConfig,
+    ) -> (WarmingBrioSource, WarmingBrioEmitter) {
+        WarmingDevice::split_with_config(device, emitter, warmup)
     }
 }
 
@@ -429,8 +476,82 @@ mod tests {
         e.set_enabled(true).unwrap();
         let on = s.capture(20).unwrap();
         assert!(
-            on.mean() < WARM_MIN_MEAN,
+            on.mean() < WarmupConfig::default().min_mean,
             "a never-warming frame stays dark"
+        );
+    }
+
+    /// A source whose every capture times out — models a camera that never delivers a frame. The warm
+    /// loop must stay bounded by the deadline and surface `Timeout` (→ PIN), never stall login.
+    struct StallSource {
+        w: u32,
+        h: u32,
+    }
+    impl IrSource for StallSource {
+        fn dimensions(&self) -> (u32, u32) {
+            (self.w, self.h)
+        }
+        fn capture(&mut self, deadline_ms: u64) -> Result<IrFrame> {
+            // Honour the requested slice so the warm loop's wall-clock matches its deadline budget.
+            std::thread::sleep(Duration::from_millis(deadline_ms.min(5)));
+            Err(MugError::Timeout(deadline_ms))
+        }
+    }
+
+    #[test]
+    fn warm_phase_stays_bounded_and_times_out_when_no_frame_ever_arrives() {
+        let (mut s, mut e) = WarmingDevice::split(StallSource { w: 8, h: 8 }, None::<NoEmitter>);
+        e.set_enabled(true).unwrap();
+        let deadline_ms = 60;
+        let start = Instant::now();
+        let result = s.capture(deadline_ms);
+        let elapsed = start.elapsed();
+        assert!(
+            matches!(result, Err(MugError::Timeout(_))),
+            "a camera that never delivers a frame must time out (→ PIN), got {result:?}"
+        );
+        // Bounded: the warm loop honours the deadline (generous slack for slice rounding + sleeps).
+        assert!(
+            elapsed < Duration::from_millis(deadline_ms * 4 + 200),
+            "warm capture must not stall login; took {elapsed:?} for a {deadline_ms}ms deadline"
+        );
+    }
+
+    #[test]
+    fn warmup_config_thresholds_govern_when_a_frame_counts_as_warm() {
+        // A frame at mean 30: warm under a low threshold, still-dark under a high one.
+        let make = || RampSource {
+            means: vec![2, 30],
+            idx: 0,
+            w: 8,
+            h: 8,
+        };
+        let low = WarmupConfig {
+            min_mean: 20.0,
+            min_delta: 5.0,
+            poll_ms: 50,
+        };
+        let (mut s, mut e) = WarmingDevice::split_with_config(make(), None::<NoEmitter>, low);
+        e.set_enabled(false).unwrap();
+        let _ = s.capture(50).unwrap();
+        e.set_enabled(true).unwrap();
+        assert!(
+            s.capture(50).unwrap().mean() >= low.min_mean,
+            "a low threshold accepts the mean-30 frame as warm"
+        );
+
+        let high = WarmupConfig {
+            min_mean: 200.0,
+            min_delta: 5.0,
+            poll_ms: 50,
+        };
+        let (mut s, mut e) = WarmingDevice::split_with_config(make(), None::<NoEmitter>, high);
+        e.set_enabled(false).unwrap();
+        let _ = s.capture(50).unwrap();
+        e.set_enabled(true).unwrap();
+        assert!(
+            s.capture(50).unwrap().mean() < high.min_mean,
+            "a high threshold never treats the mean-30 frame as warm"
         );
     }
 }
