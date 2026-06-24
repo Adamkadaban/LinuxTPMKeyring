@@ -8,10 +8,12 @@ Accepted
 
 `tess-core::SecretBytes` holds every long-lived secret (the unsealed keyring key, the recovery
 secret, the PIN). It was `zeroize`-on-drop but its pages were **pageable**: the kernel could write
-the cleartext key to swap or a hibernation image, where it persists at rest — the exact attack class
-(memory disclosure via swap/cold-boot) the threat-model lists and the project's **at-rest** guarantee
-cares about. `mlock(2)` pins the pages in RAM so they are never swapped. This was tracked as #87 and
-previously over-claimed as done in the Phase-0 PLAN deliverable.
+the cleartext key to **swap**, where it persists at rest — a memory-disclosure-via-swap leak the
+threat-model lists and the project's **at-rest** guarantee cares about. `mlock(2)` pins the pages in
+RAM so they are never swapped. (`mlock` does **not** cover suspend-to-disk/hibernation, which
+snapshots all of RAM to disk regardless of memory locks — that needs a separate operator-level
+mitigation: disable hibernation or use encrypted swap.) This was tracked as #87 and previously
+over-claimed as done in the Phase-0 PLAN deliverable.
 
 `mlock`/`munlock` are `unsafe` `libc` FFI. AGENTS.md restricts `unsafe` to exactly three audited
 modules (`tess-pam::ffi`, `mug::sys`, `tess-testenv::env`); `tess-core` is `#![forbid(unsafe_code)]`.
@@ -41,8 +43,9 @@ drop. `tess-core` stays `#![forbid(unsafe_code)]`.
 
 ## Consequences
 
-- Secrets are pinned in RAM (no swap/hibernation leak) wherever `RLIMIT_MEMLOCK` permits, strengthening
-  the at-rest guarantee; `tess-core` remains unsafe-free.
+- Secrets are pinned in RAM (no swap leak) wherever `RLIMIT_MEMLOCK` permits, strengthening the
+  at-rest guarantee; `tess-core` remains unsafe-free. Suspend-to-disk/hibernation is **not** covered
+  by `mlock` and stays an operator-level mitigation (disable hibernation / encrypted swap).
 - A very low `RLIMIT_MEMLOCK` silently degrades to "pageable but zeroized" with a logged note (the
   documented best-effort contract). Operators who want a hard guarantee raise the limit.
 - `SecretBytes` is no longer a `derive`d `Zeroize`/`ZeroizeOnDrop` tuple struct; it has hand-written
@@ -59,5 +62,5 @@ drop. `tess-core` stays `#![forbid(unsafe_code)]`.
   support; current versions only `zeroize`. Rejected — would not actually lock.
 - **`memsec`.** Provides allocation-based secure boxes but is a heavier model (custom allocator) than
   pinning an existing `Vec`'s pages. Rejected as more invasive than needed.
-- **Do nothing (keep secrets pageable).** Rejected: leaves a swap/hibernation leak against the
-  project's own at-rest guarantee, which the threat-model already commits to closing.
+- **Do nothing (keep secrets pageable).** Rejected: leaves a swap leak against the project's own
+  at-rest guarantee, which the threat-model already commits to closing.

@@ -44,12 +44,16 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// A zeroizing, RAM-locked byte buffer for secret material (the sealed random key, the recovery
-/// secret, a PIN). The backing buffer is `mlock`ed so the kernel can't page it to swap or
-/// hibernation, and it is `zeroize`d then unlocked on drop. Never `Debug`-printed in the clear.
+/// secret, a PIN). The backing buffer is `mlock`ed so the kernel can't page it to **swap**, and it
+/// is `zeroize`d then unlocked on drop. Never `Debug`-printed in the clear.
+///
+/// `mlock` stops swapping only; it does **not** protect against suspend-to-disk/hibernation, which
+/// snapshots all of RAM to disk regardless of memory locks (see `mlock(2)`). Disabling hibernation or
+/// using encrypted swap is a separate, operator-level mitigation.
 ///
 /// Locking is **best-effort**: if the OS refuses (e.g. a low `RLIMIT_MEMLOCK`) the secret is still
-/// zeroized on drop and a one-line note is emitted — locking never fails construction or blocks an
-/// auth path. The wipe-then-unlock-then-free ordering is enforced by field declaration order
+/// zeroized on drop and a one-line note is emitted once — locking never fails construction or blocks
+/// an auth path. The wipe-then-unlock-then-free ordering is enforced by field declaration order
 /// (`_lock` before `data`).
 pub struct SecretBytes {
     // Drops before `data` (declaration order): after `Drop::drop` zeroizes `data`, the guard
@@ -95,11 +99,15 @@ fn lock_buffer(buf: &[u8]) -> Option<region::LockGuard> {
     match region::lock(buf.as_ptr(), buf.len()) {
         Ok(guard) => Some(guard),
         Err(e) => {
-            eprintln!(
-                "tess: note: could not mlock a {}-byte secret buffer ({e}); it stays \
-                 zeroize-on-drop but may be pageable. Raise RLIMIT_MEMLOCK to lock secrets in RAM.",
-                buf.len()
-            );
+            // Warn once per process — a per-secret message would spam stderr on every unseal.
+            use std::sync::Once;
+            static WARNED: Once = Once::new();
+            WARNED.call_once(|| {
+                eprintln!(
+                    "tess: note: could not mlock a secret buffer ({e}); secrets stay \
+                     zeroize-on-drop but may be pageable. Raise RLIMIT_MEMLOCK to lock them in RAM."
+                );
+            });
             None
         }
     }
@@ -216,7 +224,8 @@ mod tests {
         assert!(!s.is_empty());
     }
 
-    /// Locked-page count (kB) for this process from `/proc/self/status` (`VmLck`).
+    /// Locked-page count (kB) for this process from `/proc/self/status` (`VmLck`). Linux-only.
+    #[cfg(target_os = "linux")]
     fn vmlck_kb() -> u64 {
         let status = std::fs::read_to_string("/proc/self/status").expect("read /proc/self/status");
         for line in status.lines() {
@@ -234,6 +243,7 @@ mod tests {
         assert!(!SecretBytes::new(Vec::new()).is_locked());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn secret_buffer_is_mlocked_and_unlocked_on_drop() {
         // 64 KiB spans multiple pages so the VmLck delta is unambiguous when locking is permitted.
@@ -260,13 +270,18 @@ mod tests {
     }
 
     #[test]
-    fn clone_gets_its_own_lock() {
+    fn clone_allocates_a_distinct_buffer() {
         let a = SecretBytes::new(vec![7u8; 4096]);
         let b = a.clone();
         assert_eq!(a.as_slice(), b.as_slice());
-        // Both either locked (normal) or both denied (constrained env) — never one-sided, since each
-        // owns a distinct allocation locked independently.
-        assert_eq!(a.is_locked(), b.is_locked());
+        // The invariant that matters: `Clone` deep-copies into its own allocation (each is then
+        // locked independently). Don't assert both locks succeed — under a boundary `RLIMIT_MEMLOCK`
+        // one allocation can lock while the other can't.
+        assert_ne!(
+            a.as_slice().as_ptr(),
+            b.as_slice().as_ptr(),
+            "clone must own a distinct buffer"
+        );
     }
 
     #[test]
