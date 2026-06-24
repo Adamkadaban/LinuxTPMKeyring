@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::camera::WarmupConfig;
 use crate::liveness::LivenessConfig;
 
 /// Top-level mug configuration.
@@ -28,6 +29,10 @@ pub struct MugConfig {
     /// ArcFace/SFace convention; override for models trained with different normalization.
     #[serde(default)]
     pub pixel_scale: PixelScale,
+    /// Streaming-warmup thresholds for the hardware IR path (when the emitter auto-enables after a
+    /// short stream rather than via `SET_CUR`). Tunable per sensor/lighting without a rebuild.
+    #[serde(default)]
+    pub warmup: WarmupThresholds,
 }
 
 /// Pixel-value scaling applied to each `[0,255]` IR sample before it is fed to the model. The IR
@@ -97,6 +102,39 @@ impl Default for LivenessThresholds {
     }
 }
 
+/// Serializable mirror of [`WarmupConfig`] (the on-disk schema for the streaming-warmup thresholds).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WarmupThresholds {
+    /// Absolute mean brightness (0..255) at/above which a streamed IR frame counts as emitter-on.
+    pub min_mean: f32,
+    /// Brightness a warm frame must clear over the cold baseline (guards a merely bright scene).
+    pub min_delta: f32,
+    /// Per-frame poll slice (ms) while waiting for the emitter to warm, keeping the wait responsive
+    /// to the overall deadline. Clamped to at least 1 ms at use so a 0 can't busy-spin.
+    pub poll_ms: u64,
+}
+
+impl From<&WarmupThresholds> for WarmupConfig {
+    fn from(t: &WarmupThresholds) -> Self {
+        WarmupConfig {
+            min_mean: t.min_mean,
+            min_delta: t.min_delta,
+            poll_ms: t.poll_ms,
+        }
+    }
+}
+
+impl Default for WarmupThresholds {
+    fn default() -> Self {
+        let d = WarmupConfig::default();
+        Self {
+            min_mean: d.min_mean,
+            min_delta: d.min_delta,
+            poll_ms: d.poll_ms,
+        }
+    }
+}
+
 impl Default for MugConfig {
     fn default() -> Self {
         Self {
@@ -106,6 +144,7 @@ impl Default for MugConfig {
             model_path: None,
             detector_model_path: None,
             pixel_scale: PixelScale::default(),
+            warmup: WarmupThresholds::default(),
         }
     }
 }
@@ -114,6 +153,11 @@ impl MugConfig {
     /// Resolve the effective [`LivenessConfig`].
     pub fn liveness_config(&self) -> LivenessConfig {
         LivenessConfig::from(&self.liveness)
+    }
+
+    /// Resolve the effective streaming-warmup [`WarmupConfig`] for the hardware IR path.
+    pub fn warmup_config(&self) -> WarmupConfig {
+        WarmupConfig::from(&self.warmup)
     }
 }
 
