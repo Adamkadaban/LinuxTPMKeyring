@@ -340,10 +340,19 @@ fn build_matcher(
              to use the model-free mock, which would accept any live face."
         ));
     }
-    eprintln!(
-        "tess: WARNING — using the model-free mock matcher. Identity matching is DISABLED; this \
-         accepts essentially any live face and is for testing only."
-    );
+    if allow_mock {
+        eprintln!(
+            "tess: note — no real model configured; identity matching uses the model-free mock and \
+             is meaningless (liveness is still real). Set {ENV_MODEL_PATH} to a real model for \
+             identity discrimination."
+        );
+    } else {
+        eprintln!(
+            "tess: WARNING — {ENV_ALLOW_MOCK_FACE} is set; using the model-free mock matcher. \
+             Identity matching is DISABLED (accepts essentially any live face) — unset it for \
+             fail-closed behavior. For testing only."
+        );
+    }
     let mock =
         PooledExtractor::new(MOCK_DIM).map_err(|e| anyhow!("build the mock matcher: {e}"))?;
     Ok(Matcher::new(
@@ -487,7 +496,9 @@ pub fn face_test_from_env() -> Result<()> {
     let cfg = load_config()?;
     let matcher = build_matcher(&cfg, true)?;
     let pause = |msg: &str| {
-        println!("{msg}, then press Enter…");
+        use std::io::Write as _;
+        print!("{msg}, then press Enter… ");
+        let _ = std::io::stdout().flush();
         let mut line = String::new();
         let _ = std::io::stdin().read_line(&mut line);
     };
