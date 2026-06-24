@@ -37,8 +37,8 @@ const ENV_MODEL: &str = "MUG_MODEL_PATH";
 const ENV_NODE: &str = "MUG_IR_NODE";
 /// Optional cosine match threshold (else the SFace-calibrated default below).
 const ENV_THRESHOLD: &str = "MUG_MATCH_THRESHOLD";
-/// SFace cosine-distance match threshold validated on LFW (see NOTES.md); the `MugConfig::default`
-/// 0.34 is a model-agnostic placeholder, so the viewer uses the evaluated SFace value by default.
+/// SFace cosine-distance match threshold validated on LFW; the `MugConfig::default` 0.34 is a
+/// model-agnostic placeholder, so the viewer uses the evaluated SFace value by default.
 const DEFAULT_THRESHOLD: f32 = 0.6;
 /// Per-frame capture budget; a wedged camera yields a timeout and the loop just redraws.
 const CAPTURE_DEADLINE_MS: u64 = 300;
