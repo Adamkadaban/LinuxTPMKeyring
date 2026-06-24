@@ -57,7 +57,8 @@ fn env_str(var: &str) -> Result<String> {
 fn main() -> Result<()> {
     let detector = YuNetDetector::from_path(&env_str(ENV_DETECTOR)?)
         .context("load the YuNet detector model")?;
-    // Match the SFace pixel convention used everywhere else (raw 0–255 → ArcFace symmetric scale).
+    // Match the SFace pixel convention used everywhere else: the default symmetric scaling maps
+    // raw [0,255] to roughly [-1,1].
     let extractor =
         TractExtractor::from_path(&env_str(ENV_MODEL)?, MugConfig::default().pixel_scale)
             .context("load the SFace embedding model")?;
@@ -164,7 +165,8 @@ fn put_px(buf: &mut [u32], w: usize, h: usize, x: i64, y: i64, c: u32) {
 
 fn draw_rect(buf: &mut [u32], w: usize, h: usize, bbox: (f32, f32, f32, f32), c: u32) {
     let (x0, y0) = (bbox.0 as i64, bbox.1 as i64);
-    let (x1, y1) = ((bbox.0 + bbox.2) as i64, (bbox.1 + bbox.3) as i64);
+    // `bbox` is (x, y, w, h); the inclusive far corner is x+w-1 / y+h-1.
+    let (x1, y1) = ((bbox.0 + bbox.2) as i64 - 1, (bbox.1 + bbox.3) as i64 - 1);
     for xx in x0..=x1 {
         put_px(buf, w, h, xx, y0, c);
         put_px(buf, w, h, xx, y1, c);
