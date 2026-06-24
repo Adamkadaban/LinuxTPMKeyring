@@ -107,22 +107,41 @@ fn decode_stride(
     for r in 0..rows {
         for c in 0..cols {
             let idx = r * cols + c;
-            let a = score_a[idx].clamp(0.0, 1.0);
-            let b = score_b[idx].clamp(0.0, 1.0);
-            let score = (a * b).sqrt();
-            if score < score_thresh {
+            let (a, b) = (score_a[idx], score_b[idx]);
+            // clamp preserves NaN, so reject non-finite scores explicitly — a NaN score passes
+            // `< thresh` (false) and would later poison NMS sorting/selection.
+            if !a.is_finite() || !b.is_finite() {
+                continue;
+            }
+            let score = (a.clamp(0.0, 1.0) * b.clamp(0.0, 1.0)).sqrt();
+            if !score.is_finite() || score < score_thresh {
                 continue;
             }
             let cx = (c as f32 + bbox[idx * 4]) * s;
             let cy = (r as f32 + bbox[idx * 4 + 1]) * s;
+            // exp() can overflow to +inf for hostile/garbage model outputs; reject non-finite or
+            // non-positive boxes so NMS/alignment never see inf/NaN geometry.
             let w = bbox[idx * 4 + 2].exp() * s;
             let h = bbox[idx * 4 + 3].exp() * s;
+            if !(cx.is_finite() && cy.is_finite() && w.is_finite() && h.is_finite())
+                || w <= 0.0
+                || h <= 0.0
+            {
+                continue;
+            }
             let mut lm = [(0.0f32, 0.0f32); 5];
+            let mut lm_ok = true;
             for (n, p) in lm.iter_mut().enumerate() {
-                *p = (
-                    (c as f32 + kps[idx * 10 + 2 * n]) * s,
-                    (r as f32 + kps[idx * 10 + 2 * n + 1]) * s,
-                );
+                let lx = (c as f32 + kps[idx * 10 + 2 * n]) * s;
+                let ly = (r as f32 + kps[idx * 10 + 2 * n + 1]) * s;
+                if !lx.is_finite() || !ly.is_finite() {
+                    lm_ok = false;
+                    break;
+                }
+                *p = (lx, ly);
+            }
+            if !lm_ok {
+                continue;
             }
             out.push(RawDet {
                 x1: cx - w / 2.0,
@@ -351,6 +370,7 @@ mod yunet {
             }
 
             let mut raw: Vec<RawDet> = Vec::new();
+            let mut any_stride_complete = false;
             for (si, &s) in STRIDES.iter().enumerate() {
                 let (cols, rows) = (self.width / s, self.height / s);
                 let n = cols * rows;
@@ -363,6 +383,7 @@ mod yunet {
                 if scores[si][0].len() != n || scores[si][1].len() != n {
                     continue;
                 }
+                any_stride_complete = true;
                 decode_stride(
                     &scores[si][0],
                     &scores[si][1],
@@ -374,6 +395,16 @@ mod yunet {
                     self.score_threshold,
                     &mut raw,
                 );
+            }
+            // No stride produced a complete YuNet tensor set => the model isn't a compatible
+            // detector, not "a valid model that saw no face". Surface that as MatcherUnavailable so
+            // the PIN fallback and logs reflect the real cause.
+            if !any_stride_complete {
+                return Err(MugError::MatcherUnavailable(
+                    "detector outputs do not match the expected YuNet tensor set \
+                     (scores+bbox+landmarks per stride)"
+                        .into(),
+                ));
             }
 
             let kept = nms(raw, self.nms_iou);
@@ -449,6 +480,27 @@ mod tests {
         let mut out = Vec::new();
         decode_stride(&sa, &sb, &bbox, &kps, cols, rows, 8, 0.6, &mut out);
         assert!(out.is_empty(), "score 0.3 < 0.6 must be filtered");
+    }
+
+    #[test]
+    fn decode_stride_skips_nonfinite_scores_and_boxes() {
+        let (cols, rows) = (2usize, 2usize);
+        let n = cols * rows;
+        // cell 0: NaN score (clamp would keep the NaN and pass `< thresh`); cell 1: inf box dim.
+        let mut sa = vec![1.0f32; n];
+        let sb = vec![1.0f32; n];
+        sa[0] = f32::NAN;
+        let mut bbox = vec![0f32; n * 4];
+        bbox[4 + 2] = f32::INFINITY; // cell 1 width = exp(inf) = inf
+        let kps = vec![0f32; n * 10];
+        let mut out = Vec::new();
+        decode_stride(&sa, &sb, &bbox, &kps, cols, rows, 8, 0.5, &mut out);
+        assert_eq!(out.len(), 2, "NaN-score and inf-box cells must be skipped");
+        assert!(
+            out.iter()
+                .all(|d| d.w.is_finite() && d.h.is_finite() && d.score.is_finite()),
+            "no non-finite geometry may survive"
+        );
     }
 
     fn det(x1: f32, y1: f32, w: f32, h: f32, score: f32) -> RawDet {
