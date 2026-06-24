@@ -256,11 +256,21 @@ mod tests {
                 "VmLck should grow while a secret is locked ({before} -> {during} kB)"
             );
             drop(secret);
-            let after = vmlck_kb();
+            // `munlock` is synchronous in `drop`, so VmLck must fall back below `during`. Poll
+            // briefly: `cargo test` runs tests multithreaded in one process and VmLck is
+            // process-wide, so a sibling test's small lock can transiently perturb the reading (our
+            // 64 KiB release still dominates their ≤4 KiB locks).
+            let mut after = vmlck_kb();
+            for _ in 0..20 {
+                if after < during {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                after = vmlck_kb();
+            }
             assert!(
-                after <= during,
-                "VmLck should not stay elevated after the secret is dropped/unlocked \
-                 ({during} -> {after} kB)"
+                after < during,
+                "VmLck must drop once the secret is unlocked on drop ({during} -> {after} kB)"
             );
         } else {
             // A constrained sandbox (e.g. RLIMIT_MEMLOCK=0) denies locking; the secret is still
