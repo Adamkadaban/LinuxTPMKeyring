@@ -17,9 +17,10 @@ IR scenes, not faces. This is a correctness and security defect, not a tuning pr
 
 A face-recognition pipeline needs four stages: **detect → align → embed → match**. tess had only the
 last two. We must add detection (locate the face + 5 landmarks) and alignment (warp to the canonical
-template) before embedding, under the existing constraints: safe Rust (`#![forbid(unsafe_code)]` /
-`#![deny(unsafe_code)]` in `mug`), inference via `tract` (no native ONNX Runtime — ADR-0015), no
-model shipped (runtime-supplied, fail closed), and deterministic model-free tests.
+template) before embedding, under the existing constraints: safe Rust (`mug` is
+`#![deny(unsafe_code)]` with a single `#[allow(unsafe_code)] mod sys` boundary for the raw V4L2/UVC
+ioctls — the new detect/align code adds no `unsafe`), inference via `tract` (no native ONNX Runtime —
+ADR-0015), no model shipped (runtime-supplied, fail closed), and deterministic model-free tests.
 
 ## Decision
 

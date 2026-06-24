@@ -570,7 +570,7 @@ where
             Some(d) => {
                 let face =
                     mug::locate_and_align(d.as_ref(), &pair.emitter_on, mug::ALIGNED_FACE_SIZE)
-                        .map_err(|e| anyhow!("locate/align the enrollment face: {e}"))?;
+                        .context("locate/align the enrollment face")?;
                 self.matcher.embed(&face)
             }
             None => self.matcher.embed(&pair.emitter_on),
@@ -813,7 +813,7 @@ fn align_for_embed<'a>(
     match detector {
         Some(d) => Ok(std::borrow::Cow::Owned(
             mug::locate_and_align(d, frame, mug::ALIGNED_FACE_SIZE)
-                .map_err(|e| anyhow!("locate/align the face: {e}"))?,
+                .context("locate/align the face")?,
         )),
         None => Ok(std::borrow::Cow::Borrowed(frame)),
     }
