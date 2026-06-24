@@ -177,7 +177,7 @@ the convenience path.
   value fails safe (the emitter stays off, liveness can't pass, the factor degrades to the PIN). The
   emitter's UVC extension-unit coordinates are also overridable — `MUG_IR_EMITTER_UNIT` and
   `MUG_IR_EMITTER_SELECTOR` (hex u8, default `0x04`/`0x06`), and `MUG_IR_EMITTER_NODE` to target a
-  different Brio video node than capture. If `face-test`/`unlock --face` reports
+  different Brio video node than capture. If `tess face-test`/`tess unlock --face` reports
   `UVC SET_CUR … No such file or directory`, your Brio's coordinates differ from the defaults;
   discover the working unit/selector/payload with
   [`linux-enable-ir-emitter`](https://github.com/Emixam23/linux-enable-ir-emitter) and set these vars.

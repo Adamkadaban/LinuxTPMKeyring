@@ -17,7 +17,7 @@
 //! backend is available (no substrate, no camera) the factor reports unavailable and the caller
 //! degrades to the PIN.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use mug::{
@@ -234,6 +234,28 @@ fn parse_hex_u8(raw: &str) -> std::result::Result<u8, String> {
     u8::from_str_radix(s, 16).map_err(|e| format!("invalid hex u8 {s:?}: {e}"))
 }
 
+/// Validate that an env-provided device path is a V4L2-style character device under `/dev`, so an
+/// untrusted env var can't point the emitter `open()` at an arbitrary read+write path (the
+/// PAM/session context treats env as untrusted). Symlinks (e.g. `/dev/v4l/by-id/...`) are followed.
+fn validate_device_node(var: &str, path: &Path) -> Result<()> {
+    use std::os::unix::fs::FileTypeExt;
+    if !path.is_absolute() || !path.starts_with("/dev") {
+        return Err(anyhow!(
+            "{var} must be an absolute path under /dev, got {}",
+            path.display()
+        ));
+    }
+    let meta =
+        std::fs::metadata(path).map_err(|e| anyhow!("stat {var} {}: {e}", path.display()))?;
+    if !meta.file_type().is_char_device() {
+        return Err(anyhow!(
+            "{var} {} is not a character device",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Resolve a hex-`u8` emitter coordinate from `var`, falling back to `default`.
 fn emitter_coord(var: &str, default: u8) -> Result<u8> {
     match std::env::var(var) {
@@ -267,7 +289,11 @@ fn build_hardware_backend(node: Option<PathBuf>) -> Result<(mug::V4l2IrDevice, m
                 "{ENV_EMITTER_NODE} is set but empty; unset it to use the capture node"
             ));
         }
-        Some(path) => PathBuf::from(path),
+        Some(path) => {
+            let path = PathBuf::from(path);
+            validate_device_node(ENV_EMITTER_NODE, &path)?;
+            path
+        }
         None => node.clone(),
     };
     let emitter = mug::BrioEmitter::new(&emitter_node, unit, selector, on_payload, off_payload)
@@ -868,6 +894,20 @@ mod tests {
         assert!(parse_hex_u8("zz").is_err());
         assert!(parse_hex_u8("100").is_err()); // 0x100 overflows u8
         assert!(parse_hex_u8(&"0".repeat(100)).is_err()); // oversized input rejected without echo
+    }
+
+    #[test]
+    fn validate_device_node_accepts_char_device_under_dev() {
+        // /dev/null is always present and is a character device.
+        assert!(validate_device_node("X", std::path::Path::new("/dev/null")).is_ok());
+    }
+
+    #[test]
+    fn validate_device_node_rejects_non_dev_and_non_device() {
+        assert!(validate_device_node("X", std::path::Path::new("/tmp/not-a-node")).is_err());
+        assert!(validate_device_node("X", std::path::Path::new("relative/path")).is_err());
+        // A directory under /dev is not a character device.
+        assert!(validate_device_node("X", std::path::Path::new("/dev")).is_err());
     }
 
     #[test]
