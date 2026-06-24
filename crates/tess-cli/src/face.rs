@@ -804,16 +804,18 @@ where
     })
 }
 
-/// Locate + align the face for embedding when a detector is present; otherwise pass the frame
-/// through (the detector-free diagnostic path).
-fn align_for_embed(
+/// Locate + align the face for embedding when a detector is present; otherwise borrow the frame
+/// through (the detector-free diagnostic path) without copying its pixel buffer.
+fn align_for_embed<'a>(
     detector: Option<&dyn FaceDetector>,
-    frame: &mug::IrFrame,
-) -> Result<mug::IrFrame> {
+    frame: &'a mug::IrFrame,
+) -> Result<std::borrow::Cow<'a, mug::IrFrame>> {
     match detector {
-        Some(d) => mug::locate_and_align(d, frame, mug::ALIGNED_FACE_SIZE)
-            .map_err(|e| anyhow!("locate/align the face: {e}")),
-        None => Ok(frame.clone()),
+        Some(d) => Ok(std::borrow::Cow::Owned(
+            mug::locate_and_align(d, frame, mug::ALIGNED_FACE_SIZE)
+                .map_err(|e| anyhow!("locate/align the face: {e}"))?,
+        )),
+        None => Ok(std::borrow::Cow::Borrowed(frame)),
     }
 }
 
