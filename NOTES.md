@@ -888,3 +888,6 @@ Key facts / gotchas:
 
 ## 2026-06-24 — added `tess face-test` read-only diagnostic (#71)
 **Resolution:** capture→liveness→match diagnostic that touches neither keyring nor TPM, so users can verify identity + photo-rejection without `enroll --face` (which rekeys the keyring). `build_matcher` gained an `allow_mock` param (face-test passes true — seals nothing, so the mock is fine when no model); real enroll/unlock still pass false (fail-closed). `run_face_test` returns a `FaceTestOutcome` (ReferenceRejected/ProbeRejected/Compared) for testability; a `pause` callback (Enter on CLI, frame-swap in tests) interleaves captures. `crates/tess-cli/src/face.rs` · `crates/tess-cli/src/main.rs` · #71
+
+## 2026-06-24 — Brio emitter unit/selector/node made configurable (#73)
+**Resolution:** real-Brio `UVC SET_CUR … ENOENT` = the hardcoded emitter XU coords (unit 0x04/selector 0x06) or node don't match that Brio. Added `MUG_IR_EMITTER_UNIT`/`MUG_IR_EMITTER_SELECTOR` (hex u8) + `MUG_IR_EMITTER_NODE` (path; emitter XU may be on a different node than GREY capture). Discover working values with `linux-enable-ir-emitter`. `crates/tess-cli/src/face.rs` (`emitter_coord`/`parse_hex_u8`) · #73

@@ -17,7 +17,7 @@
 //! backend is available (no substrate, no camera) the factor reports unavailable and the caller
 //! degrades to the PIN.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use mug::{
@@ -39,6 +39,13 @@ const ENV_BACKEND: &str = "MUG_IR_BACKEND";
 const ENV_EMITTER_ON: &str = "MUG_IR_EMITTER_ON_HEX";
 /// Hex-encoded UVC SET_CUR payload that turns the Brio IR emitter off (overrides the default).
 const ENV_EMITTER_OFF: &str = "MUG_IR_EMITTER_OFF_HEX";
+/// Brio IR-emitter UVC extension-unit id (hex u8, e.g. `0x04`) — overrides [`mug::BRIO_EMITTER_UNIT`].
+const ENV_EMITTER_UNIT: &str = "MUG_IR_EMITTER_UNIT";
+/// Brio IR-emitter UVC selector (hex u8, e.g. `0x06`) — overrides [`mug::BRIO_EMITTER_SELECTOR`].
+const ENV_EMITTER_SELECTOR: &str = "MUG_IR_EMITTER_SELECTOR";
+/// Video node the emitter SET_CUR targets (path) — defaults to the GREY capture node, but the
+/// emitter extension unit may live on a different Brio node.
+const ENV_EMITTER_NODE: &str = "MUG_IR_EMITTER_NODE";
 
 /// Default Brio IR-emitter payloads. The exact bytes are device-confirmed during the manual smoke;
 /// a wrong value fails safe (the emitter stays off, the liveness differential cannot pass, the face
@@ -209,9 +216,79 @@ fn emitter_payload(var: &str, default: &[u8]) -> Result<Vec<u8>> {
     }
 }
 
-/// Build the real Brio capture source + emitter, discovering the GREY IR node once and binding the
-/// emitter control to the same node. Any failure (no camera, permission denied) surfaces as an error
-/// the caller treats as "face unavailable → degrade to the PIN".
+/// Parse a hex `u8` (with or without a `0x` prefix), e.g. `0x04` or `4`.
+fn parse_hex_u8(raw: &str) -> std::result::Result<u8, String> {
+    let s = raw.trim();
+    // A generous DoS bound on a mispointed env var; a real u8 hex is short, but accept leading-zero
+    // forms like `0x00000004`. `from_str_radix` below does the actual validity/overflow check.
+    if s.len() > 64 {
+        return Err("value too long for a hex u8".into());
+    }
+    let s = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+    if s.is_empty() {
+        return Err("empty value".into());
+    }
+    u8::from_str_radix(s, 16).map_err(|e| format!("invalid hex u8 {s:?}: {e}"))
+}
+
+/// Whether a resolved device file name is a V4L2 video node (`videoN`, N = digits).
+fn is_v4l2_video_name(name: &str) -> bool {
+    name.strip_prefix("video")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Validate that an env-provided device path is a V4L2 video node (`/dev/videoN`), so an untrusted
+/// env var can't point the emitter `open()` at an arbitrary read+write path — not even another char
+/// device under `/dev` like `/dev/mem` (the PAM/session context treats env as untrusted). The path is
+/// canonicalized first (resolving `..` and symlinks, so `/dev/v4l/by-id/...` works but `/dev/../tmp/x`
+/// is rejected); the *resolved* path must be a character device under `/dev` named `videoN`.
+fn validate_device_node(var: &str, path: &Path) -> Result<()> {
+    use std::os::unix::fs::FileTypeExt;
+    let resolved = std::fs::canonicalize(path)
+        .map_err(|e| anyhow!("resolve {var} {}: {e}", path.display()))?;
+    if !resolved.starts_with("/dev") {
+        return Err(anyhow!(
+            "{var} must resolve to a path under /dev, got {}",
+            resolved.display()
+        ));
+    }
+    let name = resolved.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if !is_v4l2_video_name(name) {
+        return Err(anyhow!(
+            "{var} must resolve to a V4L2 video node (/dev/videoN), got {}",
+            resolved.display()
+        ));
+    }
+    let meta = std::fs::metadata(&resolved)
+        .map_err(|e| anyhow!("stat {var} {}: {e}", resolved.display()))?;
+    if !meta.file_type().is_char_device() {
+        return Err(anyhow!(
+            "{var} {} is not a character device",
+            resolved.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve a hex-`u8` emitter coordinate from `var`, falling back to `default`.
+fn emitter_coord(var: &str, default: u8) -> Result<u8> {
+    match std::env::var(var) {
+        Ok(value) => parse_hex_u8(&value).map_err(|e| anyhow!("{var}: {e}")),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(std::env::VarError::NotUnicode(_)) => Err(anyhow!(
+            "{var} is set but is not valid UTF-8; expected a hex u8 (e.g. 0x04)"
+        )),
+    }
+}
+
+/// Build the real Brio capture source + emitter, discovering the GREY IR node once. The emitter
+/// SET_CUR targets the capture node by default, or `MUG_IR_EMITTER_NODE` when set (the emitter
+/// extension unit may live on a different Brio node); its unit/selector default to the Brio values
+/// and are overridable via `MUG_IR_EMITTER_UNIT`/`MUG_IR_EMITTER_SELECTOR`. Any failure (no camera,
+/// permission denied) surfaces as an error the caller treats as "face unavailable → degrade to PIN".
 fn build_hardware_backend(node: Option<PathBuf>) -> Result<(mug::V4l2IrDevice, mug::BrioEmitter)> {
     let node = match node {
         Some(node) => node,
@@ -221,14 +298,28 @@ fn build_hardware_backend(node: Option<PathBuf>) -> Result<(mug::V4l2IrDevice, m
         .map_err(|e| anyhow!("open the Brio IR capture node {}: {e}", node.display()))?;
     let on_payload = emitter_payload(ENV_EMITTER_ON, DEFAULT_EMITTER_ON)?;
     let off_payload = emitter_payload(ENV_EMITTER_OFF, DEFAULT_EMITTER_OFF)?;
-    let emitter = mug::BrioEmitter::new(
-        &node,
-        mug::BRIO_EMITTER_UNIT,
-        mug::BRIO_EMITTER_SELECTOR,
-        on_payload,
-        off_payload,
-    )
-    .map_err(|e| anyhow!("open the Brio IR emitter control {}: {e}", node.display()))?;
+    let unit = emitter_coord(ENV_EMITTER_UNIT, mug::BRIO_EMITTER_UNIT)?;
+    let selector = emitter_coord(ENV_EMITTER_SELECTOR, mug::BRIO_EMITTER_SELECTOR)?;
+    let emitter_node = match std::env::var_os(ENV_EMITTER_NODE) {
+        Some(path) if path.is_empty() => {
+            return Err(anyhow!(
+                "{ENV_EMITTER_NODE} is set but empty; unset it to use the capture node"
+            ));
+        }
+        Some(path) => {
+            let path = PathBuf::from(path);
+            validate_device_node(ENV_EMITTER_NODE, &path)?;
+            path
+        }
+        None => node.clone(),
+    };
+    let emitter = mug::BrioEmitter::new(&emitter_node, unit, selector, on_payload, off_payload)
+        .map_err(|e| {
+            anyhow!(
+                "open the Brio IR emitter control {}: {e}",
+                emitter_node.display()
+            )
+        })?;
     Ok((source, emitter))
 }
 
@@ -802,6 +893,46 @@ mod tests {
         assert!(parse_hex_payload("0€").is_err());
         // Oversized input fails closed rather than allocating.
         assert!(parse_hex_payload(&"00".repeat(200)).is_err());
+    }
+
+    #[test]
+    fn parse_hex_u8_accepts_prefix_and_bare() {
+        assert_eq!(parse_hex_u8("0x04").unwrap(), 0x04);
+        assert_eq!(parse_hex_u8("0X0e").unwrap(), 0x0e);
+        assert_eq!(parse_hex_u8("6").unwrap(), 0x06);
+        assert_eq!(parse_hex_u8(" ff ").unwrap(), 0xff);
+        assert_eq!(parse_hex_u8("0x00000004").unwrap(), 0x04); // leading-zero form
+    }
+
+    #[test]
+    fn parse_hex_u8_rejects_malformed_or_out_of_range() {
+        assert!(parse_hex_u8("").is_err());
+        assert!(parse_hex_u8("0x").is_err());
+        assert!(parse_hex_u8("zz").is_err());
+        assert!(parse_hex_u8("100").is_err()); // 0x100 overflows u8
+        assert!(parse_hex_u8(&"0".repeat(100)).is_err()); // oversized input rejected without echo
+    }
+
+    #[test]
+    fn is_v4l2_video_name_matches_only_video_n() {
+        assert!(is_v4l2_video_name("video0"));
+        assert!(is_v4l2_video_name("video12"));
+        assert!(!is_v4l2_video_name("video"));
+        assert!(!is_v4l2_video_name("video1a"));
+        assert!(!is_v4l2_video_name("null"));
+        assert!(!is_v4l2_video_name("mem"));
+    }
+
+    #[test]
+    fn validate_device_node_rejects_non_video_nodes() {
+        assert!(validate_device_node("X", std::path::Path::new("/tmp/not-a-node")).is_err());
+        assert!(validate_device_node("X", std::path::Path::new("relative/path")).is_err());
+        // A directory under /dev is not a video node.
+        assert!(validate_device_node("X", std::path::Path::new("/dev")).is_err());
+        // `..` traversal that resolves outside /dev is rejected (canonicalized first).
+        assert!(validate_device_node("X", std::path::Path::new("/dev/../etc/hostname")).is_err());
+        // A char device under /dev that isn't a video node (e.g. /dev/null) is rejected.
+        assert!(validate_device_node("X", std::path::Path::new("/dev/null")).is_err());
     }
 
     #[test]
