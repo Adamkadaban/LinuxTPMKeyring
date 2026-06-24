@@ -34,13 +34,17 @@ use mug::{
 };
 use std::env;
 
-/// Pixel scaling matching the OpenCV-Zoo SFace contract: raw 0..255 (`(p/255 - 0)/(1/255) = p`),
-/// identical to the shipped `sface.json`.
+/// Pixel scaling matching the OpenCV-Zoo SFace contract: raw 0..255 (`(p/255 - 0)/(1/255) = p`).
+/// The correct scale is model-specific; `MugConfig`'s model-agnostic default is `Symmetric`, so this
+/// is the scale for the SFace model under test, not the out-of-the-box default.
 const SCALE: PixelScale = PixelScale::Standardized {
     mean: 0.0,
     std: 1.0 / 255.0,
 };
-/// The shipped cosine-distance match threshold.
+/// The cosine-distance match threshold **evaluated** for this SFace model (≈ cosine similarity 0.40).
+/// Not the product default (`MugConfig::default().match_threshold == 0.34`, a model-agnostic
+/// placeholder) — the right threshold is model/sensor-specific and is exactly what this harness
+/// measures.
 const MATCH_TH: f32 = 0.60;
 
 fn embed_one(
@@ -78,11 +82,30 @@ fn lfw_pairs_separate_genuine_from_impostor() {
     let manifest = std::fs::read_to_string(format!("{dir}/pairs.tsv")).expect("read pairs.tsv");
     let (mut genuine, mut impostor) = (Vec::new(), Vec::new());
     let mut skipped = 0usize;
-    for line in manifest.lines().filter(|l| !l.trim().is_empty()) {
-        let mut it = line.split('\t');
-        let (Some(a), Some(b), Some(label)) = (it.next(), it.next(), it.next()) else {
+    for (i, line) in manifest.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
             continue;
+        }
+        // Fail fast on a malformed manifest rather than silently skewing the metrics.
+        let cols: Vec<&str> = line.split('\t').collect();
+        assert!(
+            cols.len() == 3,
+            "pairs.tsv line {}: expected 3 tab-separated fields, got {}",
+            i + 1,
+            cols.len()
+        );
+        let (a, b) = (cols[0], cols[1]);
+        let genuine_label = match cols[2].trim() {
+            "1" => true,
+            "0" => false,
+            other => panic!(
+                "pairs.tsv line {}: label must be 0 or 1, got {other:?}",
+                i + 1
+            ),
         };
+        // A pair where a face isn't detected in one image is a legitimate skip (reported), not a
+        // manifest error.
         let (Some(ea), Some(eb)) = (
             embed_one(&detector, &extractor, &dir, a, w, h),
             embed_one(&detector, &extractor, &dir, b, w, h),
@@ -91,7 +114,7 @@ fn lfw_pairs_separate_genuine_from_impostor() {
             continue;
         };
         let d = cosine_distance(&ea, &eb).expect("cosine distance");
-        if label.trim() == "1" {
+        if genuine_label {
             genuine.push(d);
         } else {
             impostor.push(d);
@@ -142,7 +165,7 @@ fn lfw_pairs_separate_genuine_from_impostor() {
     eprintln!("genuine  cosine-distance mean {gm:.3}");
     eprintln!("impostor cosine-distance mean {im:.3}");
     eprintln!(
-        "@ shipped threshold {MATCH_TH:.2}: true-accept {:.1}%  true-reject {:.1}%  acc {:.1}%",
+        "@ evaluated threshold {MATCH_TH:.2}: true-accept {:.1}%  true-reject {:.1}%  acc {:.1}%",
         ta * 100.0,
         tr * 100.0,
         (ta + tr) / 2.0 * 100.0
