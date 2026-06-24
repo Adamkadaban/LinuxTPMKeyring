@@ -149,8 +149,8 @@ passing; in CI a swtpm-backed `/dev/tpmrm0` that `tess-tpm` connects to is prese
 a provisioned Azure VM `tess doctor` reports the vTPM present.
 
 **Deliverables:**
-- [x] Workspace `Cargo.toml` + `rust-toolchain.toml` + six crate skeletons; `#![forbid(unsafe_code)]` everywhere except `tess-pam`
-- [x] `tess-core`: error enum, versioned `Metadata`, `SecretBytes` (zeroizing + mlock), `SecretStash`/`KeyringBackend`/`AuthGate` trait stubs
+- [x] Workspace `Cargo.toml` + `rust-toolchain.toml` + six crate skeletons; `#![forbid(unsafe_code)]` everywhere except the three audited unsafe modules (`tess-pam::ffi`, `mug::sys`, `tess-testenv::env`)
+- [x] `tess-core`: error enum, versioned `Metadata`, `SecretBytes` (zeroizing; `mlock` planned hardening, tracked in #87), `SecretStash`/`KeyringBackend`/`AuthGate` trait stubs
 - [x] `.github/workflows/test.yml`: `pull_request` + `workflow_dispatch`, concurrency-cancel, installs swtpm/tpm2-tss, runs fmt/clippy/test + **`cargo audit` + `cargo deny`**
 - [x] `deny.toml` (advisories deny, license allowlist MIT/Apache/BSD/ISC, sources crates.io-only); pin `tss-esapi ≥ 7.1.0`
 - [x] `testing/swtpm/run.sh` + mssim/socket TCTI helper; `tess-tpm` connect smoke test
