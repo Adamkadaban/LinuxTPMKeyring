@@ -13,22 +13,12 @@ use std::cell::RefCell;
 use tess_core::AuthGate;
 
 use crate::align::ALIGNED_FACE_SIZE;
-use crate::camera::{IrEmitter, IrFrame, IrSource, capture_liveness_pair};
+use crate::camera::{IrEmitter, IrSource, capture_liveness_pair};
 use crate::detect::{FaceDetector, locate_and_align};
 use crate::error::{MugError, Result};
 use crate::liveness::{LivenessConfig, analyze};
 use crate::matcher::{EmbeddingExtractor, Matcher};
 use crate::store::FaceEnrollment;
-
-/// Prepare the emitter-ON frame for embedding: when a detector is configured, locate the face and
-/// align it to the canonical template; otherwise embed the frame as-is (the model-free mock path,
-/// which does no identity discrimination anyway).
-fn prepare_probe(detector: Option<&dyn FaceDetector>, frame: &IrFrame) -> Result<IrFrame> {
-    match detector {
-        Some(d) => locate_and_align(d, frame, ALIGNED_FACE_SIZE),
-        None => Ok(frame.clone()),
-    }
-}
 
 /// Run the full face-verification pipeline within `deadline_ms`. Returns `Ok(())` only when the
 /// captured pair is live *and* matches `enrolled` within `enrolled.match_threshold`; otherwise a
@@ -59,8 +49,15 @@ where
     };
     analyze(&pair, &effective_cfg)?.into_result()?;
 
-    let probe = prepare_probe(detector, &pair.emitter_on)?;
-    let distance = matcher.distance(&probe, &enrolled.embedding)?;
+    // With a detector, embed the located + aligned face crop; without one (model-free mock path),
+    // embed the frame directly — no clone of the pixel buffer.
+    let distance = match detector {
+        Some(d) => {
+            let aligned = locate_and_align(d, &pair.emitter_on, ALIGNED_FACE_SIZE)?;
+            matcher.distance(&aligned, &enrolled.embedding)?
+        }
+        None => matcher.distance(&pair.emitter_on, &enrolled.embedding)?,
+    };
     if distance <= enrolled.match_threshold {
         Ok(())
     } else {

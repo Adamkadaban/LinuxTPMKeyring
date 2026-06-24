@@ -565,16 +565,17 @@ where
             .into_result()
             .map_err(|e| anyhow!("liveness check failed during enrollment: {e}"))?;
         // Locate + align the face before embedding so the template describes the face, not the
-        // whole scene. With no detector (test substrate) we embed the frame as-is.
-        let face = match &self.detector {
-            Some(d) => mug::locate_and_align(d.as_ref(), &pair.emitter_on, mug::ALIGNED_FACE_SIZE)
-                .map_err(|e| anyhow!("locate/align the enrollment face: {e}"))?,
-            None => pair.emitter_on.clone(),
-        };
-        let embedding = self
-            .matcher
-            .embed(&face)
-            .map_err(|e| anyhow!("embed the enrollment frame: {e}"))?;
+        // whole scene. With no detector (test substrate) embed the frame by reference (no copy).
+        let embedding = match &self.detector {
+            Some(d) => {
+                let face =
+                    mug::locate_and_align(d.as_ref(), &pair.emitter_on, mug::ALIGNED_FACE_SIZE)
+                        .map_err(|e| anyhow!("locate/align the enrollment face: {e}"))?;
+                self.matcher.embed(&face)
+            }
+            None => self.matcher.embed(&pair.emitter_on),
+        }
+        .map_err(|e| anyhow!("embed the enrollment frame: {e}"))?;
         Ok(FaceEnrollment::new(
             embedding,
             self.match_threshold,
