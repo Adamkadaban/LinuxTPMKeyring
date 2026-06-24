@@ -393,10 +393,14 @@ impl MmapStream {
         Ok(stream)
     }
 
-    /// Dequeue one frame into a freshly-allocated `expected_len`-byte buffer (zero-padded if the
-    /// driver delivered fewer bytes), then requeue the buffer. Returns `Ok(None)` on a poll timeout
-    /// within `timeout_ms` (the caller maps that to a bounded `Timeout`), so a wedged camera never
-    /// blocks login.
+    /// Dequeue one full `expected_len`-byte frame, then requeue the buffer. Returns `Ok(None)` on a
+    /// poll timeout within `timeout_ms` (the caller maps that to a bounded `Timeout`), so a wedged
+    /// camera never blocks login.
+    ///
+    /// A size mismatch (`bytesused != expected_len`, or a buffer mapped shorter than the frame)
+    /// **fails closed** with an error rather than zero-padding a short frame: padding the dark
+    /// emitter-OFF baseline with zeros would inflate the liveness delta and risk a false accept. The
+    /// buffer is requeued first so a single corrupt frame doesn't starve the stream.
     pub fn dequeue(&mut self, timeout_ms: i32, expected_len: usize) -> io::Result<Option<Vec<u8>>> {
         if !poll_readable(self.fd, timeout_ms)? {
             return Ok(None);
@@ -414,18 +418,33 @@ impl MmapStream {
             .get(idx)
             .ok_or_else(|| io::Error::other(format!("DQBUF returned out-of-range index {idx}")))?;
 
-        let n = (buf.bytesused as usize).min(len).min(expected_len);
-        let mut out = vec![0u8; expected_len];
-        // SAFETY: `ptr` maps `len` bytes of this buffer; `n <= len` and `n <= expected_len`, so the
-        // copy reads `n` valid mapped bytes into the start of `out` (which has `expected_len` bytes).
-        unsafe {
-            std::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), n);
-        }
+        let bytesused = buf.bytesused as usize;
+        // Copy the full frame out of the mapped buffer *before* requeueing it (the driver may reuse
+        // the buffer the moment it is queued). Only a frame whose driver-reported length matches the
+        // expected size and fits the mapping is accepted.
+        let frame = if bytesused == expected_len && expected_len <= len {
+            let mut out = vec![0u8; expected_len];
+            // SAFETY: `ptr` maps `len` bytes; `expected_len <= len`, so the copy reads exactly
+            // `expected_len` valid mapped bytes into `out` (which has `expected_len` bytes).
+            unsafe {
+                std::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), expected_len);
+            }
+            Some(out)
+        } else {
+            None
+        };
 
         let mut requeue = v4l2_buffer::capture_mmap(buf.index);
         // SAFETY: requeue the same buffer index for further capture; valid fully-init struct.
         unsafe { vidioc_qbuf(self.fd, &mut requeue) }.map_err(errno_io)?;
-        Ok(Some(out))
+
+        match frame {
+            Some(out) => Ok(Some(out)),
+            None => Err(io::Error::other(format!(
+                "V4L2 frame size mismatch: driver reported {bytesused} bytes for an \
+                 {expected_len}-byte frame (mapped {len}); failing closed rather than padding"
+            ))),
+        }
     }
 }
 
