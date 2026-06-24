@@ -234,11 +234,17 @@ fn parse_hex_u8(raw: &str) -> std::result::Result<u8, String> {
     u8::from_str_radix(s, 16).map_err(|e| format!("invalid hex u8 {s:?}: {e}"))
 }
 
-/// Validate that an env-provided device path is a V4L2-style character device under `/dev`, so an
-/// untrusted env var can't point the emitter `open()` at an arbitrary read+write path (the
-/// PAM/session context treats env as untrusted). The path is canonicalized first (resolving `..` and
-/// symlinks, so `/dev/v4l/by-id/...` works but `/dev/../tmp/x` is rejected) and the *resolved* path
-/// must still be a character device under `/dev`.
+/// Whether a resolved device file name is a V4L2 video node (`videoN`, N = digits).
+fn is_v4l2_video_name(name: &str) -> bool {
+    name.strip_prefix("video")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Validate that an env-provided device path is a V4L2 video node (`/dev/videoN`), so an untrusted
+/// env var can't point the emitter `open()` at an arbitrary read+write path — not even another char
+/// device under `/dev` like `/dev/mem` (the PAM/session context treats env as untrusted). The path is
+/// canonicalized first (resolving `..` and symlinks, so `/dev/v4l/by-id/...` works but `/dev/../tmp/x`
+/// is rejected); the *resolved* path must be a character device under `/dev` named `videoN`.
 fn validate_device_node(var: &str, path: &Path) -> Result<()> {
     use std::os::unix::fs::FileTypeExt;
     let resolved = std::fs::canonicalize(path)
@@ -246,6 +252,13 @@ fn validate_device_node(var: &str, path: &Path) -> Result<()> {
     if !resolved.starts_with("/dev") {
         return Err(anyhow!(
             "{var} must resolve to a path under /dev, got {}",
+            resolved.display()
+        ));
+    }
+    let name = resolved.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if !is_v4l2_video_name(name) {
+        return Err(anyhow!(
+            "{var} must resolve to a V4L2 video node (/dev/videoN), got {}",
             resolved.display()
         ));
     }
@@ -901,19 +914,25 @@ mod tests {
     }
 
     #[test]
-    fn validate_device_node_accepts_char_device_under_dev() {
-        // /dev/null is always present and is a character device.
-        assert!(validate_device_node("X", std::path::Path::new("/dev/null")).is_ok());
+    fn is_v4l2_video_name_matches_only_video_n() {
+        assert!(is_v4l2_video_name("video0"));
+        assert!(is_v4l2_video_name("video12"));
+        assert!(!is_v4l2_video_name("video"));
+        assert!(!is_v4l2_video_name("video1a"));
+        assert!(!is_v4l2_video_name("null"));
+        assert!(!is_v4l2_video_name("mem"));
     }
 
     #[test]
-    fn validate_device_node_rejects_non_dev_and_non_device() {
+    fn validate_device_node_rejects_non_video_nodes() {
         assert!(validate_device_node("X", std::path::Path::new("/tmp/not-a-node")).is_err());
         assert!(validate_device_node("X", std::path::Path::new("relative/path")).is_err());
-        // A directory under /dev is not a character device.
+        // A directory under /dev is not a video node.
         assert!(validate_device_node("X", std::path::Path::new("/dev")).is_err());
         // `..` traversal that resolves outside /dev is rejected (canonicalized first).
         assert!(validate_device_node("X", std::path::Path::new("/dev/../etc/hostname")).is_err());
+        // A char device under /dev that isn't a video node (e.g. /dev/null) is rejected.
+        assert!(validate_device_node("X", std::path::Path::new("/dev/null")).is_err());
     }
 
     #[test]
