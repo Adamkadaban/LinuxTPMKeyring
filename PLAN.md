@@ -45,13 +45,16 @@ A Cargo **workspace** of small crates with hard boundaries. Everything is `#![fo
 **except** three audited modules that confine `unsafe` to a single module each: `tess-pam::ffi` (PAM
 C ABI), `mug::sys` (V4L2/UVC ioctls), and `tess-testenv::env` (test-only env mutation).
 
+The table below lists the **core** crates delivered at bootstrap; two auxiliary crates were added
+later — `mug` (the Phase-5 face daemon) and `tess-testenv` (a test-only env helper).
+
 | Crate | Type | Responsibility | Key deps |
 |---|---|---|---|
 | `tess-core` | lib | Shared types, versioned `Metadata` schema, config, error types, secret hygiene (`zeroize`/`secrecy`; `mlock` planned, #87), `SecretStash` trait | `serde`, `thiserror`, `zeroize`, `secrecy`, `nix`, `getrandom` |
 | `tess-tpm` | lib | TPM2 seal/unseal of a random 256-bit key, bound to a **PolicyAuthValue (PIN)**; **mandatory HMAC + parameter-encryption sessions**; ECC primary; DA-lockout aware; swtpm (dev/CI) + real/vTPM | `tss-esapi ≥7.1.0`, `tess-core` |
 | `tess-keyring` | lib | `KeyringBackend` trait over the freedesktop **Secret Service** API (`org.freedesktop.secrets`) — GNOME reference impl; KWallet supported via `apiEnabled`. Rekey (enroll) + unlock (runtime) | `zbus`, `secret-service`, `tess-core` |
 | `tess-fprint` | lib | `fprintd` client over `net.reactivated.Fprint` (verify flow, **consumed unmodified**) + deterministic mock harness (libfprint virtual driver + `python-dbusmock`) | `zbus`, `tess-core` |
-| `tess-pam` | cdylib + rlib | `pam_tess.so`: **non-blocking** gate → unseal → unlock. Hand-rolled minimal PAM FFI (the only `unsafe`). Heavy work runs in a **watchdog'd helper process** under a hard timeout; fails open to password | `libc`, the libs above |
+| `tess-pam` | cdylib + rlib | `pam_tess.so`: **non-blocking** gate → unseal → unlock. Hand-rolled minimal PAM FFI (`ffi`, one of the three audited `unsafe` modules). Heavy work runs in a **watchdog'd helper process** under a hard timeout; fails open to password | `libc`, the libs above |
 | `tess-cli` | bin | `tess` binary (long form `tessera`): `enroll`, `unlock`, `status`, `doctor`, `test`, `install`, `recover`, `unenroll`. Atomic enrollment with a printed recovery secret | `clap`, the libs above |
 
 **Non-blocking PAM (hard requirement — Howdy's #1 flaw fixed).** The PAM module never does blocking
@@ -150,7 +153,7 @@ passing; in CI a swtpm-backed `/dev/tpmrm0` that `tess-tpm` connects to is prese
 a provisioned Azure VM `tess doctor` reports the vTPM present.
 
 **Deliverables:**
-- [x] Workspace `Cargo.toml` + `rust-toolchain.toml` + six crate skeletons; `#![forbid(unsafe_code)]` everywhere except the three audited unsafe modules (`tess-pam::ffi`, `mug::sys`, `tess-testenv::env`)
+- [x] Workspace `Cargo.toml` + `rust-toolchain.toml` + the six core crate skeletons; `#![forbid(unsafe_code)]` workspace-wide with audited per-module `unsafe` exceptions (listed in the crate overview above)
 - [x] `tess-core`: error enum, versioned `Metadata`, `SecretBytes` (zeroizing; `mlock` planned hardening, tracked in #87), `SecretStash`/`KeyringBackend`/`AuthGate` trait stubs
 - [x] `.github/workflows/test.yml`: `pull_request` + `workflow_dispatch`, concurrency-cancel, installs swtpm/tpm2-tss, runs fmt/clippy/test + **`cargo audit` + `cargo deny`**
 - [x] `deny.toml` (advisories deny, license allowlist MIT/Apache/BSD/ISC, sources crates.io-only); pin `tss-esapi ≥ 7.1.0`
