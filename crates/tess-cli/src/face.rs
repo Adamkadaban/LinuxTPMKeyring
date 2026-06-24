@@ -292,10 +292,15 @@ fn mock_face_allowed() -> bool {
 }
 
 /// Build the identity matcher: the real `tract` ONNX matcher when built with the `face-model` feature
-/// and given a model path. Without a real model this **fails closed** (returns an error) unless
-/// `TESS_ALLOW_MOCK_FACE` opts into the test-only mock — the mock does no identity discrimination, so
-/// it must never gate a real unlock. Returns a boxed extractor so both share one matcher type.
-fn build_matcher(cfg: &MugConfig) -> Result<Matcher<Box<dyn EmbeddingExtractor>>> {
+/// and given a model path. Without a real model this **fails closed** (returns an error) unless the
+/// mock is permitted — either by `TESS_ALLOW_MOCK_FACE` (the test substrate) or by `allow_mock`
+/// (the read-only `face-test` diagnostic, which seals nothing). The mock does no identity
+/// discrimination, so it must never gate a real enroll/unlock. Returns a boxed extractor so both
+/// share one matcher type.
+fn build_matcher(
+    cfg: &MugConfig,
+    allow_mock: bool,
+) -> Result<Matcher<Box<dyn EmbeddingExtractor>>> {
     let model_path = match cfg.model_path.clone() {
         Some(path) => Some(path),
         None => match std::env::var(ENV_MODEL_PATH) {
@@ -320,9 +325,9 @@ fn build_matcher(cfg: &MugConfig) -> Result<Matcher<Box<dyn EmbeddingExtractor>>
 
     // No real model is loaded. The only remaining matcher is the deterministic mock, which performs
     // NO identity discrimination — it would accept essentially any live face. Fail closed so it can
-    // never silently gate a real enroll/unlock; allow it solely for the hermetic test substrate
-    // behind an explicit opt-in.
-    if !mock_face_allowed() {
+    // never silently gate a real enroll/unlock; allow it only for the hermetic test substrate or the
+    // no-stakes face-test diagnostic.
+    if !allow_mock && !mock_face_allowed() {
         let detail = if model_path.is_some() {
             "a model path is configured but this build lacks the `face-model` feature"
         } else {
@@ -335,10 +340,28 @@ fn build_matcher(cfg: &MugConfig) -> Result<Matcher<Box<dyn EmbeddingExtractor>>
              to use the model-free mock, which would accept any live face."
         ));
     }
-    eprintln!(
-        "tess: WARNING — {ENV_ALLOW_MOCK_FACE} is set, using the model-free mock matcher. Identity \
-         matching is DISABLED; this accepts essentially any live face and is for testing only."
-    );
+    if allow_mock {
+        if model_path.is_some() {
+            eprintln!(
+                "tess: note — a model path is configured but this build lacks the `face-model` \
+                 feature, so identity matching uses the model-free mock and is meaningless (liveness \
+                 is still real). Rebuild with `cargo build -p tess-cli --features face-model` for \
+                 real identity."
+            );
+        } else {
+            eprintln!(
+                "tess: note — no model configured; identity matching uses the model-free mock and \
+                 is meaningless (liveness is still real). Set {ENV_MODEL_PATH} to a real model for \
+                 identity discrimination."
+            );
+        }
+    } else {
+        eprintln!(
+            "tess: WARNING — {ENV_ALLOW_MOCK_FACE} is set; using the model-free mock matcher. \
+             Identity matching is DISABLED (accepts essentially any live face) — unset it for \
+             fail-closed behavior. For testing only."
+        );
+    }
     let mock =
         PooledExtractor::new(MOCK_DIM).map_err(|e| anyhow!("build the mock matcher: {e}"))?;
     Ok(Matcher::new(
@@ -408,7 +431,7 @@ where
     Ok(MugTemplateSource {
         source,
         emitter,
-        matcher: build_matcher(cfg)?,
+        matcher: build_matcher(cfg, false)?,
         liveness_cfg: cfg.liveness_config(),
         match_threshold: cfg.match_threshold,
         deadline_ms: cfg.capture_deadline_ms,
@@ -444,7 +467,7 @@ where
     S: IrSource,
     E: IrEmitter,
 {
-    let matcher = build_matcher(cfg)?;
+    let matcher = build_matcher(cfg, false)?;
     mug::verify(
         source,
         emitter,
@@ -472,6 +495,156 @@ pub fn verify_from_env(enrolled: &FaceEnrollment) -> Result<()> {
             run_verify(&mut source, &mut emitter, enrolled, &cfg)
         }
     }
+}
+
+/// Run the read-only `face-test` diagnostic from the environment: capture a reference and a probe
+/// pair, print each liveness report, and (when both pass) the identity distance/verdict. Touches
+/// neither the keyring nor the TPM — nothing is sealed, so the model-free mock is permitted when no
+/// real model is configured (liveness stays real regardless).
+pub fn face_test_from_env() -> Result<()> {
+    let cfg = load_config()?;
+    let matcher = build_matcher(&cfg, true)?;
+    let pause = |msg: &str| {
+        use std::io::Write as _;
+        print!("{msg}, then press Enter… ");
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+    };
+    match select_backend()? {
+        CaptureBackend::Virtual => {
+            let (mut source, mut emitter) = VirtualIrDevice::split_from_env()
+                .map_err(|e| anyhow!("open the virtual IR device: {e}"))?;
+            let outcome = run_face_test(&mut source, &mut emitter, &matcher, &cfg, &pause)?;
+            print_face_test_outcome(&outcome);
+            Ok(())
+        }
+        CaptureBackend::Hardware(node) => {
+            let (mut source, mut emitter) = build_hardware_backend(node)?;
+            let outcome = run_face_test(&mut source, &mut emitter, &matcher, &cfg, &pause)?;
+            print_face_test_outcome(&outcome);
+            Ok(())
+        }
+    }
+}
+
+/// The result of a [`run_face_test`] run (each is a normal diagnostic outcome, never an error).
+#[derive(Debug)]
+enum FaceTestOutcome {
+    /// The reference capture failed liveness, so no identity comparison was possible.
+    ReferenceRejected,
+    /// The probe capture failed liveness (e.g. a photo/screen) — the anti-spoof working.
+    ProbeRejected,
+    /// Both captures were live; the probe was compared to the reference.
+    Compared {
+        distance: f32,
+        threshold: f32,
+        matched: bool,
+    },
+}
+
+fn print_face_test_outcome(outcome: &FaceTestOutcome) {
+    println!();
+    match outcome {
+        FaceTestOutcome::ReferenceRejected => {
+            println!("Reference rejected by liveness; cannot run the identity comparison.")
+        }
+        FaceTestOutcome::ProbeRejected => println!(
+            "Probe REJECTED by liveness (e.g. a printed photo or a screen) → at unlock this falls \
+             back to the PIN."
+        ),
+        FaceTestOutcome::Compared {
+            distance,
+            threshold,
+            matched,
+        } => println!(
+            "Identity: cosine distance {distance:.4} (threshold {threshold:.4}) → {}",
+            if *matched { "MATCH" } else { "NO MATCH" }
+        ),
+    }
+}
+
+/// Capture a reference then a probe pair, reporting liveness for each and (when both are live)
+/// comparing the probe to the reference. `pause` is invoked before each capture (the CLI waits for
+/// Enter; tests pass a no-op or a frame-swapping closure). A capture, embedding, or matching failure
+/// is an `Err`; every well-formed diagnostic outcome (liveness rejection, match, or no-match) is an
+/// `Ok(FaceTestOutcome)`.
+fn run_face_test<S, E>(
+    source: &mut S,
+    emitter: &mut E,
+    matcher: &Matcher<Box<dyn EmbeddingExtractor>>,
+    cfg: &MugConfig,
+    pause: &dyn Fn(&str),
+) -> Result<FaceTestOutcome>
+where
+    S: IrSource,
+    E: IrEmitter,
+{
+    let liveness_cfg = cfg.liveness_config();
+    let deadline = cfg.capture_deadline_ms;
+
+    pause("Get into position for the REFERENCE capture (your face)");
+    let reference = match capture_and_report("reference", source, emitter, &liveness_cfg, deadline)?
+    {
+        Some(pair) => matcher
+            .embed(&pair.emitter_on)
+            .map_err(|e| anyhow!("embed the reference frame: {e}"))?,
+        None => return Ok(FaceTestOutcome::ReferenceRejected),
+    };
+
+    pause(
+        "Get into position for the PROBE capture (your face again, a printed photo/screen, or another person)",
+    );
+    let probe = match capture_and_report("probe", source, emitter, &liveness_cfg, deadline)? {
+        Some(pair) => pair,
+        None => return Ok(FaceTestOutcome::ProbeRejected),
+    };
+
+    let distance = matcher
+        .distance(&probe.emitter_on, &reference)
+        .map_err(|e| anyhow!("match the probe against the reference: {e}"))?;
+    Ok(FaceTestOutcome::Compared {
+        distance,
+        threshold: cfg.match_threshold,
+        matched: distance <= cfg.match_threshold,
+    })
+}
+
+/// Capture one IR pair and print its liveness report. Returns `Some(pair)` when it passed liveness,
+/// `None` when it was rejected — a normal diagnostic outcome, not an error.
+fn capture_and_report<S, E>(
+    label: &str,
+    source: &mut S,
+    emitter: &mut E,
+    liveness_cfg: &LivenessConfig,
+    deadline_ms: u64,
+) -> Result<Option<mug::camera::FramePair>>
+where
+    S: IrSource,
+    E: IrEmitter,
+{
+    let pair = mug::capture_liveness_pair(source, emitter, deadline_ms)
+        .map_err(|e| anyhow!("capture the {label} IR pair: {e}"))?;
+    let report = mug::analyze_liveness(&pair, liveness_cfg)
+        .map_err(|e| anyhow!("analyze {label} liveness: {e}"))?;
+    let f = &report.features;
+    println!(
+        "[{label}] liveness {}: score {:.3} (threshold {:.3}); mean_delta {:.2}, delta_std {:.2}, \
+         gradient {:.2}, specular {:.3}, saturated {:.3}, baseline {:.2}",
+        if report.passed { "PASS" } else { "REJECT" },
+        f.score,
+        liveness_cfg.score_threshold,
+        f.mean_delta,
+        f.delta_std,
+        f.gradient_energy,
+        f.specular_fraction,
+        f.saturated_fraction,
+        f.baseline_mean,
+    );
+    if let Some(reason) = &report.reason {
+        println!("[{label}] reason: {reason}");
+    }
+    Ok(if report.passed { Some(pair) } else { None })
 }
 
 /// Load the current user's face enrollment, or `None` when not enrolled for the face factor.
@@ -639,7 +812,7 @@ mod tests {
         let _model = tess_testenv::EnvGuard::remove(ENV_MODEL_PATH);
         let _mock = tess_testenv::EnvGuard::remove(ENV_ALLOW_MOCK_FACE);
         let cfg = MugConfig::default();
-        let err = match build_matcher(&cfg) {
+        let err = match build_matcher(&cfg, false) {
             Err(e) => e.to_string(),
             Ok(_) => panic!("expected a fail-closed error without a model"),
         };
@@ -656,7 +829,7 @@ mod tests {
         let _model = tess_testenv::EnvGuard::remove(ENV_MODEL_PATH);
         let _mock = tess_testenv::EnvGuard::set(ENV_ALLOW_MOCK_FACE, "1");
         let cfg = MugConfig::default();
-        assert!(build_matcher(&cfg).is_ok());
+        assert!(build_matcher(&cfg, false).is_ok());
     }
 
     #[test]
@@ -668,7 +841,7 @@ mod tests {
         let bad = std::ffi::OsStr::from_bytes(&[0x66, 0x6f, 0xff]);
         let _model = tess_testenv::EnvGuard::set_path(ENV_MODEL_PATH, std::path::Path::new(bad));
         let cfg = MugConfig::default();
-        let err = match build_matcher(&cfg) {
+        let err = match build_matcher(&cfg, false) {
             Err(e) => e.to_string(),
             Ok(_) => panic!("expected an error for a non-UTF-8 model path"),
         };
@@ -722,5 +895,76 @@ mod tests {
             Ok(_) => panic!("expected an error for an oversized config"),
         };
         assert!(err.contains("cap"), "unexpected message: {err}");
+    }
+
+    fn write_grey_pair(dir: &std::path::Path, pair: &mug::FramePair) {
+        std::fs::write(
+            dir.join(VirtualIrDevice::OFF_FRAME),
+            pair.emitter_off.as_bytes(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(VirtualIrDevice::ON_FRAME),
+            pair.emitter_on.as_bytes(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn build_matcher_allows_mock_for_diagnostic_without_optin() {
+        // face-test passes allow_mock=true: with no model and no env opt-in it still builds (the
+        // mock), because the diagnostic seals nothing.
+        let _lock = tess_testenv::env_lock();
+        let _model = tess_testenv::EnvGuard::remove(ENV_MODEL_PATH);
+        let _mock = tess_testenv::EnvGuard::remove(ENV_ALLOW_MOCK_FACE);
+        let cfg = MugConfig::default();
+        assert!(build_matcher(&cfg, true).is_ok());
+    }
+
+    #[test]
+    fn face_test_compares_a_repeated_live_capture() {
+        use mug::liveness::synth;
+        let _lock = tess_testenv::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        write_grey_pair(dir.path(), &synth::live_pair(340, 340));
+        let _ir = tess_testenv::EnvGuard::set_path(VirtualIrDevice::ENV_DIR, dir.path());
+        let (mut s, mut e) = VirtualIrDevice::split_from_env().unwrap();
+        let cfg = MugConfig::default();
+        let matcher = build_matcher(&cfg, true).unwrap();
+        // Same live frames for reference and probe → both live, compared (distance ~0 → matched).
+        let outcome = run_face_test(&mut s, &mut e, &matcher, &cfg, &|_: &str| {}).unwrap();
+        match outcome {
+            FaceTestOutcome::Compared {
+                distance, matched, ..
+            } => assert!(
+                matched,
+                "identical live captures should match, distance {distance}"
+            ),
+            other => panic!("expected Compared, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn face_test_rejects_a_photo_probe() {
+        use mug::liveness::synth;
+        let _lock = tess_testenv::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        write_grey_pair(dir.path(), &synth::live_pair(340, 340)); // reference = live
+        let _ir = tess_testenv::EnvGuard::set_path(VirtualIrDevice::ENV_DIR, dir.path());
+        let (mut s, mut e) = VirtualIrDevice::split_from_env().unwrap();
+        let cfg = MugConfig::default();
+        let matcher = build_matcher(&cfg, true).unwrap();
+        let dirp = dir.path().to_path_buf();
+        // Swap in a flat-screen/photo pair before the PROBE capture → liveness must reject it.
+        let pause = move |msg: &str| {
+            if msg.contains("PROBE") {
+                write_grey_pair(&dirp, &synth::screen_pair(340, 340));
+            }
+        };
+        let outcome = run_face_test(&mut s, &mut e, &matcher, &cfg, &pause).unwrap();
+        assert!(
+            matches!(outcome, FaceTestOutcome::ProbeRejected),
+            "a photo probe must be rejected by liveness, got {outcome:?}"
+        );
     }
 }
