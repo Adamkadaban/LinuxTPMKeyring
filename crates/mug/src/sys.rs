@@ -19,6 +19,8 @@ use std::os::unix::io::RawFd;
 
 /// `V4L2_BUF_TYPE_VIDEO_CAPTURE`.
 pub const V4L2_BUF_TYPE_VIDEO_CAPTURE: u32 = 1;
+/// `V4L2_MEMORY_MMAP`.
+pub const V4L2_MEMORY_MMAP: u32 = 1;
 
 /// `V4L2_PIX_FMT_GREY` — 8-bit greyscale, the Brio IR node's only discrete format.
 pub const V4L2_PIX_FMT_GREY: u32 = fourcc(b'G', b'R', b'E', b'Y');
@@ -96,10 +98,74 @@ pub struct uvc_xu_control_query {
     pub data: *mut u8,
 }
 
+/// `struct v4l2_requestbuffers`.
+#[repr(C)]
+#[derive(Default)]
+pub struct v4l2_requestbuffers {
+    pub count: u32,
+    pub type_: u32,
+    pub memory: u32,
+    pub capabilities: u32,
+    pub flags: u8,
+    pub reserved: [u8; 3],
+}
+
+/// `struct v4l2_timecode` (nested in `v4l2_buffer`).
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct v4l2_timecode {
+    pub type_: u32,
+    pub flags: u32,
+    pub frames: u8,
+    pub seconds: u8,
+    pub minutes: u8,
+    pub hours: u8,
+    pub userbits: [u8; 4],
+}
+
+/// `struct v4l2_buffer` (single-planar, MMAP). The `timestamp` is modelled as two `i64`s (`timeval`
+/// on LP64) and the `m` union as a `u64` (its `offset` member lives in the low 32 bits on
+/// little-endian). The size is pinned to the kernel ABI below.
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct v4l2_buffer {
+    pub index: u32,
+    pub type_: u32,
+    pub bytesused: u32,
+    pub flags: u32,
+    pub field: u32,
+    pub timestamp_sec: i64,
+    pub timestamp_usec: i64,
+    pub timecode: v4l2_timecode,
+    pub sequence: u32,
+    pub memory: u32,
+    pub m: u64,
+    pub length: u32,
+    pub reserved2: u32,
+    pub request_fd: u32,
+}
+
+impl v4l2_buffer {
+    fn capture_mmap(index: u32) -> Self {
+        Self {
+            index,
+            type_: V4L2_BUF_TYPE_VIDEO_CAPTURE,
+            memory: V4L2_MEMORY_MMAP,
+            ..Default::default()
+        }
+    }
+}
+
 nix::ioctl_readwrite!(vidioc_g_fmt, b'V', 4, v4l2_format);
 nix::ioctl_readwrite!(vidioc_s_fmt, b'V', 5, v4l2_format);
 nix::ioctl_readwrite!(vidioc_enum_fmt, b'V', 2, v4l2_fmtdesc);
 nix::ioctl_readwrite!(uvcioc_ctrl_query, b'u', 0x21, uvc_xu_control_query);
+nix::ioctl_readwrite!(vidioc_reqbufs, b'V', 8, v4l2_requestbuffers);
+nix::ioctl_readwrite!(vidioc_querybuf, b'V', 9, v4l2_buffer);
+nix::ioctl_readwrite!(vidioc_qbuf, b'V', 15, v4l2_buffer);
+nix::ioctl_readwrite!(vidioc_dqbuf, b'V', 17, v4l2_buffer);
+nix::ioctl_write_ptr!(vidioc_streamon, b'V', 18, i32);
+nix::ioctl_write_ptr!(vidioc_streamoff, b'V', 19, i32);
 
 // The `_IOWR` request codes above bake `size_of::<T>()` into the ioctl number, so a struct whose
 // layout drifts from the kernel ABI would silently issue the wrong ioctl. These compile-time checks
@@ -109,6 +175,9 @@ nix::ioctl_readwrite!(uvcioc_ctrl_query, b'u', 0x21, uvc_xu_control_query);
 const _: () = assert!(core::mem::size_of::<v4l2_format>() == 208);
 const _: () = assert!(core::mem::size_of::<v4l2_pix_format>() == 48);
 const _: () = assert!(core::mem::size_of::<v4l2_fmtdesc>() == 64);
+const _: () = assert!(core::mem::size_of::<v4l2_requestbuffers>() == 20);
+const _: () = assert!(core::mem::size_of::<v4l2_timecode>() == 16);
+const _: () = assert!(core::mem::size_of::<v4l2_buffer>() == 88);
 #[cfg(target_arch = "x86_64")]
 const _: () = assert!(core::mem::size_of::<uvc_xu_control_query>() == 16);
 
@@ -249,5 +318,132 @@ pub fn poll_readable(fd: RawFd, timeout_ms: i32) -> io::Result<bool> {
             )));
         }
         return Ok(false);
+    }
+}
+
+/// A V4L2 MMAP streaming session: request + memory-map a small ring of capture buffers, queue them,
+/// and `STREAMON`. The Brio IR node only advertises streaming I/O (no `read()`), so this is the only
+/// way to pull frames from it. Frames are dequeued, copied out, and the buffer is requeued. On drop
+/// it `STREAMOFF`s and unmaps every buffer. Lives in the `unsafe` `sys` boundary; the rest of the
+/// crate drives it through [`MmapStream::dequeue`].
+pub struct MmapStream {
+    fd: RawFd,
+    buffers: Vec<(*mut u8, usize)>,
+    streaming: bool,
+}
+
+impl MmapStream {
+    /// Request `count` MMAP buffers on `fd`, map and queue them, and start streaming. `fd` must
+    /// outlive the returned stream (the caller's `File` owns it; declare this field before the file
+    /// so it drops first, while the fd is still open).
+    pub fn start(fd: RawFd, count: u32) -> io::Result<Self> {
+        let mut req = v4l2_requestbuffers {
+            count,
+            type_: V4L2_BUF_TYPE_VIDEO_CAPTURE,
+            memory: V4L2_MEMORY_MMAP,
+            ..Default::default()
+        };
+        // SAFETY: `req` is a valid, fully-initialised `v4l2_requestbuffers`; the driver reads
+        // count/type/memory and writes the granted count back in place.
+        unsafe { vidioc_reqbufs(fd, &mut req) }.map_err(errno_io)?;
+        if req.count == 0 {
+            return Err(io::Error::other("driver granted zero capture buffers"));
+        }
+
+        let mut stream = MmapStream {
+            fd,
+            buffers: Vec::with_capacity(req.count as usize),
+            streaming: false,
+        };
+
+        for index in 0..req.count {
+            let mut buf = v4l2_buffer::capture_mmap(index);
+            // SAFETY: `buf` is a valid `v4l2_buffer` requesting MMAP buffer `index`; the driver fills
+            // its `length` and `m.offset` in place. On error `stream`'s Drop unmaps any earlier maps.
+            unsafe { vidioc_querybuf(fd, &mut buf) }.map_err(errno_io)?;
+            let length = buf.length as usize;
+            let offset = (buf.m & 0xffff_ffff) as libc::off_t;
+            // SAFETY: map exactly the driver-reported buffer length at the driver-reported mmap
+            // offset on the capture fd. The result is checked against MAP_FAILED before use and
+            // unmapped in Drop with the same length.
+            let ptr = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    length,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_SHARED,
+                    fd,
+                    offset,
+                )
+            };
+            if ptr == libc::MAP_FAILED {
+                return Err(io::Error::last_os_error());
+            }
+            stream.buffers.push((ptr.cast::<u8>(), length));
+
+            let mut qbuf = v4l2_buffer::capture_mmap(index);
+            // SAFETY: queue the just-mapped buffer `index` for capture; valid fully-init struct.
+            unsafe { vidioc_qbuf(fd, &mut qbuf) }.map_err(errno_io)?;
+        }
+
+        let buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE as i32;
+        // SAFETY: STREAMON takes a pointer to the buffer-type int; `buf_type` outlives the call.
+        unsafe { vidioc_streamon(fd, &buf_type) }.map_err(errno_io)?;
+        stream.streaming = true;
+        Ok(stream)
+    }
+
+    /// Dequeue one frame into a freshly-allocated `expected_len`-byte buffer (zero-padded if the
+    /// driver delivered fewer bytes), then requeue the buffer. Returns `Ok(None)` on a poll timeout
+    /// within `timeout_ms` (the caller maps that to a bounded `Timeout`), so a wedged camera never
+    /// blocks login.
+    pub fn dequeue(&mut self, timeout_ms: i32, expected_len: usize) -> io::Result<Option<Vec<u8>>> {
+        if !poll_readable(self.fd, timeout_ms)? {
+            return Ok(None);
+        }
+        let mut buf = v4l2_buffer {
+            type_: V4L2_BUF_TYPE_VIDEO_CAPTURE,
+            memory: V4L2_MEMORY_MMAP,
+            ..Default::default()
+        };
+        // SAFETY: DQBUF fills `buf` (index/bytesused/…) for the next ready buffer; valid struct.
+        unsafe { vidioc_dqbuf(self.fd, &mut buf) }.map_err(errno_io)?;
+        let idx = buf.index as usize;
+        let &(ptr, len) = self
+            .buffers
+            .get(idx)
+            .ok_or_else(|| io::Error::other(format!("DQBUF returned out-of-range index {idx}")))?;
+
+        let n = (buf.bytesused as usize).min(len).min(expected_len);
+        let mut out = vec![0u8; expected_len];
+        // SAFETY: `ptr` maps `len` bytes of this buffer; `n <= len` and `n <= expected_len`, so the
+        // copy reads `n` valid mapped bytes into the start of `out` (which has `expected_len` bytes).
+        unsafe {
+            std::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), n);
+        }
+
+        let mut requeue = v4l2_buffer::capture_mmap(buf.index);
+        // SAFETY: requeue the same buffer index for further capture; valid fully-init struct.
+        unsafe { vidioc_qbuf(self.fd, &mut requeue) }.map_err(errno_io)?;
+        Ok(Some(out))
+    }
+}
+
+impl Drop for MmapStream {
+    fn drop(&mut self) {
+        if self.streaming {
+            let buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE as i32;
+            // SAFETY: STREAMOFF on the still-open capture fd; best-effort cleanup.
+            unsafe {
+                let _ = vidioc_streamoff(self.fd, &buf_type);
+            }
+        }
+        for &(ptr, len) in &self.buffers {
+            // SAFETY: each `(ptr, len)` came from a successful `mmap` with the same length and has
+            // not been unmapped before; unmap exactly once here.
+            unsafe {
+                libc::munmap(ptr.cast::<libc::c_void>(), len);
+            }
+        }
     }
 }

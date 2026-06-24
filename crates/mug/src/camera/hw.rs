@@ -4,7 +4,6 @@
 
 use std::cell::RefCell;
 use std::fs::{File, OpenOptions};
-use std::io::Read;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -71,16 +70,22 @@ fn node_offers_grey(path: &Path) -> Result<bool> {
     Ok(formats.contains(&sys::V4L2_PIX_FMT_GREY))
 }
 
-/// A real Brio IR capture node, configured to GREY at the sensor's native geometry.
+/// A real Brio IR capture node, configured to GREY at the sensor's native geometry, streaming via
+/// V4L2 MMAP I/O (the Brio IR node advertises streaming only — no `read()`).
 pub struct V4l2IrDevice {
+    // Declared before `file` so it drops first (STREAMOFF + munmap) while the capture fd is open.
+    stream: sys::MmapStream,
+    // Owns the capture fd the `stream` borrows by raw value; kept alive (and dropped last) purely so
+    // the fd stays open for the stream's lifetime — never read directly after construction.
+    #[allow(dead_code)]
     file: File,
     width: u32,
     height: u32,
 }
 
 impl V4l2IrDevice {
-    /// Open `path` and force `width`x`height` GREY. Use [`V4l2IrDevice::open_brio`] for the discovered
-    /// Brio node at its native 340x340.
+    /// Open `path`, force `width`x`height` GREY, and start MMAP streaming. Use
+    /// [`V4l2IrDevice::open_brio`] for the discovered Brio node at its native 340x340.
     pub fn open(path: impl AsRef<Path>, width: u32, height: u32) -> Result<Self> {
         let path = path.as_ref();
         let file = OpenOptions::new()
@@ -96,7 +101,11 @@ impl V4l2IrDevice {
                 "driver granted {gw}x{gh}, expected {width}x{height}"
             )));
         }
+        let stream = sys::MmapStream::start(file.as_raw_fd(), 4).map_err(|e| {
+            MugError::Camera(format!("start MMAP streaming on {}: {e}", path.display()))
+        })?;
         Ok(Self {
+            stream,
             file,
             width,
             height,
@@ -117,26 +126,15 @@ impl IrSource for V4l2IrDevice {
 
     fn capture(&mut self, deadline_ms: u64) -> Result<IrFrame> {
         let timeout = deadline_ms.min(i32::MAX as u64) as i32;
-        let ready = sys::poll_readable(self.file.as_raw_fd(), timeout)
-            .map_err(|e| MugError::Camera(format!("poll: {e}")))?;
-        if !ready {
-            return Err(MugError::Timeout(deadline_ms));
-        }
-
         let expected = (self.width as usize) * (self.height as usize);
-        let mut buf = vec![0u8; expected];
-        // uvcvideo delivers one full GREY frame per read for uncompressed formats; a short read means
-        // a truncated/torn frame, which we reject rather than analyse.
-        let n = self
-            .file
-            .read(&mut buf)
-            .map_err(|e| MugError::Camera(format!("read frame: {e}")))?;
-        if n != expected {
-            return Err(MugError::Camera(format!(
-                "short frame read: got {n} bytes, expected {expected}"
-            )));
+        match self
+            .stream
+            .dequeue(timeout, expected)
+            .map_err(|e| MugError::Camera(format!("dequeue frame: {e}")))?
+        {
+            Some(buf) => IrFrame::new(self.width, self.height, buf),
+            None => Err(MugError::Timeout(deadline_ms)),
         }
-        IrFrame::new(self.width, self.height, buf)
     }
 }
 
