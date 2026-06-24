@@ -10,6 +10,13 @@ members = [
     "crates/mug",
     "crates/tess-testenv",
 ]
+# Dev/eval-only live face-recognition viewer. Kept OUT of the workspace on purpose: it pulls a GUI
+# stack (minifb → wayland/x11) that we do not want in the workspace lockfile or the cargo-vet /
+# cargo-deny supply-chain gates of this auth-critical project. It path-depends on `mug`, so it drives
+# the exact shipped detect→align→embed→match pipeline.
+exclude = [
+    "tools/face-preview",
+]
 
 [workspace.package]
 version = "0.0.0"
