@@ -40,6 +40,11 @@ pub enum MugError {
     #[error("user is not enrolled for the face factor")]
     NotEnrolled,
 
+    /// No face was found in the frame (detector returned nothing above threshold). The face factor
+    /// degrades to the PIN; a "no face present" frame must never reach the matcher and false-match.
+    #[error("no face detected in frame")]
+    NoFace,
+
     /// The enrollment store could not be read/written.
     #[error("enroll store error: {0}")]
     Store(String),
