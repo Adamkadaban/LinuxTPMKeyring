@@ -236,21 +236,25 @@ fn parse_hex_u8(raw: &str) -> std::result::Result<u8, String> {
 
 /// Validate that an env-provided device path is a V4L2-style character device under `/dev`, so an
 /// untrusted env var can't point the emitter `open()` at an arbitrary read+write path (the
-/// PAM/session context treats env as untrusted). Symlinks (e.g. `/dev/v4l/by-id/...`) are followed.
+/// PAM/session context treats env as untrusted). The path is canonicalized first (resolving `..` and
+/// symlinks, so `/dev/v4l/by-id/...` works but `/dev/../tmp/x` is rejected) and the *resolved* path
+/// must still be a character device under `/dev`.
 fn validate_device_node(var: &str, path: &Path) -> Result<()> {
     use std::os::unix::fs::FileTypeExt;
-    if !path.is_absolute() || !path.starts_with("/dev") {
+    let resolved = std::fs::canonicalize(path)
+        .map_err(|e| anyhow!("resolve {var} {}: {e}", path.display()))?;
+    if !resolved.starts_with("/dev") {
         return Err(anyhow!(
-            "{var} must be an absolute path under /dev, got {}",
-            path.display()
+            "{var} must resolve to a path under /dev, got {}",
+            resolved.display()
         ));
     }
-    let meta =
-        std::fs::metadata(path).map_err(|e| anyhow!("stat {var} {}: {e}", path.display()))?;
+    let meta = std::fs::metadata(&resolved)
+        .map_err(|e| anyhow!("stat {var} {}: {e}", resolved.display()))?;
     if !meta.file_type().is_char_device() {
         return Err(anyhow!(
             "{var} {} is not a character device",
-            path.display()
+            resolved.display()
         ));
     }
     Ok(())
@@ -908,6 +912,8 @@ mod tests {
         assert!(validate_device_node("X", std::path::Path::new("relative/path")).is_err());
         // A directory under /dev is not a character device.
         assert!(validate_device_node("X", std::path::Path::new("/dev")).is_err());
+        // `..` traversal that resolves outside /dev is rejected (canonicalized first).
+        assert!(validate_device_node("X", std::path::Path::new("/dev/../etc/hostname")).is_err());
     }
 
     #[test]
