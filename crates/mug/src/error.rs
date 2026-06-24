@@ -40,8 +40,9 @@ pub enum MugError {
     #[error("user is not enrolled for the face factor")]
     NotEnrolled,
 
-    /// No face was found in the frame (detector returned nothing above threshold). The face factor
-    /// degrades to the PIN; a "no face present" frame must never reach the matcher and false-match.
+    /// No face was found in the frame (the detector returned nothing above threshold). The face
+    /// factor degrades to the PIN; a frame with no face is rejected here rather than reaching the
+    /// matcher, where it could otherwise false-match against the background.
     #[error("no face detected in frame")]
     NoFace,
 

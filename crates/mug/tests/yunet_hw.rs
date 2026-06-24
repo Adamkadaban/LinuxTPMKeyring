@@ -1,7 +1,8 @@
 //! Hardware/integration validation for the real YuNet detector path.
 //!
 //! Ignored by default and excluded from the model-free CI build (needs the `face-model` feature and
-//! a user-supplied model + frame), so it never runs against real hardware in CI. Run locally with:
+//! a user-supplied model + frame), so it never runs against real hardware in CI. Run it anywhere the
+//! model and a frame are available, e.g.:
 //!
 //! ```sh
 //! MUG_DETECTOR_MODEL=~/.local/share/tess/yunet.onnx \
@@ -53,7 +54,10 @@ fn yunet_detects_and_aligns_a_real_face() {
     // Eyes (indices 0,1) sit above the mouth corners (indices 3,4) for an upright face.
     let eye_y = (det.landmarks.points[0].1 + det.landmarks.points[1].1) / 2.0;
     let mouth_y = (det.landmarks.points[3].1 + det.landmarks.points[4].1) / 2.0;
-    assert!(eye_y < mouth_y, "eyes ({eye_y}) should be above mouth ({mouth_y})");
+    assert!(
+        eye_y < mouth_y,
+        "eyes ({eye_y}) should be above mouth ({mouth_y})"
+    );
 
     let aligned = locate_and_align(&detector, &frame, ALIGNED_FACE_SIZE).unwrap();
     assert_eq!(aligned.dimensions(), (ALIGNED_FACE_SIZE, ALIGNED_FACE_SIZE));
