@@ -1,0 +1,23 @@
+[package]
+name = "face-collect"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+authors = ["Adam Hassan"]
+publish = false
+description = "Dev/eval-only headless collector: captures real Brio IR liveness pairs and records whole-frame vs aligned-crop liveness features for #79 recalibration. Not part of the tess workspace; never shipped."
+
+# Standalone workspace root (matches tools/face-preview): kept out of the tess workspace so this
+# eval tool never enters the workspace lockfile or supply-chain gates. Path-depends on `mug` so it
+# exercises the shipped detect/align/liveness code.
+[workspace]
+resolver = "2"
+
+[[bin]]
+name = "face-collect"
+path = "src/main.rs"
+
+[dependencies]
+mug = { path = "../../crates/mug", features = ["face-model"] }
+anyhow = "1"
