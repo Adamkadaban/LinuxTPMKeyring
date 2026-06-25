@@ -222,7 +222,7 @@ fn main() -> Result<()> {
             shared.enroll.store(true, Ordering::Relaxed);
         }
         if window.is_key_pressed(Key::L, KeyRepeat::No) {
-            device = liveness_sample(device, &node, &tx, &mut buffer, &mut window, w, h)?;
+            device = liveness_sample(device, &node, &tx, &shared, &mut buffer, &mut window, w, h)?;
         }
 
         // Refresh the cached analysis only when the worker has produced a *new* inference (it bumps
@@ -305,6 +305,7 @@ fn liveness_sample(
     device: V4l2IrDevice,
     node: &std::path::Path,
     tx: &SyncSender<Job>,
+    shared: &Shared,
     buffer: &mut [u32],
     window: &mut Window,
     w: usize,
@@ -332,7 +333,22 @@ fn liveness_sample(
                 anyhow!("inference worker disconnected; cannot deliver the liveness sample")
             })?;
         }
-        Err(e) => eprintln!("liveness capture failed: {e}"),
+        Err(e) => {
+            // Surface the failure on the HUD (persistent, drawn from `shared.live` each frame), not
+            // just stderr, so pressing L gives immediate, unambiguous feedback — while keeping the
+            // preview session alive for a retry.
+            *shared.live.lock().unwrap() = Some(LiveSample {
+                has_face: false,
+                passed: false,
+                mean_delta: 0.0,
+                gradient: 0.0,
+                baseline: 0.0,
+                score: 0.0,
+                reason: Some(format!("capture failed: {e}")),
+                at: Instant::now(),
+            });
+            eprintln!("liveness capture failed: {e}");
+        }
     }
     drop(source);
     drop(emitter);
