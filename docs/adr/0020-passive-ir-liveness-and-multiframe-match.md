@@ -62,5 +62,13 @@ frames → no-decision → PIN. (Implemented in `crates/mug/src/gate.rs`.)
   showed the per-frame distance crossing the threshold on noise.
 - **First-match-wins loop (howdy/fprintd style).** Rejected: strictly worse — more frames = more
   chances for a fluke = higher false-accept.
+- **Trimmed-mean of the distances (drop the worst, threshold once)** — the aggregation #89 originally
+  proposed. Rejected in favor of the **median**: "drop the worst" discards the *highest* (most
+  rejecting) distance, and a few transient *low* (false-match) frames then pull the mean toward accept;
+  the median needs a *majority* of frames below threshold to accept, so a minority of transient
+  low-distance frames cannot authenticate — which is exactly #89's own acceptance criterion ("a single
+  transient below-threshold frame does **not** authenticate"). Median also tolerates a genuine user's
+  occasional bad (high-distance) frame just as well. (#89's body predates this comparison; the median
+  decision supersedes its trimmed-mean wording.)
 - **Depth/structured-light liveness (Face ID style).** Not available: the Brio is IR + emitter, no
   depth sensor.
