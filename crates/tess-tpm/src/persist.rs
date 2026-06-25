@@ -58,6 +58,17 @@ pub fn from_metadata(metadata: &Metadata) -> Result<SealedObject> {
     let public_bytes = decode(&metadata.sealed_public, "sealed_public")?;
     let private_bytes = decode(&metadata.sealed_private, "sealed_private")?;
     let primary_name = decode(&metadata.primary_name, "primary_name")?;
+    // `primary_name` is required in v2 (it is `#[serde(default)]` only so a v1 file deserializes far
+    // enough to hit the structured version error). A current-version file with an empty Name is
+    // corrupt or hand-edited: reject it here with a clear metadata error, rather than letting it look
+    // valid to `tess doctor`/`status` and then surface later as a misleading `PrimaryNameMismatch`.
+    if primary_name.is_empty() {
+        return Err(Error::Metadata(
+            "metadata is missing the pinned primary Name (corrupt or hand-edited v2 metadata); \
+             re-enroll to regenerate it"
+                .to_string(),
+        ));
+    }
 
     let public = Public::unmarshall(&public_bytes)
         .map_err(|e| Error::Tpm(format!("unmarshalling sealed public area: {e}")))?;
@@ -215,6 +226,24 @@ mod tests {
             from_metadata(&metadata),
             Err(Error::MetadataVersion { .. })
         ));
+    }
+
+    #[test]
+    fn from_metadata_rejects_empty_primary_name() {
+        // A current-version file missing primary_name must be rejected here as corrupt metadata —
+        // not deferred to a misleading PrimaryNameMismatch at unseal. The empty-Name check runs
+        // before unmarshalling, so the placeholder blobs never need to be valid.
+        let metadata = Metadata::new(
+            Policy::PinAuthValue,
+            "AA".into(),
+            "AA".into(),
+            String::new(),
+        );
+        let err = from_metadata(&metadata).expect_err("empty primary_name must be rejected");
+        assert!(
+            matches!(err, Error::Metadata(_)),
+            "expected a structured metadata error, got {err:?}"
+        );
     }
 
     #[test]
