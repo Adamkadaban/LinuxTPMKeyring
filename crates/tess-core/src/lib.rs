@@ -174,7 +174,8 @@ pub struct Metadata {
     /// `#[serde(default)]` so a v1 file (which legitimately predates this field) still deserializes
     /// and is then rejected by [`Metadata::validate_version`] with the structured
     /// [`Error::MetadataVersion`] (re-enroll) rather than a generic serde "missing field" error. A
-    /// v2 file missing it decodes to an empty Name, which fails closed at unseal.
+    /// current-version file with an empty Name is corrupt and is rejected up front by
+    /// `tess_tpm::persist::from_metadata` with a structured metadata error (not deferred to unseal).
     #[serde(default)]
     pub primary_name: String,
 }
