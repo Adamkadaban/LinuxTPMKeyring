@@ -72,7 +72,10 @@ where
     if let Some(d) = frame_distance(matcher, detector, &pair.emitter_on, enrolled)? {
         distances.push(d);
     }
-    emitter.set_enabled(true)?;
+    // Re-enable the emitter for the warm follow-up frames behind an RAII guard so it is restored to
+    // OFF on *every* exit path (the deadline break, an early `?` error, or the final decision) —
+    // matching `capture_liveness_pair`'s cleanup, so `verify` never leaves the IR illuminator on.
+    let _emitter_off = EmitterOffGuard::enabled(emitter)?;
     while distances.len() < MATCH_FRAMES {
         let remaining = deadline
             .saturating_duration_since(Instant::now())
@@ -94,6 +97,30 @@ where
     }
 
     decide_match(&mut distances, enrolled.match_threshold, MIN_MATCH_FRAMES)
+}
+
+/// RAII guard that enables the IR emitter for the warm identity loop and restores it to **OFF** on
+/// drop — on success, a no-match, an early error, or a deadline break alike. Disabling is best-effort
+/// (a failure is logged, never masks the real verify result), mirroring `capture_liveness_pair`.
+struct EmitterOffGuard<'e, E: IrEmitter> {
+    emitter: &'e mut E,
+}
+
+impl<'e, E: IrEmitter> EmitterOffGuard<'e, E> {
+    fn enabled(emitter: &'e mut E) -> Result<Self> {
+        emitter.set_enabled(true)?;
+        Ok(Self { emitter })
+    }
+}
+
+impl<E: IrEmitter> Drop for EmitterOffGuard<'_, E> {
+    fn drop(&mut self) {
+        if let Err(e) = self.emitter.set_enabled(false) {
+            eprintln!(
+                "mug: warning: failed to restore IR emitter to off after verify (best-effort): {e}"
+            );
+        }
+    }
 }
 
 /// Distance of one frame to the enrolled template, or `None` when the frame fails the quality gate
@@ -314,6 +341,38 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, MugError::NoMatch { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn verify_restores_the_emitter_to_off_after_the_warm_loop() {
+        // Regression (PR #91 review): the warm multi-frame loop enables the IR emitter; it must be
+        // restored to OFF on exit via the RAII guard, so verify never leaves the illuminator running.
+        let dir = tempfile::tempdir().unwrap();
+        let pair = synth::live_pair(W, H);
+        write_pair(dir.path(), &pair);
+        let matcher = Matcher::new(PooledExtractor::new(64).unwrap(), 0.34);
+        let enrolled = enroll_from(&pair.emitter_on, &matcher, 0.34);
+
+        let (mut source, mut emitter) = VirtualIrDevice::split(dir.path(), W, H);
+        verify(
+            &mut source,
+            &mut emitter,
+            &matcher,
+            None,
+            &enrolled,
+            &LivenessConfig::default(),
+            2000,
+        )
+        .expect("the enrolled live face must verify");
+
+        // The shared emitter state drives which fixture the source returns; an OFF read proves the
+        // guard restored the emitter (the warm loop had set it ON).
+        let after = source.capture(0).expect("post-verify capture");
+        assert_eq!(
+            after.as_bytes(),
+            pair.emitter_off.as_bytes(),
+            "verify must restore the IR emitter to OFF on exit"
+        );
     }
 
     #[test]
