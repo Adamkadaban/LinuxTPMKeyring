@@ -36,6 +36,14 @@ pub enum MugError {
     #[error("no face match (distance {distance:.4} >= threshold {threshold:.4})")]
     NoMatch { distance: f32, threshold: f32 },
 
+    /// Too few quality-gated frames (a face detected and aligned) were captured within the deadline
+    /// to make a confident multi-frame match decision. The face factor degrades to the PIN rather
+    /// than deciding identity from one or two noisy frames.
+    #[error(
+        "insufficient face frames for a confident match ({captured} captured, {required} required)"
+    )]
+    InsufficientFrames { captured: usize, required: usize },
+
     /// No enrollment exists for the user.
     #[error("user is not enrolled for the face factor")]
     NotEnrolled,
