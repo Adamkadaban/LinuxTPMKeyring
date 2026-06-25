@@ -107,10 +107,13 @@ fn main() -> Result<()> {
                         .map_err(|e| anyhow!("crop liveness: {e}"))?,
                 )
             }
-            Err(_) => {
+            Err(mug::MugError::NoFace) => {
                 faceless += 1;
                 None
             }
+            // A real detector failure (bad model / inference error) must not masquerade as "no face"
+            // and silently fill the dataset with detected=0 rows — fail the run loudly.
+            Err(e) => return Err(anyhow!("detector failed on sample {idx}: {e}")),
         };
 
         let detected_flag = crop.is_some();

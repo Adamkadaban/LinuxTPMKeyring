@@ -375,23 +375,29 @@ fn inference_loop(
                     enrolled: enrolled.is_some(),
                     ..Default::default()
                 };
-                if let Ok(det) = detector.detect(&frame) {
-                    a.has_face = true;
-                    a.bbox = det.bbox;
-                    a.landmarks = det.landmarks.points;
-                    if let Ok(aligned) = align_face(&frame, &det.landmarks, ALIGNED_FACE_SIZE) {
-                        a.crop = Some(aligned.as_bytes().to_vec());
-                        if let Ok(emb) = extractor.extract(&aligned) {
-                            if shared.enroll.swap(false, Ordering::Relaxed) {
-                                enrolled = Some(emb.clone());
-                                println!("face-preview: enrolled the current face.");
-                            }
-                            a.enrolled = enrolled.is_some();
-                            if let Some(en) = &enrolled {
-                                a.distance = cosine_distance(&emb, en).ok();
+                match detector.detect(&frame) {
+                    Ok(det) => {
+                        a.has_face = true;
+                        a.bbox = det.bbox;
+                        a.landmarks = det.landmarks.points;
+                        if let Ok(aligned) = align_face(&frame, &det.landmarks, ALIGNED_FACE_SIZE) {
+                            a.crop = Some(aligned.as_bytes().to_vec());
+                            if let Ok(emb) = extractor.extract(&aligned) {
+                                if shared.enroll.swap(false, Ordering::Relaxed) {
+                                    enrolled = Some(emb.clone());
+                                    println!("face-preview: enrolled the current face.");
+                                }
+                                a.enrolled = enrolled.is_some();
+                                if let Some(en) = &enrolled {
+                                    a.distance = cosine_distance(&emb, en).ok();
+                                }
                             }
                         }
                     }
+                    // Expected when no one is in frame; a real detector failure is logged, not hidden
+                    // behind a misleading "no face".
+                    Err(mug::MugError::NoFace) => {}
+                    Err(e) => eprintln!("face-preview: detector error: {e}"),
                 }
                 a.infer_ms = t0.elapsed().as_secs_f32() * 1000.0;
                 *shared.latest.lock().unwrap() = a;
@@ -415,9 +421,16 @@ fn liveness_of(detector: &YuNetDetector, pair: &FramePair, cfg: &LivenessConfig)
         reason: None,
         at: Instant::now(),
     };
-    let Ok(det) = detector.detect(&pair.emitter_on) else {
-        s.reason = Some("no face detected".into());
-        return s;
+    let det = match detector.detect(&pair.emitter_on) {
+        Ok(det) => det,
+        Err(mug::MugError::NoFace) => {
+            s.reason = Some("no face detected".into());
+            return s;
+        }
+        Err(e) => {
+            s.reason = Some(format!("detector error: {e}"));
+            return s;
+        }
     };
     s.has_face = true;
     let (Ok(off_c), Ok(on_c)) = (
@@ -507,8 +520,9 @@ fn draw_overlay(
             blit_crop(buf, w, h, crop);
         }
     }
-    // Border reflects the *stable* (windowed) verdict, not the jittery per-frame one.
-    if let Some(v) = window.verdict {
+    // Border reflects the *stable* (windowed) verdict, but only while a face is (recently) present —
+    // otherwise a past MATCH/NO-MATCH would keep tinting the border after the subject left the frame.
+    if face_recent && let Some(v) = window.verdict {
         border = if v { C_GOOD } else { C_BAD };
     }
     draw_border(buf, w, h, border, 5);
