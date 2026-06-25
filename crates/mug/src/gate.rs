@@ -34,8 +34,9 @@ const PER_FRAME_BUDGET_MS: u64 = 150;
 
 /// Run the full face-verification pipeline within `deadline_ms`. Returns `Ok(())` only when the
 /// captured pair is live *and* the **majority** of quality-gated identity frames match `enrolled`
-/// within `enrolled.match_threshold`; otherwise a typed [`MugError`] (timeout, liveness rejection,
-/// insufficient frames, or no match). When `detector` is set each frame is located +
+/// within `enrolled.match_threshold`; otherwise a typed [`MugError`] — e.g. timeout, liveness
+/// rejection, insufficient frames, or no match, plus any propagated camera/emitter/matcher error.
+/// When `detector` is set each frame is located +
 /// aligned before embedding (so the embedding describes the face, not the whole scene), and a frame
 /// with no detectable face is dropped from the vote rather than matched against the background (so a
 /// per-frame no-face never surfaces as an error — too few face frames becomes `InsufficientFrames`).
@@ -67,7 +68,7 @@ where
     analyze(&pair, &effective_cfg)?.into_result()?;
 
     // Multi-frame identity: aggregate the match over several quality-gated frames so a single
-    // transient below-threshold frame can't authenticate (see ADR-0020). The liveness ON frame is
+    // transient below-threshold frame can't authenticate. The liveness ON frame is
     // the first sample; the emitter is warm, so follow-up frames arrive quickly.
     let mut distances: Vec<f32> = Vec::with_capacity(MATCH_FRAMES);
     if let Some(d) = frame_distance(matcher, detector, &pair.emitter_on, enrolled)? {
