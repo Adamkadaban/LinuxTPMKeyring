@@ -27,3 +27,4 @@ path = "src/main.rs"
 mug = { path = "../../crates/mug", features = ["face-model"] }
 anyhow = "1"
 minifb = "0.28"
+font8x8 = "0.3"
