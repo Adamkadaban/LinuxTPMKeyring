@@ -35,9 +35,10 @@ const PER_FRAME_BUDGET_MS: u64 = 150;
 /// Run the full face-verification pipeline within `deadline_ms`. Returns `Ok(())` only when the
 /// captured pair is live *and* the **majority** of quality-gated identity frames match `enrolled`
 /// within `enrolled.match_threshold`; otherwise a typed [`MugError`] (timeout, liveness rejection,
-/// no face, insufficient frames, or no match). When `detector` is set each frame is located +
+/// insufficient frames, or no match). When `detector` is set each frame is located +
 /// aligned before embedding (so the embedding describes the face, not the whole scene), and a frame
-/// with no detectable face is dropped from the vote rather than matched against the background.
+/// with no detectable face is dropped from the vote rather than matched against the background (so a
+/// per-frame no-face never surfaces as an error — too few face frames becomes `InsufficientFrames`).
 pub fn verify<S, E, X>(
     source: &mut S,
     emitter: &mut E,
