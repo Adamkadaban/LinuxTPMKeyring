@@ -905,3 +905,40 @@ Key facts / gotchas:
 
 ## 2026-06-24 — mlock secret buffers without unsafe in tess-core (#87)
 **Resolution:** `SecretBytes` was zeroize-only → cleartext keys could be paged to **swap** (an at-rest leak the threat-model commits to closing; `mlock` does *not* cover hibernation/suspend-to-disk, which snapshots all RAM regardless — that's a separate operator mitigation). `mlock` needs unsafe libc, forbidden in `tess-core` (`#![forbid(unsafe_code)]`; unsafe only in tess-pam/mug/tess-testenv). Used the **`region`** crate: `region::lock(ptr,len)` is a *safe* fn returning an RAII `LockGuard` that munlocks on drop, so tess-core stays unsafe-free. `SecretBytes` is now `{ _lock: Option<LockGuard>, data: Vec<u8> }`; **field declaration order `_lock` before `data`** + a manual `Drop` that zeroizes gives wipe→unlock→free (guard munlocks the still-allocated pages before the Vec frees). Locking is **best-effort**: a low `RLIMIT_MEMLOCK` logs a note and proceeds (never blocks auth). `Clone` re-locks its fresh allocation. Test asserts the `/proc/self/status` `VmLck` delta when permitted and degrades gracefully otherwise (host/CI memlock is 8 MiB → the assertion runs). Supply-chain: `region` adds `region`+`bitflags 1.x`(+macOS `mach2`/Windows `windows-sys 0.52`, never compiled here); 4 cargo-vet exemptions (`cargo vet fmt` to canonicalize), `cargo deny` clean. ADR-0019. `crates/tess-core/src/lib.rs` · #87.
+
+## 2026-06-24 — secure-practices research sweep (5 parallel agents) → 4 IOUs filed
+**Resolution:** deep online-research pass (face PAD/liveness, multi-frame fusion, TPM sealing, Rust
+secret handling, fprintd/PAM) validating the shipped design; codebase already matches best practice on
+almost every axis. Durable findings:
+- **TPM (`tess-tpm`) is near-textbook** — salted HMAC session, `nonce=None` (so GHSA-w3vw-ccc5-qr8v UAF
+  never applied — it only fires with explicit `Some(nonce)`), AES-128-CFB decrypt+encrypt param
+  encryption, ECC P-256, `PolicyAuthValue`, `noDA` clear, host-`getrandom`⊕TPM-`GetRandom` mixing.
+  Confirmed vs Pulse Security BitLocker LPC-sniff + NCC *TPM Genie*. **Only gap:** no SRK Name pinning
+  → an *active* interposer can substitute the salt key; `esapi.rs` overclaimed "defeats an interposer."
+  → **#93** (this PR implements it).
+- **Advisory-ID error** (confirmed at rustsec.org): PLAN.md (5×)+AGENTS.md cite `RUSTSEC-2023-0044`
+  (which is the **OpenSSL** `set_host` over-read, CVE-2023-53159) for the tss-esapi UAF; the real one is
+  `GHSA-w3vw-ccc5-qr8v` (no CVE; patched 6.1.2/7.1.0). Pin `≥7.1.0` is correct, only the citation wrong.
+  → **#92**.
+- **`SecretBytes` `Vec<u8>`** → prefer `Box<[u8]>` (zeroize realloc caveat) + **no core-dump
+  suppression** (`RLIMIT_CORE=0`/`PR_SET_DUMPABLE`; mlock doesn't cover core dumps). → **#94**.
+- **Liveness/multiframe** (ADR-0020 validated, not overclaiming): passive active-illumination IR is
+  correct (Hello/Face ID, no blink); harden with face-localized + randomized-timing reflectance (anti
+  CVE-2021-34466 whole-frame bypass) and **decorrelate** the #89 burst (frames are correlated →
+  quorum ≠ `far^K`, real FAR floor is PIN+anti-hammering). → **#95**.
+- **fprintd is single-shot/first-match-wins** (proven from upstream `pam/pam_fprintd.c`) + 3-try retry
+  loop; no score fusion. NIST SP 800-63B §4.2.1: biometric is a factor, never a standalone authenticator.
+
+## 2026-06-24 — SRK Name pinning: detect an active TPM-bus interposer (#93)
+**Resolution:** the salted session defeats a *passive* bus sniffer but not an *active* interposer that
+substitutes its own key as the session **salt key** (ESAPI salts to the primary's public, read off the
+bus from `CreatePrimary` — substitutable). Fix = pin the primary's **Name** (SHA-256 fingerprint) at
+enroll, re-verify at unseal. Implemented: `esapi::primary_name(ctx,primary)` (`Esys_TR_GetName`);
+`SealedObject` carries `expected_primary_name`; `seal()` records it; **`unseal()` verifies it before
+loading anything and fails closed with `Error::PrimaryNameMismatch`** (→ PIN fallback). Persisted as new
+required `Metadata.primary_name` (base64); `METADATA_VERSION` 1→2 (v1 rejected, re-enroll). Pure
+`primary_name_matches` (empty-expected = fail closed) unit-tested; sim tests assert Name is stable
+across re-derivation and that a tampered pinned Name is rejected while the genuine object still unseals.
+**TOFU model:** detects an interposer introduced *after* enroll; one active *during* enroll is the
+residual (out of scope, like the live-machine adversary) — documented. Zero orchestration-layer changes
+(threaded via `SealedObject`+`persist`). No new deps (uses existing tss-esapi). `crates/tess-tpm/src/{esapi.rs,seal.rs,persist.rs}` · `crates/tess-core/src/lib.rs` · `docs/adr/0021` · threat-model.md/architecture.md · #93.

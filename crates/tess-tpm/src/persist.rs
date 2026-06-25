@@ -37,12 +37,14 @@ pub fn to_metadata(sealed: &SealedObject) -> Result<Metadata> {
         Policy::PinAuthValue,
         STANDARD.encode(public),
         STANDARD.encode(private),
+        STANDARD.encode(sealed.expected_primary_name()),
     ))
 }
 
-/// Reconstruct a sealed object from metadata: validate the schema version, base64-decode both blobs,
-/// unmarshal the public area, and rebuild the private buffer. The result is ready to hand to
-/// [`crate::unseal`] under the same TPM's primary.
+/// Reconstruct a sealed object from metadata: validate the schema version, base64-decode the public
+/// and private blobs and the pinned primary Name, unmarshal the public area, and rebuild the private
+/// buffer. The result is ready to hand to [`crate::unseal`] (which re-verifies that Name) under the
+/// same TPM's primary.
 pub fn from_metadata(metadata: &Metadata) -> Result<SealedObject> {
     metadata.validate_version()?;
     if metadata.policy != Policy::PinAuthValue {
@@ -55,13 +57,25 @@ pub fn from_metadata(metadata: &Metadata) -> Result<SealedObject> {
 
     let public_bytes = decode(&metadata.sealed_public, "sealed_public")?;
     let private_bytes = decode(&metadata.sealed_private, "sealed_private")?;
+    let primary_name = decode(&metadata.primary_name, "primary_name")?;
+    // `primary_name` is required in v2 (it is `#[serde(default)]` only so a v1 file deserializes far
+    // enough to hit the structured version error). A current-version file with an empty Name is
+    // corrupt or hand-edited: reject it here with a clear metadata error, rather than letting it look
+    // valid to `tess doctor`/`status` and then surface later as a misleading `PrimaryNameMismatch`.
+    if primary_name.is_empty() {
+        return Err(Error::Metadata(
+            "metadata is missing the pinned primary Name (corrupt or hand-edited v2 metadata); \
+             re-enroll to regenerate it"
+                .to_string(),
+        ));
+    }
 
     let public = Public::unmarshall(&public_bytes)
         .map_err(|e| Error::Tpm(format!("unmarshalling sealed public area: {e}")))?;
     let private = Private::try_from(private_bytes)
         .map_err(|e| Error::Tpm(format!("rebuilding sealed private blob: {e}")))?;
 
-    Ok(SealedObject::from_blobs(public, private))
+    Ok(SealedObject::from_blobs(public, private, primary_name))
 }
 
 /// Serialize `metadata` to pretty JSON and write it to `path` atomically (write a fresh sibling temp
@@ -201,12 +215,35 @@ mod tests {
 
     #[test]
     fn from_metadata_rejects_bumped_version() {
-        let mut metadata = Metadata::new(Policy::PinAuthValue, "AAAA".into(), "AAAA".into());
+        let mut metadata = Metadata::new(
+            Policy::PinAuthValue,
+            "AAAA".into(),
+            "AAAA".into(),
+            "AAAA".into(),
+        );
         metadata.version = METADATA_VERSION + 1;
         assert!(matches!(
             from_metadata(&metadata),
             Err(Error::MetadataVersion { .. })
         ));
+    }
+
+    #[test]
+    fn from_metadata_rejects_empty_primary_name() {
+        // A current-version file missing primary_name must be rejected here as corrupt metadata —
+        // not deferred to a misleading PrimaryNameMismatch at unseal. The empty-Name check runs
+        // before unmarshalling, so the placeholder blobs never need to be valid.
+        let metadata = Metadata::new(
+            Policy::PinAuthValue,
+            "AA".into(),
+            "AA".into(),
+            String::new(),
+        );
+        let err = from_metadata(&metadata).expect_err("empty primary_name must be rejected");
+        assert!(
+            matches!(err, Error::Metadata(_)),
+            "expected a structured metadata error, got {err:?}"
+        );
     }
 
     #[test]
@@ -219,6 +256,7 @@ mod tests {
             Policy::PinAuthValue,
             STANDARD.encode([1u8, 2, 3, 4]),
             STANDARD.encode([5u8, 6, 7, 8]),
+            STANDARD.encode([9u8, 10, 11, 12]),
         );
         save(&metadata, &path).expect("save");
         let loaded = load(&path).expect("load");
@@ -227,6 +265,7 @@ mod tests {
         assert_eq!(loaded.policy, metadata.policy);
         assert_eq!(loaded.sealed_public, metadata.sealed_public);
         assert_eq!(loaded.sealed_private, metadata.sealed_private);
+        assert_eq!(loaded.primary_name, metadata.primary_name);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -238,7 +277,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("metadata.json");
 
-        let mut metadata = Metadata::new(Policy::PinAuthValue, "AAAA".into(), "AAAA".into());
+        let mut metadata = Metadata::new(
+            Policy::PinAuthValue,
+            "AAAA".into(),
+            "AAAA".into(),
+            "AAAA".into(),
+        );
         metadata.version = METADATA_VERSION + 1;
         let json = serde_json::to_vec_pretty(&metadata).unwrap();
         std::fs::write(&path, json).unwrap();

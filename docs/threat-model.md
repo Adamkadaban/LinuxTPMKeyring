@@ -26,7 +26,12 @@ and nothing more than that.
   silicon, not by our code or by boot state.
 - **Against TPM bus attacks.** Every seal and unseal runs under a **salted HMAC +
   parameter-encryption session**, so neither the PIN authValue nor the unsealed key ever crosses the
-  TPM bus in the clear — an SPI interposer learns nothing.
+  TPM bus in the clear — a *passive* SPI sniffer learns nothing. An *active* interposer that instead
+  substitutes its own key as the session salt key is caught separately: the storage primary's
+  **Name is pinned at enrollment and re-verified on every unseal**, so a substituted primary fails
+  closed (see [ADR-0021](adr/0021-srk-name-pinning.md)). The residual is an interposer already active
+  *during enrollment* (the trust-on-first-use moment), which is out of scope like the live-machine
+  adversary.
 
 ## What this is, precisely: authentication, not attestation
 
@@ -44,6 +49,7 @@ in [ADR-0002](adr/0002-scope-root-out-no-vbs.md).
 | Thief with a powered-off / stolen laptop or disk | **Yes** | Keyring stays sealed; no offline brute force; needs the PIN on the original TPM. |
 | Online PIN guesser on the running machine | **Yes** | Throttled to a hardware DA-lockout; a wrong PIN fails closed and accrues toward lockout. |
 | Passive TPM-bus interposer (SPI sniffer) | **Yes** | HMAC + parameter-encrypted sessions; no plaintext authValue or key on the bus. |
+| Active TPM-bus interposer (substitutes the salt key *after* enrollment) | **Yes** | Storage-primary **Name pinned at enroll, re-verified at unseal**; a substituted primary fails closed ([ADR-0021](adr/0021-srk-name-pinning.md)). Residual: an interposer active *during* enrollment (TOFU) is out of scope. |
 | Root / kernel attacker on a **live, running** machine | **No** | Out of scope — can keylog the PIN or read the released key from memory. See below. |
 | Remote attacker wanting proof a human was present | **No** | tess is auth, not attestation; it makes no such claim. |
 
@@ -227,7 +233,7 @@ avoid.
 
 | Attack class (cited prior art) | Control in tess |
 |---|---|
-| Bus sniff / interposer (Dolos BitLocker, TPM Genie) | No PCR-only sealing; PIN authValue + **mandatory HMAC / parameter-encryption sessions** on every seal/unseal ([ADR-0001](adr/0001-tpm-seal-random-key-pin-authvalue-hmac-sessions.md)) |
+| Bus sniff / interposer (Dolos BitLocker, TPM Genie) | No PCR-only sealing; PIN authValue + **mandatory HMAC / parameter-encryption sessions** defeat the *passive* sniff ([ADR-0001](adr/0001-tpm-seal-random-key-pin-authvalue-hmac-sessions.md)); the storage primary's **Name is pinned at enroll and re-verified at unseal** to catch an *active* (TPM Genie-class) salt-key substitution ([ADR-0021](adr/0021-srk-name-pinning.md)) |
 | Weak keygen / RNG (ROCA) | Seal a **self-generated** random blob (not a TPM-born RSA key); ECC P-256; `getrandom` XOR-mixed with TPM `GetRandom` |
 | Timing side channel (TPM-FAIL, Hertzbleed) | Constant-time PIN handling; rely on the TPM **DA-lockout**, not comparison-timing secrecy |
 | Online PIN brute force / lockout abuse | Wrong PINs trip the hardware DA-lockout; the privileged reset is gated by the **recovery secret** (a sub-key never equal to `K`), so an attacker who trips the lockout cannot clear it ([ADR-0011](adr/0011-privileged-da-lockout-reset.md)) |

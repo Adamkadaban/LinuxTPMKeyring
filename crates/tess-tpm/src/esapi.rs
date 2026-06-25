@@ -34,6 +34,16 @@ pub enum Error {
     #[error("failed to create ECC primary: {0}")]
     Primary(String),
 
+    #[error("failed to read the storage primary Name: {0}")]
+    PrimaryName(String),
+
+    #[error(
+        "storage primary Name does not match the value pinned at enrollment (a different TPM, or a \
+         bus interposer substituting the session salt key): the key is intentionally NOT unsealed — \
+         fall back to the password, and re-enroll only if this machine's TPM was legitimately changed"
+    )]
+    PrimaryNameMismatch,
+
     #[error("failed to start salted HMAC session: {0}")]
     Session(String),
 
@@ -150,13 +160,28 @@ pub fn create_primary(context: &mut Context) -> Result<CreatePrimaryKeyResult> {
         .map_err(|e: tss_esapi::Error| Error::Primary(e.to_string()))
 }
 
+/// Read the storage primary's **Name** — the SHA-256 fingerprint ESAPI derives from the public area
+/// it uses to salt every seal/unseal session. Pinning this Name at enrollment and re-verifying it on
+/// every unseal detects an *active* bus interposer that substitutes its own key as the session salt
+/// key. (A *passive* sniffer is already defeated by parameter encryption; substitution is the
+/// residual the encrypted session alone cannot catch.) The Name is public material, so it is
+/// compared with plain equality — no constant-time requirement.
+pub fn primary_name(context: &mut Context, primary: KeyHandle) -> Result<Vec<u8>> {
+    context
+        .tr_get_name(primary.into())
+        .map(|name| name.value().to_vec())
+        .map_err(|e| Error::PrimaryName(e.to_string()))
+}
+
 /// Start the salted HMAC + parameter-encryption auth session every later seal/unseal runs under.
 ///
 /// Salting with the storage `primary` (passed as the session's tpmKey) and enabling **decrypt +
 /// encrypt** parameter encryption with an AES-128-CFB / SHA-256 session means the PIN authValue and
-/// the unsealed blob are encrypted and integrity-protected on the TPM bus — defeating an interposer
-/// that sniffs PCR-only-sealed secrets off the wire. `continue_session` keeps the session alive
-/// across the multiple commands a seal/unseal performs.
+/// the unsealed blob are encrypted and integrity-protected on the TPM bus — defeating a **passive**
+/// interposer that sniffs secrets off the wire. An **active** interposer that instead substitutes
+/// its own key as the salt key is caught separately by pinning the primary's Name at enrollment and
+/// re-verifying it at unseal (see [`primary_name`] and `seal::unseal`). `continue_session` keeps the
+/// session alive across the multiple commands a seal/unseal performs.
 pub fn start_salted_hmac_session(context: &mut Context, primary: KeyHandle) -> Result<AuthSession> {
     let session = context
         .start_auth_session(

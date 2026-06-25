@@ -52,7 +52,9 @@ mssim one — the mssim TCTI's platform commands fail against swtpm), and `TctiC
 uses the device TCTI against `/dev/tpmrm0`. From a context, `tess_tpm::create_primary()` creates the
 deterministic ECC NIST-P256 restricted-storage primary under the owner hierarchy, and
 `tess_tpm::start_salted_hmac_session()` opens the salted HMAC + AES-128-CFB parameter-encryption
-session (SHA-256) that every later seal/unseal runs under to defeat TPM bus interposers.
+session (SHA-256) that every later seal/unseal runs under to defeat a *passive* TPM-bus sniffer.
+`tess_tpm::primary_name()` reads the primary's **Name**, pinned at enroll and re-verified at unseal,
+to catch an *active* interposer substituting the salt key (see [ADR-0021](adr/0021-srk-name-pinning.md)).
 
 The swtpm TCTI implicitly uses `command_port + 1` as its control port, and `TctiConfig` exposes only
 the command port — so swtpm must be launched with its control port set to command + 1. The
@@ -72,9 +74,12 @@ in the clear:
   session, builds a keyedhash (sealed data) object whose `userWithAuth` authValue is the PIN and
   whose authPolicy is that digest, and creates it under `primary` with the salted session. The object
   is **dictionary-attack protected** (no `noDA`), so wrong PINs count toward TPM lockout. It returns a
-  `SealedObject` holding the public + private TPM2B blobs — the in-memory handoff the persistence
-  layer marshals and stores (persistence and DA-lockout reset are a separate concern).
-- `unseal(context, primary, sealed, pin)` loads the object, starts a real policy session (salted and
+  `SealedObject` holding the public + private TPM2B blobs **and the primary's pinned Name** — the
+  in-memory handoff the persistence layer marshals and stores (persistence and DA-lockout reset are a
+  separate concern).
+- `unseal(context, primary, sealed, pin)` first **verifies the live primary's Name against the Name
+  pinned in the sealed object** (refusing with a mismatch error if the primary was substituted), then
+  loads the object, starts a real policy session (salted and
   encrypting), satisfies `PolicyAuthValue` with the PIN as the object's authValue, and unseals,
   returning the key as a zeroizing `SecretBytes`. A wrong PIN surfaces as a distinct wrong-PIN error
   (mapped to `tess_core::Error::Auth`), not a generic TPM fault, so callers can react. All transient
@@ -87,10 +92,13 @@ unseal. The blobs are stored inside the versioned `tess_core::Metadata`, never i
 
 - `to_metadata(sealed)` marshals the structured `TPMT_PUBLIC` to its canonical TPM wire form and
   takes the `TPM2B_PRIVATE` buffer verbatim, base64-encoding each into `Metadata.sealed_public` /
-  `sealed_private` with `policy = PinAuthValue` and `version = METADATA_VERSION`.
-- `from_metadata(metadata)` validates the schema version, base64-decodes both blobs, unmarshals the
-  public area and rebuilds the private buffer, yielding a `SealedObject` ready for `unseal` under the
-  same TPM's deterministic primary.
+  `sealed_private`, plus the pinned primary **Name** into `Metadata.primary_name`, with
+  `policy = PinAuthValue` and `version = METADATA_VERSION` (v2 added `primary_name`; v1 metadata is
+  rejected and must be re-enrolled).
+- `from_metadata(metadata)` validates the schema version, base64-decodes the blobs **and the pinned
+  primary Name**, unmarshals the public area and rebuilds the private buffer, yielding a
+  `SealedObject` ready for `unseal` (which re-verifies that Name) under the same TPM's deterministic
+  primary.
 - `save(metadata, path)` writes pretty JSON atomically (temp sibling + rename, mode `0600`); `load`
   reads it back and re-checks the version.
 
