@@ -54,14 +54,17 @@ fn main() -> Result<()> {
         None => find_brio_ir_node().context("discover the Brio IR node (set MUG_IR_NODE)")?,
     };
 
-    // Append, writing a header only for a fresh file.
-    let new_file = !out_path.exists();
+    // Write a header for a new file *or* an existing-but-empty one (e.g. pre-created by tooling, or
+    // a previous run that crashed right after create).
+    let needs_header = std::fs::metadata(&out_path)
+        .map(|m| m.len() == 0)
+        .unwrap_or(true);
     let mut out = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&out_path)
         .with_context(|| format!("open {}", out_path.display()))?;
-    if new_file {
+    if needs_header {
         writeln!(out, "{}", csv_header())?;
     }
 
@@ -185,10 +188,21 @@ fn csv_row(
     full: &mug::LivenessReport,
     crop: Option<&mug::LivenessReport>,
 ) -> String {
-    let mut s = format!("{label},{idx},{}", detected as u8);
+    let mut s = format!("{},{idx},{}", csv_escape(label), detected as u8);
     feature_cols(&mut s, Some(full));
     feature_cols(&mut s, crop);
     s
+}
+
+/// Escape a CSV field per RFC 4180: wrap in double quotes and double any embedded quote when the
+/// field contains a comma, quote, CR, or LF. `FC_LABEL` is user-supplied, so an unescaped comma
+/// would otherwise corrupt the row.
+fn csv_escape(field: &str) -> String {
+    if field.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
 }
 
 fn print_progress(

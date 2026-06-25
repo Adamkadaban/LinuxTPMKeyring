@@ -272,7 +272,9 @@ fn main() -> Result<()> {
     }
 
     drop(tx);
-    let _ = worker.join();
+    worker
+        .join()
+        .map_err(|_| anyhow!("inference worker thread panicked"))?;
     Ok(())
 }
 
@@ -326,7 +328,9 @@ fn liveness_sample(
     let (mut source, mut emitter) = WarmingBrioDevice::split(dev, None);
     match capture_liveness_pair(&mut source, &mut emitter, 2500) {
         Ok(pair) => {
-            let _ = tx.send(Job::Liveness(pair));
+            tx.send(Job::Liveness(pair)).map_err(|_| {
+                anyhow!("inference worker disconnected; cannot deliver the liveness sample")
+            })?;
         }
         Err(e) => eprintln!("liveness capture failed: {e}"),
     }
@@ -407,17 +411,28 @@ fn liveness_of(detector: &YuNetDetector, pair: &FramePair, cfg: &LivenessConfig)
         s.reason = Some("alignment failed".into());
         return s;
     };
-    let Ok(crop_pair) = FramePair::new(off_c, on_c) else {
-        return s;
+    let crop_pair = match FramePair::new(off_c, on_c) {
+        Ok(p) => p,
+        Err(e) => {
+            s.reason = Some(format!("crop pair construction failed: {e}"));
+            return s;
+        }
     };
-    if let Ok(rep) = analyze_liveness(&crop_pair, cfg) {
-        let f = &rep.features;
-        s.passed = rep.passed;
-        s.mean_delta = f.mean_delta;
-        s.gradient = f.gradient_energy;
-        s.baseline = f.baseline_mean;
-        s.score = f.score;
-        s.reason = rep.reason;
+    match analyze_liveness(&crop_pair, cfg) {
+        Ok(rep) => {
+            let f = &rep.features;
+            s.passed = rep.passed;
+            s.mean_delta = f.mean_delta;
+            s.gradient = f.gradient_energy;
+            s.baseline = f.baseline_mean;
+            s.score = f.score;
+            s.reason = rep.reason;
+        }
+        Err(e) => {
+            // Surface the failure instead of leaving a generic zeroed REJECT, which is misleading
+            // when eyeballing the live/spoof boundary.
+            s.reason = Some(format!("liveness analysis failed: {e}"));
+        }
     }
     s
 }
