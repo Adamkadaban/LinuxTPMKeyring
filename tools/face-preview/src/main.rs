@@ -190,8 +190,10 @@ fn main() -> Result<()> {
     let mut fps = FpsCounter::new();
     let mut dist_window: std::collections::VecDeque<f32> =
         std::collections::VecDeque::with_capacity(MATCH_WINDOW);
-    let mut last_seq = 0u64;
     let mut last_face_seen: Option<Instant> = None;
+    // Cached worker outputs, re-cloned only when they change (not every render frame).
+    let mut analysis = Analysis::default();
+    let mut live: Option<LiveSample> = None;
     println!(
         "face-preview: streaming. E=enroll  L=liveness sample  Q=quit. Threshold {threshold:.2}."
     );
@@ -209,8 +211,9 @@ fn main() -> Result<()> {
 
         render_gray(&mut buffer, &frame);
 
-        // Hand the worker the latest frame; drop it if the worker is still busy (keeps the feed smooth).
-        match tx.try_send(Job::Frame(frame.clone())) {
+        // Move the latest frame into the channel; drop it if the worker is still busy (keeps the feed
+        // smooth). The main thread doesn't use `frame` after rendering, so no clone is needed.
+        match tx.try_send(Job::Frame(frame)) {
             Ok(()) | Err(TrySendError::Full(_)) => {}
             Err(TrySendError::Disconnected(_)) => return Err(anyhow!("inference thread died")),
         }
@@ -222,23 +225,33 @@ fn main() -> Result<()> {
             device = liveness_sample(device, &node, &tx, &mut buffer, &mut window, w, h)?;
         }
 
-        let analysis = shared.latest.lock().unwrap().clone();
-        let live = shared.live.lock().unwrap().clone();
-
-        // Feed the rolling window once per *new* inference (the worker bumps `seq`), not per render
-        // frame — otherwise a single slow inference would be counted many times.
-        if analysis.seq != last_seq {
-            last_seq = analysis.seq;
-            if analysis.has_face {
-                last_face_seen = Some(Instant::now());
-                if let Some(d) = analysis.distance {
-                    if dist_window.len() == MATCH_WINDOW {
-                        dist_window.pop_front();
+        // Refresh the cached analysis only when the worker has produced a *new* inference (it bumps
+        // `seq`), not every render frame — avoids cloning the aligned-crop buffer at the camera FPS.
+        {
+            let guard = shared.latest.lock().unwrap();
+            if guard.seq != analysis.seq {
+                analysis = guard.clone();
+                if analysis.has_face {
+                    last_face_seen = Some(Instant::now());
+                    if let Some(d) = analysis.distance {
+                        if dist_window.len() == MATCH_WINDOW {
+                            dist_window.pop_front();
+                        }
+                        dist_window.push_back(d);
                     }
-                    dist_window.push_back(d);
                 }
             }
         }
+        // Refresh the cached liveness sample only when a new one arrives (its capture instant changes).
+        {
+            let guard = shared.live.lock().unwrap();
+            if let Some(g) = guard.as_ref()
+                && live.as_ref().is_none_or(|l| l.at != g.at)
+            {
+                live = Some(g.clone());
+            }
+        }
+
         let match_window = MatchWindow::compute(&dist_window, threshold);
         let face_recent = last_face_seen.is_some_and(|t| t.elapsed() < Duration::from_millis(400));
 

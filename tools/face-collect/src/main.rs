@@ -25,8 +25,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use mug::{
     ALIGNED_FACE_SIZE, BRIO_IR_HEIGHT, BRIO_IR_WIDTH, FaceDetector, FramePair, LivenessConfig,
-    V4l2IrDevice, WarmingBrioDevice, YuNetDetector, align_face, analyze_liveness, capture_liveness_pair,
-    find_brio_ir_node,
+    V4l2IrDevice, WarmingBrioDevice, YuNetDetector, align_face, analyze_liveness,
+    capture_liveness_pair, find_brio_ir_node,
 };
 
 const CAPTURE_DEADLINE_MS: u64 = 2500;
@@ -43,8 +43,11 @@ fn main() -> Result<()> {
     let out_path = PathBuf::from(env("FC_OUT").unwrap_or_else(|| "/tmp/face-collect.csv".into()));
     let label = env("FC_LABEL").unwrap_or_else(|| "unlabeled".into());
     let n: usize = env("FC_N").map_or(Ok(15), |v| v.parse()).context("FC_N")?;
-    let cooldown =
-        Duration::from_millis(env("FC_COOLDOWN_MS").map_or(Ok(1500), |v| v.parse()).context("FC_COOLDOWN_MS")?);
+    let cooldown = Duration::from_millis(
+        env("FC_COOLDOWN_MS")
+            .map_or(Ok(1500), |v| v.parse())
+            .context("FC_COOLDOWN_MS")?,
+    );
 
     let node = match env("MUG_IR_NODE") {
         Some(p) => PathBuf::from(p),
@@ -84,8 +87,8 @@ fn main() -> Result<()> {
             }
         };
 
-        let full = analyze_liveness(&pair, &cfg)
-            .map_err(|e| anyhow!("whole-frame liveness: {e}"))?;
+        let full =
+            analyze_liveness(&pair, &cfg).map_err(|e| anyhow!("whole-frame liveness: {e}"))?;
 
         // Detect on the lit frame, then align BOTH frames with the same landmarks to get a crop pair.
         let crop = match detector.detect(&pair.emitter_on) {
@@ -96,7 +99,10 @@ fn main() -> Result<()> {
                 let on_c = align_face(&pair.emitter_on, &det.landmarks, ALIGNED_FACE_SIZE)
                     .context("align ON crop")?;
                 let crop_pair = FramePair::new(off_c, on_c).context("build crop pair")?;
-                Some(analyze_liveness(&crop_pair, &cfg).map_err(|e| anyhow!("crop liveness: {e}"))?)
+                Some(
+                    analyze_liveness(&crop_pair, &cfg)
+                        .map_err(|e| anyhow!("crop liveness: {e}"))?,
+                )
             }
             Err(_) => {
                 faceless += 1;
@@ -105,8 +111,13 @@ fn main() -> Result<()> {
         };
 
         let detected_flag = crop.is_some();
-        writeln!(out, "{}", csv_row(&label, idx, detected_flag, &full, crop.as_ref()))?;
-        out.flush().ok();
+        writeln!(
+            out,
+            "{}",
+            csv_row(&label, idx, detected_flag, &full, crop.as_ref())
+        )?;
+        // Surface flush failures rather than silently losing calibration rows (e.g. disk full).
+        out.flush().context("flush the CSV row to disk")?;
         print_progress(idx, detected_flag, &full, crop.as_ref());
     }
 
@@ -180,7 +191,12 @@ fn csv_row(
     s
 }
 
-fn print_progress(idx: usize, detected: bool, full: &mug::LivenessReport, crop: Option<&mug::LivenessReport>) {
+fn print_progress(
+    idx: usize,
+    detected: bool,
+    full: &mug::LivenessReport,
+    crop: Option<&mug::LivenessReport>,
+) {
     let ff = &full.features;
     let face = if detected { "face" } else { "NO-FACE" };
     let crop_str = match crop {
