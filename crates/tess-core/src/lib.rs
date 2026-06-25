@@ -170,6 +170,12 @@ pub struct Metadata {
     /// under, base64. Re-derived and verified at unseal: a substituted primary — an active bus
     /// interposer swapping the session salt key after enrollment — yields a different Name and the
     /// unseal is refused. Pinned at enroll (trust-on-first-use); never a secret.
+    ///
+    /// `#[serde(default)]` so a v1 file (which legitimately predates this field) still deserializes
+    /// and is then rejected by [`Metadata::validate_version`] with the structured
+    /// [`Error::MetadataVersion`] (re-enroll) rather than a generic serde "missing field" error. A
+    /// v2 file missing it decodes to an empty Name, which fails closed at unseal.
+    #[serde(default)]
     pub primary_name: String,
 }
 
@@ -330,6 +336,23 @@ mod tests {
         assert!(matches!(
             m.validate_version(),
             Err(Error::MetadataVersion { .. })
+        ));
+    }
+
+    #[test]
+    fn v1_metadata_without_primary_name_fails_with_version_error_not_parse_error() {
+        // A v1 file legitimately predates `primary_name`. It must still deserialize so
+        // `validate_version` can return the structured version error (→ re-enroll), rather than a
+        // generic serde "missing field `primary_name`" parse failure.
+        let v1 = r#"{"version":1,"policy":{"kind":"pin_auth_value"},"sealed_public":"AA","sealed_private":"BB"}"#;
+        let m: Metadata = serde_json::from_str(v1).expect("v1 JSON must still deserialize");
+        assert_eq!(m.primary_name, "", "absent primary_name defaults to empty");
+        assert!(matches!(
+            m.validate_version(),
+            Err(Error::MetadataVersion {
+                found: 1,
+                expected: METADATA_VERSION
+            })
         ));
     }
 }

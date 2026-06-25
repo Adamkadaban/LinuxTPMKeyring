@@ -34,6 +34,9 @@ pub enum Error {
     #[error("failed to create ECC primary: {0}")]
     Primary(String),
 
+    #[error("failed to read the storage primary Name: {0}")]
+    PrimaryName(String),
+
     #[error(
         "storage primary Name does not match the value pinned at enrollment: a different TPM, or a \
          bus interposer substituting the session salt key"
@@ -166,7 +169,7 @@ pub fn primary_name(context: &mut Context, primary: KeyHandle) -> Result<Vec<u8>
     context
         .tr_get_name(primary.into())
         .map(|name| name.value().to_vec())
-        .map_err(|e| Error::Primary(e.to_string()))
+        .map_err(|e| Error::PrimaryName(e.to_string()))
 }
 
 /// Start the salted HMAC + parameter-encryption auth session every later seal/unseal runs under.
