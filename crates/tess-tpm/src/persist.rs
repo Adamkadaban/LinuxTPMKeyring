@@ -37,6 +37,7 @@ pub fn to_metadata(sealed: &SealedObject) -> Result<Metadata> {
         Policy::PinAuthValue,
         STANDARD.encode(public),
         STANDARD.encode(private),
+        STANDARD.encode(sealed.expected_primary_name()),
     ))
 }
 
@@ -55,13 +56,14 @@ pub fn from_metadata(metadata: &Metadata) -> Result<SealedObject> {
 
     let public_bytes = decode(&metadata.sealed_public, "sealed_public")?;
     let private_bytes = decode(&metadata.sealed_private, "sealed_private")?;
+    let primary_name = decode(&metadata.primary_name, "primary_name")?;
 
     let public = Public::unmarshall(&public_bytes)
         .map_err(|e| Error::Tpm(format!("unmarshalling sealed public area: {e}")))?;
     let private = Private::try_from(private_bytes)
         .map_err(|e| Error::Tpm(format!("rebuilding sealed private blob: {e}")))?;
 
-    Ok(SealedObject::from_blobs(public, private))
+    Ok(SealedObject::from_blobs(public, private, primary_name))
 }
 
 /// Serialize `metadata` to pretty JSON and write it to `path` atomically (write a fresh sibling temp
@@ -201,7 +203,12 @@ mod tests {
 
     #[test]
     fn from_metadata_rejects_bumped_version() {
-        let mut metadata = Metadata::new(Policy::PinAuthValue, "AAAA".into(), "AAAA".into());
+        let mut metadata = Metadata::new(
+            Policy::PinAuthValue,
+            "AAAA".into(),
+            "AAAA".into(),
+            "AAAA".into(),
+        );
         metadata.version = METADATA_VERSION + 1;
         assert!(matches!(
             from_metadata(&metadata),
@@ -219,6 +226,7 @@ mod tests {
             Policy::PinAuthValue,
             STANDARD.encode([1u8, 2, 3, 4]),
             STANDARD.encode([5u8, 6, 7, 8]),
+            STANDARD.encode([9u8, 10, 11, 12]),
         );
         save(&metadata, &path).expect("save");
         let loaded = load(&path).expect("load");
@@ -227,6 +235,7 @@ mod tests {
         assert_eq!(loaded.policy, metadata.policy);
         assert_eq!(loaded.sealed_public, metadata.sealed_public);
         assert_eq!(loaded.sealed_private, metadata.sealed_private);
+        assert_eq!(loaded.primary_name, metadata.primary_name);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -238,7 +247,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("metadata.json");
 
-        let mut metadata = Metadata::new(Policy::PinAuthValue, "AAAA".into(), "AAAA".into());
+        let mut metadata = Metadata::new(
+            Policy::PinAuthValue,
+            "AAAA".into(),
+            "AAAA".into(),
+            "AAAA".into(),
+        );
         metadata.version = METADATA_VERSION + 1;
         let json = serde_json::to_vec_pretty(&metadata).unwrap();
         std::fs::write(&path, json).unwrap();

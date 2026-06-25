@@ -15,7 +15,8 @@ mod seal;
 
 pub use caps::{TpmVersion, read_tpm_version};
 pub use esapi::{
-    Error, Result, create_primary, ecc_storage_primary_template, start_salted_hmac_session,
+    Error, Result, create_primary, ecc_storage_primary_template, primary_name,
+    start_salted_hmac_session,
 };
 pub use lockout::{
     LockoutState, lockout_auth_is_set, pin_holder_recover, read_lockout_state, reset_lockout,

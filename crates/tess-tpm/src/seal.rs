@@ -22,19 +22,26 @@ const SEALED_KEY_LEN: usize = 32;
 const MAX_PIN_LEN: usize = 32;
 
 /// In-memory representation of a sealed object: the public and private TPM2B blobs returned by
-/// `TPM2_Create`. Persistence to disk is out of scope here; this is the typed handoff that the
-/// persistence layer marshals and stores.
+/// `TPM2_Create`, plus the **Name of the storage primary** it was sealed under. Persistence to disk
+/// is out of scope here; this is the typed handoff that the persistence layer marshals and stores.
 #[derive(Debug, Clone)]
 pub struct SealedObject {
     public: Public,
     private: Private,
+    /// SHA-256 Name of the storage primary at seal time, pinned so [`unseal`] can detect a
+    /// substituted primary (active bus interposer) before releasing the key.
+    primary_name: Vec<u8>,
 }
 
 impl SealedObject {
     /// Reconstruct a sealed object from previously persisted blobs (used by the persistence layer
-    /// on reload before [`unseal`]).
-    pub fn from_blobs(public: Public, private: Private) -> Self {
-        Self { public, private }
+    /// on reload before [`unseal`]). `primary_name` is the Name pinned at enrollment.
+    pub fn from_blobs(public: Public, private: Private, primary_name: Vec<u8>) -> Self {
+        Self {
+            public,
+            private,
+            primary_name,
+        }
     }
 
     pub fn public(&self) -> &Public {
@@ -43,6 +50,11 @@ impl SealedObject {
 
     pub fn private(&self) -> &Private {
         &self.private
+    }
+
+    /// The storage primary's Name pinned at seal time, verified against the live primary at unseal.
+    pub fn expected_primary_name(&self) -> &[u8] {
+        &self.primary_name
     }
 }
 
@@ -111,6 +123,10 @@ pub fn seal(
     let sensitive =
         SensitiveData::try_from(secret.as_slice()).map_err(|e| Error::Seal(e.to_string()))?;
 
+    // Pin the primary's Name now so a later unseal can prove it is loading under the same storage
+    // primary, not one an interposer substituted.
+    let primary_name = crate::esapi::primary_name(context, primary)?;
+
     let session = start_salted_hmac_session(context, primary)?;
     let created = context.execute_with_session(Some(session), |ctx| {
         ctx.create(primary, public, Some(auth), Some(sensitive), None, None)
@@ -122,6 +138,7 @@ pub fn seal(
     Ok(SealedObject {
         public: created.out_public,
         private: created.out_private,
+        primary_name,
     })
 }
 
@@ -136,6 +153,11 @@ pub fn unseal(
     pin: &SecretBytes,
 ) -> Result<SecretBytes> {
     let auth = pin_to_auth(pin)?;
+
+    // Refuse before loading anything: if the live primary's Name differs from the one pinned at
+    // enrollment, the salt key has been substituted (or this is a different TPM). Fail closed so the
+    // caller falls back to the password rather than releasing the key under an attacker's key.
+    verify_primary_name(context, primary, sealed.expected_primary_name())?;
 
     let load_session = start_salted_hmac_session(context, primary)?;
     let loaded = context.execute_with_session(Some(load_session), |ctx| {
@@ -155,6 +177,25 @@ pub fn unseal(
     let secret = result?;
     object_flushed?;
     Ok(secret)
+}
+
+/// Verify the live storage primary's Name matches the one pinned in the sealed object. A mismatch
+/// means the primary was substituted (active bus interposer) or the object came from a different
+/// TPM; either way the unseal is refused with [`Error::PrimaryNameMismatch`].
+fn verify_primary_name(context: &mut Context, primary: KeyHandle, expected: &[u8]) -> Result<()> {
+    let actual = crate::esapi::primary_name(context, primary)?;
+    if primary_name_matches(&actual, expected) {
+        Ok(())
+    } else {
+        Err(Error::PrimaryNameMismatch)
+    }
+}
+
+/// Pure pinned-Name comparison, factored out for unit testing without a TPM. A non-empty `expected`
+/// must equal `actual` exactly; an empty `expected` (no pin recorded — corrupt or pre-v2 metadata)
+/// is a mismatch, so the caller fails closed rather than skipping the check.
+fn primary_name_matches(actual: &[u8], expected: &[u8]) -> bool {
+    !expected.is_empty() && actual == expected
 }
 
 /// Run the policy session and unseal, isolated so the caller can flush the loaded object regardless
@@ -372,5 +413,32 @@ mod tests {
             "a sealed data object neither signs nor decrypts"
         );
         assert!(!object_attributes.decrypt());
+    }
+
+    #[test]
+    fn primary_name_match_requires_exact_nonempty_equality() {
+        // Security invariant: pinning only protects if the comparison is exact and an absent pin
+        // (empty `expected`) fails closed rather than skipping the check.
+        let name = [0xABu8, 0xCD, 0xEF, 0x01];
+        assert!(
+            primary_name_matches(&name, &name),
+            "identical Names must match"
+        );
+        assert!(
+            !primary_name_matches(&name, &[0xABu8, 0xCD, 0xEF, 0x02]),
+            "a single differing byte (substituted primary) must not match"
+        );
+        assert!(
+            !primary_name_matches(&name, &name[..3]),
+            "a truncated Name must not match"
+        );
+        assert!(
+            !primary_name_matches(&name, &[]),
+            "an empty pinned Name must fail closed, never match"
+        );
+        assert!(
+            !primary_name_matches(&[], &[]),
+            "two empty Names must not be treated as a match"
+        );
     }
 }

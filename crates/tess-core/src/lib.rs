@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Current version of the on-disk [`Metadata`] schema. Bump on any incompatible change.
-pub const METADATA_VERSION: u32 = 1;
+///
+/// v2 added `primary_name` (SRK Name pinning). v1 metadata is rejected: it predates interposer
+/// detection and has no pinned Name to verify against, so it must be re-enrolled.
+pub const METADATA_VERSION: u32 = 2;
 
 /// Errors surfaced across tess crates. Libraries propagate these with context; the binary edge
 /// (`tess-cli`, `tess-pam`) maps them to user-facing messages or PAM return codes. Errors are never
@@ -163,15 +166,26 @@ pub struct Metadata {
     pub sealed_public: String,
     /// TPM sealed object private blob (TPM2B_PRIVATE), base64. Populated by `tess-tpm`.
     pub sealed_private: String,
+    /// SHA-256 **Name** (TPM object fingerprint) of the storage primary this object was sealed
+    /// under, base64. Re-derived and verified at unseal: a substituted primary — an active bus
+    /// interposer swapping the session salt key after enrollment — yields a different Name and the
+    /// unseal is refused. Pinned at enroll (trust-on-first-use); never a secret.
+    pub primary_name: String,
 }
 
 impl Metadata {
-    pub fn new(policy: Policy, sealed_public: String, sealed_private: String) -> Self {
+    pub fn new(
+        policy: Policy,
+        sealed_public: String,
+        sealed_private: String,
+        primary_name: String,
+    ) -> Self {
         Self {
             version: METADATA_VERSION,
             policy,
             sealed_public,
             sealed_private,
+            primary_name,
         }
     }
 
@@ -296,7 +310,12 @@ mod tests {
 
     #[test]
     fn metadata_roundtrips_and_validates() {
-        let m = Metadata::new(Policy::PinAuthValue, "pub".into(), "priv".into());
+        let m = Metadata::new(
+            Policy::PinAuthValue,
+            "pub".into(),
+            "priv".into(),
+            "name".into(),
+        );
         let json = serde_json::to_string(&m).unwrap();
         let back: Metadata = serde_json::from_str(&json).unwrap();
         assert_eq!(back.version, METADATA_VERSION);
@@ -306,7 +325,7 @@ mod tests {
 
     #[test]
     fn metadata_rejects_future_version() {
-        let mut m = Metadata::new(Policy::PinAuthValue, "p".into(), "q".into());
+        let mut m = Metadata::new(Policy::PinAuthValue, "p".into(), "q".into(), "n".into());
         m.version = METADATA_VERSION + 1;
         assert!(matches!(
             m.validate_version(),
