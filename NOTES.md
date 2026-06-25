@@ -908,3 +908,41 @@ Key facts / gotchas:
 
 ## 2026-06-24 — face research: passive IR liveness is correct (not blink); multi-frame match (#89)
 **Resolution:** researched liveness/anti-spoof best practice (Windows Hello docs, Wikipedia liveness/biometric-spoofing, 3 decision-policy subagents). Findings: (1) Hello/Face ID use **passive active-illumination IR reflectance, no blink/motion** — pipeline find-face→landmarks→orientation→representation→threshold; motion liveness is a *remote-KYC* technique (deepfake-injection threat) with friction+replay weakness, not used for local device unlock. (2) Microsoft documents the photo/screen IR-invisibility we observed (*"IR doesn't display in photos … do not display on an LCD display"*) — casual spoofs rejected at *detection*, before liveness (empirically Brio: phone 9/9, glossy Polaroid 15/15 not detected as a face). (3) Residual risk = 3-D mask / IR-faithful print (no depth sensor; no ISO 30107-3 claim); PIN is the real gate (multi-factor). (4) Single-shot/first-match-wins (howdy `compare.py`, fprintd) is vulnerable to a transient false-match. **So:** don't add blink; make `verify` multi-frame. Implemented: `verify` aggregates cosine distance over up to MATCH_FRAMES(5) quality-gated frames within the deadline (detector miss → frame dropped from the vote), requires the **median** over ≥MIN_MATCH_FRAMES(3) to clear the threshold (majority — a transient fluke can't carry it; even-count uses upper-middle, conservative); too few → `InsufficientFrames` → PIN. `decide_match`/`frame_distance` unit-tested + scripted-source end-to-end (transient false-match rejected, consistent match accepted, too-few → no-decision). `crates/mug/src/gate.rs` · `docs/adr/0020` · #89. **fprintd one-shot GH issue:** none found — fprintd/libfprint track on gitlab.freedesktop.org (GitHub search is noise); their verify is first-match-wins by design but I found no filed issue calling it a weakness.
+
+## 2026-06-24 — secure-practices research sweep (5 parallel agents) → 4 IOUs filed
+**Resolution:** deep online-research pass (face PAD/liveness, multi-frame fusion, TPM sealing, Rust
+secret handling, fprintd/PAM) validating the shipped design; codebase already matches best practice on
+almost every axis. Durable findings:
+- **TPM (`tess-tpm`) is near-textbook** — salted HMAC session, `nonce=None` (so GHSA-w3vw-ccc5-qr8v UAF
+  never applied — it only fires with explicit `Some(nonce)`), AES-128-CFB decrypt+encrypt param
+  encryption, ECC P-256, `PolicyAuthValue`, `noDA` clear, host-`getrandom`⊕TPM-`GetRandom` mixing.
+  Confirmed vs Pulse Security BitLocker LPC-sniff + NCC *TPM Genie*. **Only gap:** no SRK Name pinning
+  → an *active* interposer can substitute the salt key; `esapi.rs` overclaimed "defeats an interposer."
+  → **#93** (this PR implements it).
+- **Advisory-ID error** (confirmed at rustsec.org): PLAN.md (5×)+AGENTS.md cite `RUSTSEC-2023-0044`
+  (which is the **OpenSSL** `set_host` over-read, CVE-2023-53159) for the tss-esapi UAF; the real one is
+  `GHSA-w3vw-ccc5-qr8v` (no CVE; patched 6.1.2/7.1.0). Pin `≥7.1.0` is correct, only the citation wrong.
+  → **#92**.
+- **`SecretBytes` `Vec<u8>`** → prefer `Box<[u8]>` (zeroize realloc caveat) + **no core-dump
+  suppression** (`RLIMIT_CORE=0`/`PR_SET_DUMPABLE`; mlock doesn't cover core dumps). → **#94**.
+- **Liveness/multiframe** (ADR-0020 validated, not overclaiming): passive active-illumination IR is
+  correct (Hello/Face ID, no blink); harden with face-localized + randomized-timing reflectance (anti
+  CVE-2021-34466 whole-frame bypass) and **decorrelate** the #89 burst (frames are correlated →
+  quorum ≠ `far^K`, real FAR floor is PIN+anti-hammering). → **#95**.
+- **fprintd is single-shot/first-match-wins** (proven from upstream `pam/pam_fprintd.c`) + 3-try retry
+  loop; no score fusion. NIST SP 800-63B §4.2.1: biometric is a factor, never a standalone authenticator.
+
+## 2026-06-24 — SRK Name pinning: detect an active TPM-bus interposer (#93)
+**Resolution:** the salted session defeats a *passive* bus sniffer but not an *active* interposer that
+substitutes its own key as the session **salt key** (ESAPI salts to the primary's public, read off the
+bus from `CreatePrimary` — substitutable). Fix = pin the primary's **Name** (SHA-256 fingerprint) at
+enroll, re-verify at unseal. Implemented: `esapi::primary_name(ctx,primary)` (`Esys_TR_GetName`);
+`SealedObject` carries `expected_primary_name`; `seal()` records it; **`unseal()` verifies it before
+loading anything and fails closed with `Error::PrimaryNameMismatch`** (→ PIN fallback). Persisted as new
+required `Metadata.primary_name` (base64); `METADATA_VERSION` 1→2 (v1 rejected, re-enroll). Pure
+`primary_name_matches` (empty-expected = fail closed) unit-tested; sim tests assert Name is stable
+across re-derivation and that a tampered pinned Name is rejected while the genuine object still unseals.
+**TOFU model:** detects an interposer introduced *after* enroll; one active *during* enroll is the
+residual (out of scope, like the live-machine adversary) — documented. Zero orchestration-layer changes
+(threaded via `SealedObject`+`persist`). No new deps (uses existing tss-esapi). `crates/tess-tpm/src/{esapi.rs,seal.rs,persist.rs}` · `crates/tess-core/src/lib.rs` · `docs/adr/0021` · threat-model.md/architecture.md · #93.
+

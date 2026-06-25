@@ -9,7 +9,8 @@ mod common;
 use common::Swtpm;
 use tess_core::SecretBytes;
 use tess_tpm::{
-    Error, create_primary, generate_sealing_key, seal, start_salted_hmac_session, unseal,
+    Error, create_primary, generate_sealing_key, primary_name, seal, start_salted_hmac_session,
+    unseal,
 };
 
 #[test]
@@ -112,4 +113,81 @@ fn sealing_key_is_32_bytes_and_varies_across_calls() {
     assert_eq!(a.len(), 32);
     assert_eq!(b.len(), 32);
     assert_ne!(a.as_slice(), b.as_slice(), "two generated keys must differ");
+}
+
+#[test]
+fn primary_name_is_stable_across_rederivation() {
+    // The storage primary is regenerated from the owner seed each boot via the deterministic
+    // template, so its Name must be identical across re-derivations — otherwise pinning would lock
+    // out the legitimate user on every unlock.
+    let Some((_swtpm, cfg)) = Swtpm::start() else {
+        return;
+    };
+    let mut context = cfg.open_context().expect("open ESAPI context");
+
+    let p1 = create_primary(&mut context).expect("create primary");
+    let n1 = primary_name(&mut context, p1.key_handle).expect("read primary name");
+    context
+        .flush_context(p1.key_handle.into())
+        .expect("flush first primary");
+
+    let p2 = create_primary(&mut context).expect("re-derive primary");
+    let n2 = primary_name(&mut context, p2.key_handle).expect("read re-derived primary name");
+    context
+        .flush_context(p2.key_handle.into())
+        .expect("flush second primary");
+
+    assert!(!n1.is_empty(), "a primary Name must be non-empty");
+    assert_eq!(
+        n1, n2,
+        "the deterministic template must yield a stable Name across re-derivation"
+    );
+}
+
+#[test]
+fn unseal_refuses_a_substituted_primary_name() {
+    // Security invariant (interposer detection): an object whose pinned primary Name differs from
+    // the live primary — exactly what a substituted salt key produces — must refuse to unseal,
+    // while the genuine object still unseals.
+    let Some((_swtpm, cfg)) = Swtpm::start() else {
+        return;
+    };
+    let mut context = cfg.open_context().expect("open ESAPI context");
+    let primary = create_primary(&mut context).expect("create primary");
+
+    let key = generate_sealing_key(&mut context).expect("generate sealing key");
+    let pin = SecretBytes::new(b"1234".to_vec());
+    let sealed = seal(&mut context, primary.key_handle, &pin, &key).expect("seal");
+
+    // Round-trip through persistence, then forge the pinned Name to a different valid value.
+    let mut metadata = tess_tpm::persist::to_metadata(&sealed).expect("to_metadata");
+    metadata.primary_name = swap_first_base64_char(&metadata.primary_name);
+    let tampered = tess_tpm::persist::from_metadata(&metadata).expect("from_metadata");
+
+    let err = unseal(&mut context, primary.key_handle, &tampered, &pin)
+        .expect_err("a substituted primary Name must refuse to unseal");
+    assert!(
+        matches!(err, Error::PrimaryNameMismatch),
+        "expected PrimaryNameMismatch, got {err:?}"
+    );
+
+    // The genuine object (correct pinned Name) still unseals: the check is precise, not a blanket
+    // block on the loaded object.
+    let recovered =
+        unseal(&mut context, primary.key_handle, &sealed, &pin).expect("genuine object unseals");
+    assert_eq!(recovered.as_slice(), key.as_slice());
+
+    context
+        .flush_context(primary.key_handle.into())
+        .expect("flush primary");
+}
+
+/// Flip the first base64 character to a different valid one: changes the decoded Name bytes while
+/// staying valid base64 so `from_metadata` still decodes it.
+fn swap_first_base64_char(s: &str) -> String {
+    let mut chars: Vec<char> = s.chars().collect();
+    if let Some(c) = chars.first_mut() {
+        *c = if *c == 'A' { 'B' } else { 'A' };
+    }
+    chars.into_iter().collect()
 }
