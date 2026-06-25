@@ -38,8 +38,9 @@ pub enum Error {
     PrimaryName(String),
 
     #[error(
-        "storage primary Name does not match the value pinned at enrollment: a different TPM, or a \
-         bus interposer substituting the session salt key"
+        "storage primary Name does not match the value pinned at enrollment (a different TPM, or a \
+         bus interposer substituting the session salt key): the key is intentionally NOT unsealed — \
+         fall back to the password, and re-enroll only if this machine's TPM was legitimately changed"
     )]
     PrimaryNameMismatch,
 

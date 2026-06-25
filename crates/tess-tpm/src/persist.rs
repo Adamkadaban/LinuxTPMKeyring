@@ -41,9 +41,10 @@ pub fn to_metadata(sealed: &SealedObject) -> Result<Metadata> {
     ))
 }
 
-/// Reconstruct a sealed object from metadata: validate the schema version, base64-decode both blobs,
-/// unmarshal the public area, and rebuild the private buffer. The result is ready to hand to
-/// [`crate::unseal`] under the same TPM's primary.
+/// Reconstruct a sealed object from metadata: validate the schema version, base64-decode the public
+/// and private blobs and the pinned primary Name, unmarshal the public area, and rebuild the private
+/// buffer. The result is ready to hand to [`crate::unseal`] (which re-verifies that Name) under the
+/// same TPM's primary.
 pub fn from_metadata(metadata: &Metadata) -> Result<SealedObject> {
     metadata.validate_version()?;
     if metadata.policy != Policy::PinAuthValue {
