@@ -26,7 +26,12 @@ and nothing more than that.
   silicon, not by our code or by boot state.
 - **Against TPM bus attacks.** Every seal and unseal runs under a **salted HMAC +
   parameter-encryption session**, so neither the PIN authValue nor the unsealed key ever crosses the
-  TPM bus in the clear — an SPI interposer learns nothing.
+  TPM bus in the clear — a *passive* SPI sniffer learns nothing. An *active* interposer that instead
+  substitutes its own key as the session salt key is caught separately: the storage primary's
+  **Name is pinned at enrollment and re-verified on every unseal**, so a substituted primary fails
+  closed (see [ADR-0021](adr/0021-srk-name-pinning.md)). The residual is an interposer already active
+  *during enrollment* (the trust-on-first-use moment), which is out of scope like the live-machine
+  adversary.
 
 ## What this is, precisely: authentication, not attestation
 
@@ -44,6 +49,7 @@ in [ADR-0002](adr/0002-scope-root-out-no-vbs.md).
 | Thief with a powered-off / stolen laptop or disk | **Yes** | Keyring stays sealed; no offline brute force; needs the PIN on the original TPM. |
 | Online PIN guesser on the running machine | **Yes** | Throttled to a hardware DA-lockout; a wrong PIN fails closed and accrues toward lockout. |
 | Passive TPM-bus interposer (SPI sniffer) | **Yes** | HMAC + parameter-encrypted sessions; no plaintext authValue or key on the bus. |
+| Active TPM-bus interposer (substitutes the salt key *after* enrollment) | **Yes** | Storage-primary **Name pinned at enroll, re-verified at unseal**; a substituted primary fails closed ([ADR-0021](adr/0021-srk-name-pinning.md)). Residual: an interposer active *during* enrollment (TOFU) is out of scope. |
 | Root / kernel attacker on a **live, running** machine | **No** | Out of scope — can keylog the PIN or read the released key from memory. See below. |
 | Remote attacker wanting proof a human was present | **No** | tess is auth, not attestation; it makes no such claim. |
 
@@ -126,6 +132,20 @@ Honest security trade-off, by construction:
   Howdy (which has no liveness at all), but it does not claim to stop a determined attacker with a
   fabricated 3-D mask matched to the enrolled face — that is out of scope, as is any root adversary
   on a live machine (who can forge a match or read the released key from memory).
+- **Passive IR, not a motion challenge — by design.** Like Windows Hello (and Face ID), liveness is
+  passive active-illumination IR reflectance; there is **no blink/smile/head-turn challenge**.
+  Motion-based liveness is a *remote-KYC video* technique whose modern threat is deepfake stream
+  injection (not relevant to a local physical camera), it adds friction, and it is itself replayable.
+  Empirically on the Brio, screens and prints aren't even rendered as a detectable face in near-IR
+  (Microsoft documents the same: *"IR doesn't display in photos … the images do not display in photos
+  or on an LCD display"*), so casual spoofs are rejected at the detection stage, before liveness.
+  See [ADR-0020](adr/0020-passive-ir-liveness-and-multiframe-match.md).
+- **The match decides over multiple frames, not one.** A single-frame match could authenticate on a
+  transient distance dip below threshold (the live viewer made this visible). `verify` instead
+  aggregates the cosine distance over several quality-gated frames within the deadline and requires
+  the **median** to clear the threshold (majority agreement). A single fluke frame cannot carry the
+  decision (unlike the first-match-wins loop in howdy/fprintd); too few quality frames is a
+  no-decision → PIN. The bias is toward false-reject, which the PIN absorbs.
 - **No model ships.** The IR matcher is pluggable (an ArcFace/SFace ONNX network loaded from
   configuration); with no model the face factor is simply unavailable and unlock falls back to the
   PIN. No raw face image is ever persisted — only the embedding and liveness calibration, 0600 under
@@ -227,11 +247,11 @@ avoid.
 
 | Attack class (cited prior art) | Control in tess |
 |---|---|
-| Bus sniff / interposer (Dolos BitLocker, TPM Genie) | No PCR-only sealing; PIN authValue + **mandatory HMAC / parameter-encryption sessions** on every seal/unseal ([ADR-0001](adr/0001-tpm-seal-random-key-pin-authvalue-hmac-sessions.md)) |
+| Bus sniff / interposer (Dolos BitLocker, TPM Genie) | No PCR-only sealing; PIN authValue + **mandatory HMAC / parameter-encryption sessions** defeat the *passive* sniff ([ADR-0001](adr/0001-tpm-seal-random-key-pin-authvalue-hmac-sessions.md)); the storage primary's **Name is pinned at enroll and re-verified at unseal** to catch an *active* (TPM Genie-class) salt-key substitution ([ADR-0021](adr/0021-srk-name-pinning.md)) |
 | Weak keygen / RNG (ROCA) | Seal a **self-generated** random blob (not a TPM-born RSA key); ECC P-256; `getrandom` XOR-mixed with TPM `GetRandom` |
 | Timing side channel (TPM-FAIL, Hertzbleed) | Constant-time PIN handling; rely on the TPM **DA-lockout**, not comparison-timing secrecy |
 | Online PIN brute force / lockout abuse | Wrong PINs trip the hardware DA-lockout; the privileged reset is gated by the **recovery secret** (a sub-key never equal to `K`), so an attacker who trips the lockout cannot clear it ([ADR-0011](adr/0011-privileged-da-lockout-reset.md)) |
-| Biometric spoof (Windows Hello IR replay, CVE-2021-34466) | The fingerprint leg is **host-trusted, never the sole gate** (the PIN authValue is the real gate). Face unlock (Mug) *can* release the key but is **liveness-gated** — active IR-reflectance rejects photo/screen spoofs (not 3-D masks) — and keeps the PIN as an always-available fallback |
+| Biometric spoof (Windows Hello IR replay, CVE-2021-34466) | The fingerprint leg is **host-trusted, never the sole gate** (the PIN authValue is the real gate). Face unlock (Mug) *can* release the key but is **liveness-gated** — active IR-reflectance rejects photo/screen spoofs (not 3-D masks) — decides identity over **multiple quality-gated frames** (median/majority, so a transient false-match can't authenticate), and keeps the PIN as an always-available fallback |
 | TOCTOU / confused deputy in PAM | Unseal is bound to the authenticated PAM session and gated by TPM policy; no replayable out-of-band "verify-match" |
 | Memory disclosure (cold boot, swap, ptrace, core dump) | `zeroize`-on-drop + minimal key lifetime + best-effort `mlock` (secrets pinned in RAM, never **swapped**); hibernation (suspend-to-disk) and core-dump disabling (`PR_SET_DUMPABLE`/`RLIMIT_CORE`) are **not** covered by `mlock` and remain operator-level mitigations |
 | Dependency FFI UAF (RUSTSEC-2023-0044) | Pin `tss-esapi ≥ 7.1.0`; `cargo audit` + `cargo deny` gate every PR |

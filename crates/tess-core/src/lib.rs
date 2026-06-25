@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Current version of the on-disk [`Metadata`] schema. Bump on any incompatible change.
-pub const METADATA_VERSION: u32 = 1;
+///
+/// v2 added `primary_name` (SRK Name pinning). v1 metadata is rejected: it predates interposer
+/// detection and has no pinned Name to verify against, so it must be re-enrolled.
+pub const METADATA_VERSION: u32 = 2;
 
 /// Errors surfaced across tess crates. Libraries propagate these with context; the binary edge
 /// (`tess-cli`, `tess-pam`) maps them to user-facing messages or PAM return codes. Errors are never
@@ -163,15 +166,33 @@ pub struct Metadata {
     pub sealed_public: String,
     /// TPM sealed object private blob (TPM2B_PRIVATE), base64. Populated by `tess-tpm`.
     pub sealed_private: String,
+    /// SHA-256 **Name** (TPM object fingerprint) of the storage primary this object was sealed
+    /// under, base64. Re-derived and verified at unseal: a substituted primary — an active bus
+    /// interposer swapping the session salt key after enrollment — yields a different Name and the
+    /// unseal is refused. Pinned at enroll (trust-on-first-use); never a secret.
+    ///
+    /// `#[serde(default)]` so a v1 file (which legitimately predates this field) still deserializes
+    /// and is then rejected by [`Metadata::validate_version`] with the structured
+    /// [`Error::MetadataVersion`] (re-enroll) rather than a generic serde "missing field" error. A
+    /// current-version file with an empty Name is corrupt and is rejected up front by
+    /// `tess_tpm::persist::from_metadata` with a structured metadata error (not deferred to unseal).
+    #[serde(default)]
+    pub primary_name: String,
 }
 
 impl Metadata {
-    pub fn new(policy: Policy, sealed_public: String, sealed_private: String) -> Self {
+    pub fn new(
+        policy: Policy,
+        sealed_public: String,
+        sealed_private: String,
+        primary_name: String,
+    ) -> Self {
         Self {
             version: METADATA_VERSION,
             policy,
             sealed_public,
             sealed_private,
+            primary_name,
         }
     }
 
@@ -296,7 +317,12 @@ mod tests {
 
     #[test]
     fn metadata_roundtrips_and_validates() {
-        let m = Metadata::new(Policy::PinAuthValue, "pub".into(), "priv".into());
+        let m = Metadata::new(
+            Policy::PinAuthValue,
+            "pub".into(),
+            "priv".into(),
+            "name".into(),
+        );
         let json = serde_json::to_string(&m).unwrap();
         let back: Metadata = serde_json::from_str(&json).unwrap();
         assert_eq!(back.version, METADATA_VERSION);
@@ -306,11 +332,28 @@ mod tests {
 
     #[test]
     fn metadata_rejects_future_version() {
-        let mut m = Metadata::new(Policy::PinAuthValue, "p".into(), "q".into());
+        let mut m = Metadata::new(Policy::PinAuthValue, "p".into(), "q".into(), "n".into());
         m.version = METADATA_VERSION + 1;
         assert!(matches!(
             m.validate_version(),
             Err(Error::MetadataVersion { .. })
+        ));
+    }
+
+    #[test]
+    fn v1_metadata_without_primary_name_fails_with_version_error_not_parse_error() {
+        // A v1 file legitimately predates `primary_name`. It must still deserialize so
+        // `validate_version` can return the structured version error (→ re-enroll), rather than a
+        // generic serde "missing field `primary_name`" parse failure.
+        let v1 = r#"{"version":1,"policy":{"kind":"pin_auth_value"},"sealed_public":"AA","sealed_private":"BB"}"#;
+        let m: Metadata = serde_json::from_str(v1).expect("v1 JSON must still deserialize");
+        assert_eq!(m.primary_name, "", "absent primary_name defaults to empty");
+        assert!(matches!(
+            m.validate_version(),
+            Err(Error::MetadataVersion {
+                found: 1,
+                expected: METADATA_VERSION
+            })
         ));
     }
 }
