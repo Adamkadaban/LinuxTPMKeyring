@@ -31,8 +31,8 @@ no GUI) and use this extension purely for the lock-screen **glyph**, via a clean
 ## Try it (on a Debian 13 / GNOME 48 test box — never the dev laptop)
 
 ```sh
-# Install for the current user
-cp -r gnome-extension ~/.local/share/gnome-shell/extensions/tessera-facestatus@tessera.local
+# Install for the current user (run from the repository root):
+cp -r ./gnome-extension ~/.local/share/gnome-shell/extensions/tessera-facestatus@tessera.local
 # Wayland: log out / back in (Shell only scans extension dirs at session start), then:
 gnome-extensions enable tessera-facestatus@tessera.local
 
