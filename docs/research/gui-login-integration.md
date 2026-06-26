@@ -4,6 +4,13 @@
 decide the GUI direction deliberately. Spawned from the question "how do we display the face-unlock at
 login — a GNOME extension? something else?"
 
+> **Follow-on:** the actionable engineering layer (D-Bus contract, lock-screen trust boundary, pam.d
+> wiring, extension lifecycle) lives in [`gui-login-design.md`](./gui-login-design.md) +
+> [ADR-0022](../adr/0022-login-ui-pam-text-plus-unlock-dialog-extension.md), with a non-wired prototype
+> extension in [`/gnome-extension/`](../../gnome-extension/). Note one correction surfaced there: gaze
+> paints its status text by monkeypatching `ShellUserVerifier` (not a clean D-Bus subscription); we
+> deliberately diverge.
+
 **One-line answer:** PAM already gives us text status "for free" at both the login greeter and the lock
 screen; for a *Hello-style glyph + animation* we add a small GNOME Shell extension that runs **only on
 the lock screen** (not the boot greeter) — and that greeter gap is **good**, because it makes the
