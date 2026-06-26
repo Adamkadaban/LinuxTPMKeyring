@@ -231,9 +231,11 @@ fails or hangs.
   minimized to the unseal→handoff window. Those buffers are `mlock`ed into RAM (best-effort, via the
   safe `region` crate) so the cleartext is never written to **swap**; if the OS refuses (a low
   `RLIMIT_MEMLOCK`) the secret stays `zeroize`-on-drop and a note is logged. `mlock` does **not**
-  cover suspend-to-disk/hibernation (which snapshots all RAM to disk) or core dumps — disabling
-  hibernation / using encrypted swap, and disabling core dumps (`PR_SET_DUMPABLE`/`RLIMIT_CORE`),
-  remain operator-level mitigations.
+  cover suspend-to-disk/hibernation (which snapshots all RAM to disk) or core dumps. tess closes the
+  **core-dump** vector itself: every secret-touching entry point (the `tess` CLI and the
+  `tess-pam-helper`) lowers `RLIMIT_CORE` to 0 at startup (best-effort, via the safe `nix` wrapper),
+  so a crash while a secret is live can't write it to a core file. Hibernation remains an
+  operator-level mitigation (disable it, or use encrypted swap).
 - The PIN is never logged and never reaches argv, the environment, or disk. The PAM module hands it
   to the helper over an anonymous in-memory file (`memfd`), not a pipe — eliminating a `SIGPIPE` that
   could kill the login process (see [ADR-0010](adr/0010-pam-helper-pin-transport-memfd.md)).
@@ -253,8 +255,8 @@ avoid.
 | Online PIN brute force / lockout abuse | Wrong PINs trip the hardware DA-lockout; the privileged reset is gated by the **recovery secret** (a sub-key never equal to `K`), so an attacker who trips the lockout cannot clear it ([ADR-0011](adr/0011-privileged-da-lockout-reset.md)) |
 | Biometric spoof (Windows Hello IR replay, CVE-2021-34466) | The fingerprint leg is **host-trusted, never the sole gate** (the PIN authValue is the real gate). Face unlock (Mug) *can* release the key but is **liveness-gated** — active IR-reflectance rejects photo/screen spoofs (not 3-D masks) — decides identity over **multiple quality-gated frames** (median/majority, so a transient false-match can't authenticate), and keeps the PIN as an always-available fallback |
 | TOCTOU / confused deputy in PAM | Unseal is bound to the authenticated PAM session and gated by TPM policy; no replayable out-of-band "verify-match" |
-| Memory disclosure (cold boot, swap, ptrace, core dump) | `zeroize`-on-drop + minimal key lifetime + best-effort `mlock` (secrets pinned in RAM, never **swapped**); hibernation (suspend-to-disk) and core-dump disabling (`PR_SET_DUMPABLE`/`RLIMIT_CORE`) are **not** covered by `mlock` and remain operator-level mitigations |
-| Dependency FFI UAF (RUSTSEC-2023-0044) | Pin `tss-esapi ≥ 7.1.0`; `cargo audit` + `cargo deny` gate every PR |
+| Memory disclosure (cold boot, swap, ptrace, core dump) | `zeroize`-on-drop + minimal key lifetime + best-effort `mlock` (secrets pinned in RAM, never **swapped**); secret-touching entry points set `RLIMIT_CORE` to 0 so a crash can't dump a secret to a **core file**; hibernation (suspend-to-disk) is not covered by `mlock` and remains an operator-level mitigation (disable it / encrypted swap) |
+| Dependency FFI UAF (GHSA-w3vw-ccc5-qr8v) | Pin `tss-esapi ≥ 7.1.0`; `cargo audit` + `cargo deny` gate every PR |
 
 ## Non-goals (so they are never mistaken for gaps)
 

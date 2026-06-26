@@ -53,13 +53,15 @@ serde_json = "1"
 base64 = "0.22"
 
 # Syscalls / keyctl
-nix = { version = "0.31", features = ["fs", "process", "signal"] }
+nix = { version = "0.31", features = ["fs", "process", "signal", "resource"] }
 libc = "0.2"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# TPM (pinned ≥7.1.0 — RUSTSEC-2023-0044). kept on stable; tss-esapi 8.0.0 is an alpha pre-release.
+# TPM (pinned ≥7.1.0 — GHSA-w3vw-ccc5-qr8v). The UAF only triggers when start_auth_session is given an
+# explicit Some(nonce); our sessions pass nonce_caller=None, so keep it that way. kept on stable;
+# tss-esapi 8.0.0 is an alpha pre-release.
 tss-esapi = "7.7"
 # Recovery-secret wrapping: derive a key-encryption key from the high-entropy recovery secret
 # (HKDF-SHA256) and AEAD-seal the keyring key under it (XChaCha20-Poly1305), so the keyring is

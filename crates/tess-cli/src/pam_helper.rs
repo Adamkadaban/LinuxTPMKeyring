@@ -8,6 +8,7 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    tess_cli::harden::disable_core_dumps();
     // The PAM module appends `--fingerprint` / `--face` when its `fingerprint=yes` / `face=yes`
     // arguments enable those legs. Absent both, the helper runs the PIN-only path. Scan argv once
     // rather than allocating a Vec — this is the login-time path.
