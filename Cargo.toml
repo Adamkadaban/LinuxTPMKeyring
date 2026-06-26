@@ -53,7 +53,7 @@ serde_json = "1"
 base64 = "0.22"
 
 # Syscalls / keyctl
-nix = { version = "0.31", features = ["fs", "process", "signal"] }
+nix = { version = "0.31", features = ["fs", "process", "signal", "resource"] }
 libc = "0.2"
 
 # CLI

@@ -955,3 +955,18 @@ Cargo.toml, deny.toml); left this journal's two earlier `tss-esapi` citations (i
 dep-health note and the supply-chain exemptions note) intact per append-only discipline — this entry is
 the correction of record. PR #92.
 
+## 2026-06-26 — SecretBytes Box<[u8]> backing + core-dump suppression (#94)
+**Resolution:** two residual secret-hygiene gaps from the 2026-06-24 sweep. (1) `SecretBytes.data`
+`Vec<u8>` → **`Box<[u8]>`**: a boxed slice can't reallocate, so `zeroize` wipes the whole live buffer
+with no stale heap copy (the `zeroize` `Vec` caveat). `new(Vec<u8>)` keeps its signature (~80 callers)
+but now copies into an exact-size box and zeroizes the source `Vec`, avoiding the `into_boxed_slice()`
+realloc-leaves-a-copy trap on a slack-capacity input. (2) **Core dumps**: `mlock` doesn't cover them, so
+`tess_cli::harden::disable_core_dumps()` sets `RLIMIT_CORE`=0 (soft+hard) at both secret-touching
+entrypoints — `tess` (`main.rs`) and `tess-pam-helper` (`pam_helper.rs`). Used the **safe `nix`
+setrlimit** wrapper (tess-cli is `forbid(unsafe)`, so libc's unsafe `setrlimit` is out; `nix` was
+already a workspace dep — added its `resource` feature + moved it from tess-cli dev-deps to deps; **zero
+new crates in Cargo.lock**, no cargo-vet churn). Lowering the hard limit never needs privilege and can't
+be undone — safe to call unconditionally; failure is logged once, never fatal. Threat-model updated
+(core dumps now closed by tess; hibernation still operator-level). `crates/tess-core/src/lib.rs` ·
+`crates/tess-cli/src/harden.rs` · `crates/tess-cli/src/{main.rs,pam_helper.rs}` · #94.
+
