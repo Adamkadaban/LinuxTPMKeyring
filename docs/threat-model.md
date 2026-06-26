@@ -256,7 +256,7 @@ avoid.
 | Biometric spoof (Windows Hello IR replay, CVE-2021-34466) | The fingerprint leg is **host-trusted, never the sole gate** (the PIN authValue is the real gate). Face unlock (Mug) *can* release the key but is **liveness-gated** — active IR-reflectance rejects photo/screen spoofs (not 3-D masks) — decides identity over **multiple quality-gated frames** (median/majority, so a transient false-match can't authenticate), and keeps the PIN as an always-available fallback |
 | TOCTOU / confused deputy in PAM | Unseal is bound to the authenticated PAM session and gated by TPM policy; no replayable out-of-band "verify-match" |
 | Memory disclosure (cold boot, swap, ptrace, core dump) | `zeroize`-on-drop + minimal key lifetime + best-effort `mlock` (secrets pinned in RAM, never **swapped**); secret-touching entry points set `RLIMIT_CORE` to 0 so a crash can't dump a secret to a **core file**; hibernation (suspend-to-disk) is not covered by `mlock` and remains an operator-level mitigation (disable it / encrypted swap) |
-| Dependency FFI UAF (RUSTSEC-2023-0044) | Pin `tss-esapi ≥ 7.1.0`; `cargo audit` + `cargo deny` gate every PR |
+| Dependency FFI UAF (GHSA-w3vw-ccc5-qr8v) | Pin `tss-esapi ≥ 7.1.0`; `cargo audit` + `cargo deny` gate every PR |
 
 ## Non-goals (so they are never mistaken for gaps)
 

@@ -187,6 +187,9 @@ pub fn start_salted_hmac_session(context: &mut Context, primary: KeyHandle) -> R
         .start_auth_session(
             Some(primary),
             None,
+            // nonce_caller is intentionally None. The >=7.1.0 pin already closes the tss-esapi UAF
+            // GHSA-w3vw-ccc5-qr8v, which only ever triggered when an explicit Some(nonce) was passed
+            // here; keeping it None is defense-in-depth that stays safe even if the pin regressed.
             None,
             SessionType::Hmac,
             SymmetricDefinition::AES_128_CFB,
