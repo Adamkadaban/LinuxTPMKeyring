@@ -71,17 +71,18 @@ pub struct SecretBytes {
 
 impl SecretBytes {
     pub fn new(mut bytes: Vec<u8>) -> Self {
-        // Copy into an exact-size, non-reallocating boxed slice, then wipe the **entire** source
-        // allocation. Going through `into_boxed_slice()` would reallocate (leaving an un-zeroized
-        // copy) whenever the caller's `Vec` had excess capacity. We also wipe the slack capacity
-        // beyond `len` (a grow-then-truncate caller could have left secret bytes there, which a plain
-        // `Vec::zeroize` — which only covers `0..len` — would miss): `resize` to the full capacity
-        // fills the slack with zeros without reallocating, then `zeroize` clears the rest.
-        let data: Box<[u8]> = bytes.as_slice().into();
+        // Copy into an exact-size, non-reallocating boxed slice and lock it **first**, before
+        // wiping the source — so the destination spends the least time pageable. Going through
+        // `into_boxed_slice()` would reallocate (leaving an un-zeroized copy) whenever the caller's
+        // `Vec` had excess capacity. We then wipe the whole source allocation, including the slack
+        // capacity beyond `len` (a grow-then-truncate caller could have left secret bytes there,
+        // which a plain `Vec::zeroize` — covering only `0..len` — would miss): `resize` to the full
+        // capacity fills the slack with zeros without reallocating, then `zeroize` clears the rest.
+        let secret = Self::from_boxed(bytes.as_slice().into());
         let capacity = bytes.capacity();
         bytes.resize(capacity, 0);
         bytes.zeroize();
-        Self::from_boxed(data)
+        secret
     }
 
     /// Build from an already-exact boxed slice (no `Vec` round-trip), locking its pages.
