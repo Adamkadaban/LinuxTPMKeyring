@@ -90,6 +90,7 @@ enum Command {
 }
 
 fn main() -> anyhow::Result<()> {
+    tess_cli::harden::disable_core_dumps();
     let cli = Cli::parse();
     match cli.command {
         Command::Enroll { pin, face } => enroll::cli::run(pin, face)?,
