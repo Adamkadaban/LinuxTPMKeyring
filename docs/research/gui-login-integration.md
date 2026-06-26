@@ -15,7 +15,10 @@ login — a GNOME extension? something else?"
 screen; for a *Hello-style glyph + animation* we add a small GNOME Shell extension that runs **only on
 the lock screen** (not the boot greeter) — and that greeter gap is **good**, because it makes the
 cold-boot first unlock use the PIN, which is exactly the at-rest posture the TPM design already depends
-on. This is the architecture the maintained Rust/GNOME project **gaze** already ships.
+on. This split (PAM text + a lock-screen extension) is validated by the maintained Rust/GNOME project
+**gaze**, which ships the same daemon+PAM+extension *shape* — though it transports its status text
+differently (by monkeypatching `ShellUserVerifier`); we deliberately diverge on that (see §7 and the
+follow-on design doc).
 
 ---
 
@@ -111,7 +114,7 @@ Sources: Wayland *Protocol & Model of Operation*; `ext-session-lock-v1` (wayland
 
 ## 7. Prior art
 
-- **GunduLabs/gaze** (Rust, GNOME, maintained) — **already ships exactly (a)+(b):** a `gazed` D-Bus
+- **GunduLabs/gaze** (Rust, GNOME, maintained) — **ships the same (a)+(b) shape:** a `gazed` D-Bus
   daemon + `pam-gaze` PAM module (login/sudo) + a `gaze-gnome-extension` **for lock-screen auth** + a
   GTK4/Adwaita enrollment GUI; its installer only adds the extension when a GNOME session is detected,
   and toggles it via `gsettings`. Strong validation of the recommended split, and a near-exact model for

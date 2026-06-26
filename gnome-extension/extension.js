@@ -86,9 +86,9 @@ export default class TesseraFaceStatusExtension extends Extension {
     enable() {
         this._cancellable = new Gio.Cancellable();
 
-        // Root daemon → system bus. Sender-filtered by the well-known name:
-        // a Gio.DBusProxy resolves 'org.tessera.ScanState1' to its current
-        // owner's unique name, so signals from any other connection are dropped.
+        // Root daemon → system bus. The Gio.DBusProxy only surfaces signals from the well-known
+        // name's current owner; the actual security boundary is the D-Bus policy that lets only
+        // root own org.tessera.ScanState1, so a non-root forger can never be that owner.
         const FaceStatusProxy = Gio.DBusProxy.makeProxyWrapper(FACE_STATUS_IFACE);
         this._proxy = FaceStatusProxy(
             Gio.DBus.system,
