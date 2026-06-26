@@ -1,7 +1,6 @@
 // Tessera Face Unlock Status — GNOME Shell 48 (ESM) lock-screen status glyph.
 //
 // PROTOTYPE / DESIGN REFERENCE — not wired into the tessera .deb yet.
-// See docs/research/gui-login-design.md and docs/adr/0022-*.
 //
 // This extension is a PURE VIEW. It subscribes to the root-owned system-bus
 // signal org.tessera.ScanState1.StateChanged(s) and draws an abstract glyph on
