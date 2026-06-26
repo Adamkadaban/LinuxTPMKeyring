@@ -77,7 +77,8 @@ within N seconds and the helper PID is reaped.
   lifetime to the unseal→handoff window.
 - **Bind the unseal to the authenticated PAM session** (single-use, session-scoped) — no trusting a
   replayable out-of-band "verify-match" (defeats TOCTOU / confused-deputy).
-- **`tss-esapi ≥ 7.1.0`** (closes GHSA-w3vw-ccc5-qr8v FFI use-after-free).
+- **`tss-esapi ≥ 7.1.0`** (closes GHSA-w3vw-ccc5-qr8v FFI use-after-free; the UAF only fires with an
+  explicit `Some(nonce)`, so our sessions must keep `nonce_caller = None`).
 
 **Prior art we study, not reinvent:** **ChromeOS cryptohome** (seal a *random* per-user key, never
 the password; the unpadded-blob trick to throttle guesses without tripping TPM lockout) and
