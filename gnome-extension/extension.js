@@ -65,7 +65,10 @@ class FaceGlyph extends St.BoxLayout {
         this.add_style_class_name(ui.css);
         this._icon.icon_name = ui.icon;
         this._label.text = ui.label;
-        this.visible = state !== 'idle';
+        // Visibility derives from the CLAMPED ui, not the raw state, so an unknown/
+        // garbage payload (which clamps to idle) stays hidden rather than showing a
+        // blank pill.
+        this.visible = ui !== STATE_UI.idle;
     }
 });
 
