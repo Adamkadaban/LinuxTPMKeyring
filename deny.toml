@@ -4,7 +4,7 @@
 [advisories]
 version = 2
 yanked = "deny"
-# RUSTSEC-2023-0044 (tss-esapi FFI use-after-free) is closed by pinning >= 7.1.0 in Cargo.toml.
+# GHSA-w3vw-ccc5-qr8v (tss-esapi FFI use-after-free) is closed by pinning >= 7.1.0 in Cargo.toml.
 ignore = []
 
 [licenses]

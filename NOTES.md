@@ -946,3 +946,12 @@ across re-derivation and that a tampered pinned Name is rejected while the genui
 residual (out of scope, like the live-machine adversary) — documented. Zero orchestration-layer changes
 (threaded via `SealedObject`+`persist`). No new deps (uses existing tss-esapi). `crates/tess-tpm/src/{esapi.rs,seal.rs,persist.rs}` · `crates/tess-core/src/lib.rs` · `docs/adr/0021` · threat-model.md/architecture.md · #93.
 
+## 2026-06-26 — corrected the wrong advisory ID for the tss-esapi FFI UAF (#92)
+**Resolution:** confirmed at the source — `RUSTSEC-2023-0044` is the **OpenSSL** `set_host` buffer
+over-read (CVE-2023-53159), not tss-esapi; the tss-esapi `Context::start_auth_session` use-after-free is
+**GHSA-w3vw-ccc5-qr8v** (no CVE, patched 7.1.0/6.1.2, only triggers with `Some(nonce)` — we pass
+`None`). Swapped the ID in all normative docs/config (PLAN.md, AGENTS.md, threat-model.md, ADR-0006,
+Cargo.toml, deny.toml); left this journal's two earlier `tss-esapi` citations (in the bootstrap
+dep-health note and the supply-chain exemptions note) intact per append-only discipline — this entry is
+the correction of record. PR #92.
+
