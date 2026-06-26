@@ -951,6 +951,7 @@ residual (out of scope, like the live-machine adversary) — documented. Zero or
 over-read (CVE-2023-53159), not tss-esapi; the tss-esapi `Context::start_auth_session` use-after-free is
 **GHSA-w3vw-ccc5-qr8v** (no CVE, patched 7.1.0/6.1.2, only triggers with `Some(nonce)` — we pass
 `None`). Swapped the ID in all normative docs/config (PLAN.md, AGENTS.md, threat-model.md, ADR-0006,
-Cargo.toml, deny.toml); left this journal's historical entries (lines 38, 684) intact per append-only
-discipline — this entry is the correction of record. PR #92.
+Cargo.toml, deny.toml); left this journal's two earlier `tss-esapi` citations (in the bootstrap
+dep-health note and the supply-chain exemptions note) intact per append-only discipline — this entry is
+the correction of record. PR #92.
 
