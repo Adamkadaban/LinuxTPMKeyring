@@ -15,10 +15,15 @@ use nix::sys::resource::{Resource, setrlimit};
 /// regardless and needs encrypted swap as a separate, operator-level mitigation.
 pub fn disable_core_dumps() {
     if let Err(e) = setrlimit(Resource::RLIMIT_CORE, 0, 0) {
-        eprintln!(
-            "tess: note: could not disable core dumps ({e}); a crash could leave secret material \
-             in a core file. Set `ulimit -c 0` or disable core dumps system-wide as a fallback."
-        );
+        // Warn once per process — a repeat call (e.g. another entry point or a test) shouldn't spam.
+        use std::sync::Once;
+        static WARNED: Once = Once::new();
+        WARNED.call_once(|| {
+            eprintln!(
+                "tess: note: could not disable core dumps ({e}); a crash could leave secret material \
+                 in a core file. Set `ulimit -c 0` or disable core dumps system-wide as a fallback."
+            );
+        });
     }
 }
 

@@ -71,11 +71,21 @@ pub struct SecretBytes {
 
 impl SecretBytes {
     pub fn new(mut bytes: Vec<u8>) -> Self {
-        // Copy into an exact-size, non-reallocating boxed slice, then wipe the source `Vec`. Going
-        // through `into_boxed_slice()` would reallocate (leaving an un-zeroized copy) whenever the
-        // caller's `Vec` had excess capacity; an explicit exact copy + source-zeroize avoids that.
+        // Copy into an exact-size, non-reallocating boxed slice, then wipe the **entire** source
+        // allocation. Going through `into_boxed_slice()` would reallocate (leaving an un-zeroized
+        // copy) whenever the caller's `Vec` had excess capacity. We also wipe the slack capacity
+        // beyond `len` (a grow-then-truncate caller could have left secret bytes there, which a plain
+        // `Vec::zeroize` — which only covers `0..len` — would miss): `resize` to the full capacity
+        // fills the slack with zeros without reallocating, then `zeroize` clears the rest.
         let data: Box<[u8]> = bytes.as_slice().into();
+        let capacity = bytes.capacity();
+        bytes.resize(capacity, 0);
         bytes.zeroize();
+        Self::from_boxed(data)
+    }
+
+    /// Build from an already-exact boxed slice (no `Vec` round-trip), locking its pages.
+    fn from_boxed(data: Box<[u8]>) -> Self {
         let lock = lock_buffer(&data);
         Self { _lock: lock, data }
     }
@@ -125,7 +135,8 @@ fn lock_buffer(buf: &[u8]) -> Option<region::LockGuard> {
 impl Clone for SecretBytes {
     fn clone(&self) -> Self {
         // A clone gets its own freshly-locked buffer (the lock guard binds to a specific allocation).
-        Self::new(self.data.to_vec())
+        // The source is already an exact boxed slice, so clone it directly — no intermediate `Vec`.
+        Self::from_boxed(self.data.clone())
     }
 }
 
