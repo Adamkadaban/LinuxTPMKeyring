@@ -137,9 +137,11 @@ where
     }
 
     if !live {
-        return Err(last_reject.unwrap_or(MugError::LivenessRejected(
-            "no live face captured within the deadline".into(),
-        )));
+        // A concrete liveness rejection (a face was seen but failed the gates) surfaces as
+        // `LivenessRejected`; but if no frame ever reached the liveness gate — every warm capture
+        // timed out or never yielded a detectable face — that is the camera being unavailable, which
+        // must stay a `Timeout` at the `AuthGate` boundary, not be misclassified as an auth failure.
+        return Err(last_reject.unwrap_or(MugError::Timeout(deadline_ms)));
     }
     decide_match(&mut distances, enrolled.match_threshold, MIN_MATCH_FRAMES)
 }
@@ -789,6 +791,37 @@ mod tests {
             2000,
         )
         .expect("a consistently-matching sequence must authenticate");
+    }
+
+    #[test]
+    fn verify_with_a_stalled_warm_capture_times_out() {
+        // A camera that yields the cold frame then stalls (never a usable warm frame, no liveness
+        // rejection recorded) must surface Timeout — factor unavailable — not LivenessRejected, so the
+        // error typing at the AuthGate boundary stays correct (timeouts remain timeouts).
+        let (off, on_a, _on_b) = scripted_frames();
+        let matcher = Matcher::new(PooledExtractor::new(64).unwrap(), 0.34);
+        let enrolled = enroll_from(&on_a, &matcher, 0.34);
+        let frames = vec![off]; // cold only; every warm capture stalls (drained → Timeout)
+        let mut source = ScriptedSource {
+            frames: frames.into(),
+            w: W,
+            h: H,
+        };
+        let mut emitter = NoopEmitter;
+        let err = verify(
+            &mut source,
+            &mut emitter,
+            &matcher,
+            None,
+            &enrolled,
+            &LivenessConfig::default(),
+            120,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, MugError::Timeout(_)),
+            "a stalled warm capture must surface Timeout, got {err:?}"
+        );
     }
 
     #[test]
