@@ -595,7 +595,11 @@ where
         let pair =
             mug::capture_liveness_pair(&mut self.source, &mut self.emitter, self.deadline_ms)
                 .map_err(|e| anyhow!("capture the IR frame pair: {e}"))?;
-        let features = mug::analyze_liveness(&pair, &self.liveness_cfg)
+        // Liveness on the aligned face crop (not the whole frame): the emitter return is measured
+        // where the face is, matching how `verify` checks it at unlock — so the enrolled liveness
+        // score calibrates against the same signal. With no detector (test substrate) it falls back
+        // to whole-frame analysis.
+        let features = mug::localized_liveness(&pair, self.detector.as_deref(), &self.liveness_cfg)
             .map_err(|e| anyhow!("analyze liveness: {e}"))?
             .into_result()
             .map_err(|e| anyhow!("liveness check failed during enrollment: {e}"))?;
@@ -809,8 +813,14 @@ where
     let deadline = cfg.capture_deadline_ms;
 
     pause("Get into position for the REFERENCE capture (your face)");
-    let reference = match capture_and_report("reference", source, emitter, &liveness_cfg, deadline)?
-    {
+    let reference = match capture_and_report(
+        "reference",
+        source,
+        emitter,
+        detector,
+        &liveness_cfg,
+        deadline,
+    )? {
         Some(pair) => {
             let face = align_for_embed(detector, &pair.emitter_on)?;
             matcher
@@ -823,10 +833,11 @@ where
     pause(
         "Get into position for the PROBE capture (your face again, a printed photo/screen, or another person)",
     );
-    let probe = match capture_and_report("probe", source, emitter, &liveness_cfg, deadline)? {
-        Some(pair) => pair,
-        None => return Ok(FaceTestOutcome::ProbeRejected),
-    };
+    let probe =
+        match capture_and_report("probe", source, emitter, detector, &liveness_cfg, deadline)? {
+            Some(pair) => pair,
+            None => return Ok(FaceTestOutcome::ProbeRejected),
+        };
 
     let probe_face = align_for_embed(detector, &probe.emitter_on)?;
     let distance = matcher
@@ -860,6 +871,7 @@ fn capture_and_report<S, E>(
     label: &str,
     source: &mut S,
     emitter: &mut E,
+    detector: Option<&dyn FaceDetector>,
     liveness_cfg: &LivenessConfig,
     deadline_ms: u64,
 ) -> Result<Option<mug::camera::FramePair>>
@@ -869,7 +881,7 @@ where
 {
     let pair = mug::capture_liveness_pair(source, emitter, deadline_ms)
         .map_err(|e| anyhow!("capture the {label} IR pair: {e}"))?;
-    let report = mug::analyze_liveness(&pair, liveness_cfg)
+    let report = mug::localized_liveness(&pair, detector, liveness_cfg)
         .map_err(|e| anyhow!("analyze {label} liveness: {e}"))?;
     let f = &report.features;
     println!(

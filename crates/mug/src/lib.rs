@@ -77,7 +77,7 @@ pub use detect::{
     DEFAULT_NMS_IOU, DEFAULT_SCORE_THRESHOLD, Detection, FaceDetector, FixedDetector,
     locate_and_align,
 };
-pub use gate::{FaceGate, verify};
+pub use gate::{FaceGate, localized_liveness, verify};
 pub use liveness::{LivenessConfig, LivenessFeatures, LivenessReport, analyze as analyze_liveness};
 pub use matcher::{Embedding, EmbeddingExtractor, Matcher, PooledExtractor, cosine_distance};
 
