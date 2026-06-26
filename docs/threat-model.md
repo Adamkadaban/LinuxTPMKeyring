@@ -103,8 +103,12 @@ is deliberately out of scope for this MVP.
 The post-MVP face factor (`mug`) gives **Windows-Hello-style face unlock**: a successful,
 liveness-gated face match releases the keyring key with no PIN typed, and **the PIN remains an
 always-available fallback** (and the recovery path). Unlike Howdy it ships a real anti-spoof:
-**active IR reflectance liveness**. It captures a pair of IR frames with the camera's IR emitter OFF
-then ON and keys on the per-pixel differential. A live 3-D skin face returns a strong,
+**active IR reflectance liveness** measured on the **detected, aligned face crop** (whole-frame
+analysis dilutes the emitter return across the dark IR background and rejects genuine faces — see
+[ADR-0022](adr/0022-crop-localized-liveness-warm-loop.md)). It captures a cold emitter-OFF baseline
+then streams warm frames — selecting the first frame with a detectable, live face and retrying
+detection within the deadline, so a single missed detection no longer drops straight to the PIN — and
+keys on the per-pixel differential of the crop. A live 3-D skin face returns a strong,
 spatially-structured response (reflectance gradient following facial geometry, high-frequency skin
 texture, localized speculars); a printed photo returns a weak and/or uniform response; a
 curved/glossy photo can fake the mean and variance but not the high-frequency relief; a
@@ -145,7 +149,11 @@ Honest security trade-off, by construction:
   aggregates the cosine distance over several quality-gated frames within the deadline and requires
   the **median** to clear the threshold (majority agreement). A single fluke frame cannot carry the
   decision (unlike the first-match-wins loop in howdy/fprintd); too few quality frames is a
-  no-decision → PIN. The bias is toward false-reject, which the PIN absorbs.
+  no-decision → PIN. The bias is toward false-reject, which the PIN absorbs. The median improves
+  resilience to *transient* per-frame noise, but burst frames are statistically correlated, so it does
+  **not** defend a presentation attack or look-alike that fools every frame at once — the real
+  false-accept floor is the **PIN authValue + TPM dictionary-attack lockout**, not the frame count
+  (see [ADR-0022](adr/0022-crop-localized-liveness-warm-loop.md)).
 - **No model ships.** The IR matcher is pluggable (an ArcFace/SFace ONNX network loaded from
   configuration); with no model the face factor is simply unavailable and unlock falls back to the
   PIN. No raw face image is ever persisted — only the embedding and liveness calibration, 0600 under

@@ -576,6 +576,18 @@ single `mug::sys` ioctl boundary (ADR-0012); `tess-cli` adds no `unsafe`. Both b
 liveness gate and `Matcher`. `template_source_from_env` (enroll) and `verify_from_env` (unlock) select
 symmetrically.
 
+**Liveness is measured on the aligned face crop, and `verify` retries detection within the deadline.**
+`mug::localized_liveness(pair, detector, cfg)` detects on the lit frame, aligns both OFF and ON frames
+with those landmarks, and analyzes the *crop* pair — whole-frame analysis dilutes the emitter return
+across the dark IR background and rejects a genuine face (gradient ~3 vs the same crop ~9–12 on a real
+Brio). It is shared by `verify`, enroll (so the enrolled liveness score calibrates on the same signal),
+and `face-test`. `verify` captures one cold OFF baseline, then streams warm frames: the first frame
+with a detectable, live face clears the liveness gate, and that and the subsequent warm frames feed the
+identity median. A frame with no detectable face is **skipped** (the next warm frame is tried) rather
+than failing the unlock, so a single missed detection no longer drops to the PIN; a static spoof fails
+liveness on every frame, so the retry doesn't weaken anti-spoof. Bounded by the wall-clock deadline and
+a capture cap, so login never blocks. See [ADR-0022](adr/0022-crop-localized-liveness-warm-loop.md).
+
 **Matcher: detect → align → embed → match.** With the `face-model` feature and both a face-detector
 (`MUG_DETECTOR_MODEL`, YuNet) and an embedder (`MUG_MODEL_PATH`, ArcFace/SFace) configured, the
 emitter-ON frame is run through a **YuNet** detector (via `tract`; decode + NMS in safe Rust), the 5
