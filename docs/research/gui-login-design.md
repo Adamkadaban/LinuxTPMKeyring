@@ -126,6 +126,10 @@ admin):
   <policy user="root">
     <allow own="org.tessera.ScanState1"/>
     <allow send_destination="org.tessera.ScanState1"/>
+    <!-- root may emit the broadcast StateChanged signal; the default-context deny below stops
+         everyone else. Broadcast signals have no destination, so this needs send_interface, not
+         send_destination — and without this allow the default deny would block root too. -->
+    <allow send_interface="org.tessera.ScanState1" send_type="signal"/>
   </policy>
   <policy context="default">
     <deny  own="org.tessera.ScanState1"/>
