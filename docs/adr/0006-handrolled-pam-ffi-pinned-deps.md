@@ -17,7 +17,7 @@ module-authoring-only. The existing `Mug` project already hand-rolls a minimal P
   workspace; every other crate is `#![forbid(unsafe_code)]`. The PAM C ABI surface we need
   (`pam_get_item`, `pam_set_data`/`get_data`, `pam_get_authtok`, the conversation struct) is tiny and
   frozen.
-- **Pin the security-critical deps:** `tss-esapi ≥ 7.1.0` (closes RUSTSEC-2023-0044, an FFI
+- **Pin the security-critical deps:** `tss-esapi ≥ 7.1.0` (closes GHSA-w3vw-ccc5-qr8v, an FFI
   use-after-free in `start_auth_session`). Prefer `getrandom` for key bytes, `zeroize`/`secrecy` for
   hygiene, `zbus` + `secret-service` for D-Bus, `nix` for `keyctl`/syscalls.
 - **Gate every PR with `cargo audit` + `cargo deny`** (advisories/bans/licenses/sources). License

@@ -59,7 +59,7 @@ libc = "0.2"
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# TPM (pinned ≥7.1.0 — RUSTSEC-2023-0044). kept on stable; tss-esapi 8.0.0 is an alpha pre-release.
+# TPM (pinned ≥7.1.0 — GHSA-w3vw-ccc5-qr8v). kept on stable; tss-esapi 8.0.0 is an alpha pre-release.
 tss-esapi = "7.7"
 # Recovery-secret wrapping: derive a key-encryption key from the high-entropy recovery secret
 # (HKDF-SHA256) and AEAD-seal the keyring key under it (XChaCha20-Poly1305), so the keyring is

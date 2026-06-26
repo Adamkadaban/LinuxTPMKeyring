@@ -77,7 +77,7 @@ within N seconds and the helper PID is reaped.
   lifetime to the unseal→handoff window.
 - **Bind the unseal to the authenticated PAM session** (single-use, session-scoped) — no trusting a
   replayable out-of-band "verify-match" (defeats TOCTOU / confused-deputy).
-- **`tss-esapi ≥ 7.1.0`** (closes RUSTSEC-2023-0044 FFI use-after-free).
+- **`tss-esapi ≥ 7.1.0`** (closes GHSA-w3vw-ccc5-qr8v FFI use-after-free).
 
 **Prior art we study, not reinvent:** **ChromeOS cryptohome** (seal a *random* per-user key, never
 the password; the unpadded-blob trick to throttle guesses without tripping TPM lockout) and
@@ -407,7 +407,7 @@ audit`/`cargo deny`/`cargo vet` gate every PR; `cargo +nightly -Z minimal-versio
   session-bound single-use match; strict gate ordering.
 - **Memory disclosure (security).** Cold boot, swap, ptrace, core dump. *Mitigation:* `mlock` +
   `zeroize` ASAP, disable core dumps, minimize key lifetime.
-- **Dependency vulns (supply chain).** RUSTSEC-2023-0044 in `tss-esapi` (FFI UAF). *Mitigation:* pin
+- **Dependency vulns (supply chain).** GHSA-w3vw-ccc5-qr8v in `tss-esapi` (FFI UAF). *Mitigation:* pin
   `tss-esapi ≥ 7.1.0`; `cargo audit`/`deny`/`vet` in CI; fuzz our own parsers (Phase 6).
 - **Unstable private GNOME D-Bus API (dep churn).** *Mitigation:* isolate behind `KeyringBackend`,
   prefer stable `gnome-keyring-daemon --unlock`, integration-test the real daemon.
@@ -486,7 +486,7 @@ TODO.
 PCR-only; weak keygen (ROCA) → self-gen random blob + ECC; side channel (TPM-FAIL) → constant-time +
 DA-lockout; biometric spoof (Hello IR-replay) → host-trusted, PIN gate, IR liveness; TOCTOU → unseal
 bound to PAM session; memory disclosure (cold boot) → mlock/zeroize + minimal lifetime; dep UAF
-(RUSTSEC-2023-0044) → pin `tss-esapi ≥ 7.1.0`.
+(GHSA-w3vw-ccc5-qr8v) → pin `tss-esapi ≥ 7.1.0`.
 
 **Seeded ADRs** (written at bootstrap): PIN-authValue-over-PCR + mandatory HMAC sessions; root-out-of-
 scope / no-VBS threat model; userspace `tss-esapi` over kernel trusted-keys; eBPF rejected; Secret

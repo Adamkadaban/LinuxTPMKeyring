@@ -366,7 +366,7 @@ Mirror the per-phase wave tables in [`PLAN.md`](./PLAN.md) §5. Current phase: *
   (anti bus-sniffing); ECC primary; self-generated random key mixed with TPM RNG; constant-time PIN
   handling; `mlock` + `zeroize` released material. These fix the reference repo's mistakes and the
   documented TPM attack classes.
-- **Pin `tss-esapi ≥ 7.1.0`** (RUSTSEC-2023-0044, FFI use-after-free). `cargo audit` + `cargo deny`
+- **Pin `tss-esapi ≥ 7.1.0`** (GHSA-w3vw-ccc5-qr8v, FFI use-after-free). `cargo audit` + `cargo deny`
   gate every PR.
 - **Keyring access goes through the `KeyringBackend` trait over the freedesktop Secret Service API**
   (`org.freedesktop.secrets`) — GNOME is the reference impl; unstable private GNOME D-Bus calls stay
