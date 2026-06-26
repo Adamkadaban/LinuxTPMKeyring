@@ -95,8 +95,14 @@ export default class TesseraFaceStatusExtension extends Extension {
             'org.tessera.ScanState1',
             '/org/tessera/ScanState1',
             (proxy, error) => {
+                // disable() may run before this async callback fires — lock/unlock churn calls
+                // enable()/disable() frequently. If it did, bail without logging the expected
+                // cancellation or attaching a signal handler that nothing would clean up.
+                if (this._cancellable === null)
+                    return;
                 if (error) {
-                    console.error(`Tessera: FaceStatus proxy failed: ${error}`);
+                    if (!error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                        console.error(`Tessera: FaceStatus proxy failed: ${error}`);
                     return;
                 }
                 this._signalId = proxy.connectSignal('StateChanged',
