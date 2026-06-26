@@ -13,11 +13,11 @@ use std::time::{Duration, Instant};
 
 use tess_core::AuthGate;
 
-use crate::align::ALIGNED_FACE_SIZE;
-use crate::camera::{IrEmitter, IrFrame, IrSource, capture_liveness_pair};
+use crate::align::{ALIGNED_FACE_SIZE, align_face};
+use crate::camera::{FramePair, IrEmitter, IrFrame, IrSource};
 use crate::detect::{FaceDetector, locate_and_align};
 use crate::error::{MugError, Result};
-use crate::liveness::{LivenessConfig, analyze};
+use crate::liveness::{LivenessConfig, LivenessReport, analyze};
 use crate::matcher::{EmbeddingExtractor, Matcher};
 use crate::store::FaceEnrollment;
 
@@ -31,15 +31,25 @@ const MIN_MATCH_FRAMES: usize = 3;
 /// Per-frame capture budget while collecting the warm identity frames (a warmed frame arrives well
 /// within this; a slower one just yields fewer frames within the deadline).
 const PER_FRAME_BUDGET_MS: u64 = 150;
+/// Upper bound on warm captures per verify, on top of the wall-clock deadline: enough to warm up,
+/// clear liveness, and collect `MATCH_FRAMES` identity frames while tolerating a few detection
+/// misses, but bounded so an instant-capture source (the test substrate) can't busy-spin to the
+/// deadline when no frame ever passes.
+const MAX_CAPTURE_ATTEMPTS: usize = 12;
 
-/// Run the full face-verification pipeline within `deadline_ms`. Returns `Ok(())` only when the
-/// captured pair is live *and* the **majority** of quality-gated identity frames match `enrolled`
+/// Run the full face-verification pipeline within `deadline_ms`. Returns `Ok(())` only when a
+/// captured frame is live *and* the **majority** of quality-gated identity frames match `enrolled`
 /// within `enrolled.match_threshold`; otherwise a typed [`MugError`] — e.g. timeout, liveness
 /// rejection, insufficient frames, or no match, plus any propagated camera/emitter/matcher error.
-/// When `detector` is set each frame is located +
-/// aligned before embedding (so the embedding describes the face, not the whole scene), and a frame
-/// with no detectable face is dropped from the vote rather than matched against the background (so a
-/// per-frame no-face never surfaces as an error — too few face frames becomes `InsufficientFrames`).
+///
+/// Capture is one cold (emitter-OFF) baseline followed by a warm-frame loop. The **first** warm frame
+/// with a detectable, live face clears the liveness gate (measured on the aligned face crop when a
+/// `detector` is set, so the emitter return isn't diluted by the dark background); that frame and the
+/// subsequent warm frames feed the identity median, and a frame with no detectable face is dropped
+/// from the vote. Because the liveness frame is *selected* from the warm loop rather than fixed to a
+/// single capture, a transient detection miss retries on the next warm frame instead of falling
+/// straight through to the PIN — while a static spoof, which fails liveness on every frame, gains
+/// nothing. Bounded by the wall-clock deadline and a capture cap, so it never blocks login.
 pub fn verify<S, E, X>(
     source: &mut S,
     emitter: &mut E,
@@ -55,50 +65,93 @@ where
     X: EmbeddingExtractor,
 {
     let deadline = Instant::now() + Duration::from_millis(deadline_ms);
-
-    // Liveness is a hard gate before identity: a rejected pair never reaches the matcher. The score
-    // threshold comes from the per-enrollment calibration (captured at enroll), with the rest of the
-    // gate parameters from the caller's config. `capture_liveness_pair` returns ~as soon as the
-    // emitter has warmed, leaving the rest of the deadline for the warm identity frames below.
-    let pair = capture_liveness_pair(source, emitter, deadline_ms)?;
     let effective_cfg = LivenessConfig {
         score_threshold: enrolled.liveness.score_threshold,
         ..liveness_cfg.clone()
     };
-    analyze(&pair, &effective_cfg)?.into_result()?;
 
-    // Multi-frame identity: aggregate the match over several quality-gated frames so a single
-    // transient below-threshold frame can't authenticate. The liveness ON frame is
-    // the first sample; the emitter is warm, so follow-up frames arrive quickly.
-    let mut distances: Vec<f32> = Vec::with_capacity(MATCH_FRAMES);
-    if let Some(d) = frame_distance(matcher, detector, &pair.emitter_on, enrolled)? {
-        distances.push(d);
-    }
-    // Re-enable the emitter for the warm follow-up frames behind an RAII guard so it is restored to
-    // OFF on *every* exit path (the deadline break, an early `?` error, or the final decision) —
-    // matching `capture_liveness_pair`'s cleanup, so `verify` never leaves the IR illuminator on.
+    // Cold OFF baseline (emitter off): the dark frame the liveness differential subtracts.
+    emitter.set_enabled(false)?;
+    let cold_off = source.capture((deadline_ms / 2).min(remaining_ms(deadline)))?;
+
+    // Warm phase. Enable the emitter (restored OFF on every exit by the guard) and stream warm frames.
+    // The first warm frame with a detectable, live face clears the liveness gate (cold vs that warm
+    // crop); that frame and the subsequent warm frames feed the identity median. A frame with no
+    // detectable face is skipped (detection retry) rather than failing the unlock, so a single missed
+    // detection on a cold/unsettled frame no longer drops straight to the PIN. A static spoof fails
+    // liveness on every frame, so the retry only rescues a genuine user — it does not weaken
+    // anti-spoof. Bounded by the deadline and the capture cap, so login never blocks.
     let _emitter_off = EmitterOffGuard::enabled(emitter)?;
-    while distances.len() < MATCH_FRAMES {
-        let remaining = deadline
-            .saturating_duration_since(Instant::now())
-            .as_millis() as u64;
+    let mut distances: Vec<f32> = Vec::with_capacity(MATCH_FRAMES);
+    let mut live = false;
+    let mut warmed = false;
+    let mut last_reject: Option<MugError> = None;
+    let mut attempts = 0usize;
+
+    while distances.len() < MATCH_FRAMES && attempts < MAX_CAPTURE_ATTEMPTS {
+        attempts += 1;
+        let remaining = remaining_ms(deadline);
         if remaining == 0 {
             break;
         }
-        match source.capture(remaining.min(PER_FRAME_BUDGET_MS)) {
+        // The first warm capture must stream long enough for the emitter to auto-warm; once warm,
+        // later captures return immediately and take only the small per-frame budget.
+        let budget = if warmed {
+            remaining.min(PER_FRAME_BUDGET_MS)
+        } else {
+            remaining
+        };
+        let warm = match source.capture(budget) {
             Ok(frame) => {
-                if let Some(d) = frame_distance(matcher, detector, &frame, enrolled)? {
-                    distances.push(d);
-                }
+                warmed = true;
+                frame
             }
-            // No frame in this slice; keep trying until the wall-clock deadline (bounded — `remaining`
-            // shrinks every iteration and the loop breaks at 0).
+            // No frame in this slice; keep trying until the deadline / cap (bounded, never blocks).
             Err(MugError::Timeout(_)) => continue,
             Err(e) => return Err(e),
+        };
+
+        // Liveness gate on the first usable warm frame. A detection miss skips to the next frame; a
+        // genuine liveness failure is remembered and retried (a spoof fails every frame anyway).
+        if !live {
+            let pair = FramePair::new(cold_off.clone(), warm.clone())?;
+            match localized_liveness(&pair, detector, &effective_cfg) {
+                Ok(report) if report.passed => live = true,
+                Ok(report) => {
+                    last_reject = Some(MugError::LivenessRejected(
+                        report
+                            .reason
+                            .unwrap_or_else(|| "below liveness threshold".into()),
+                    ));
+                    continue;
+                }
+                Err(MugError::NoFace) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+
+        // Identity distance for this (live) frame; a frame with no detectable face is dropped.
+        if let Some(d) = frame_distance(matcher, detector, &warm, enrolled)? {
+            distances.push(d);
         }
     }
 
+    if !live {
+        // A concrete liveness rejection (a face was seen but failed the gates) surfaces as
+        // `LivenessRejected`; but if no frame ever reached the liveness gate — every warm capture
+        // timed out or never yielded a detectable face — that is the camera being unavailable, which
+        // must stay a `Timeout` at the `AuthGate` boundary, not be misclassified as an auth failure.
+        return Err(last_reject.unwrap_or(MugError::Timeout(deadline_ms)));
+    }
     decide_match(&mut distances, enrolled.match_threshold, MIN_MATCH_FRAMES)
+}
+
+/// Milliseconds left until `deadline`, saturating to 0. Bounds every capture so the gate stays within
+/// its wall-clock deadline and never blocks login.
+fn remaining_ms(deadline: Instant) -> u64 {
+    deadline
+        .saturating_duration_since(Instant::now())
+        .as_millis() as u64
 }
 
 /// RAII guard that enables the IR emitter for the warm identity loop and restores it to **OFF** on
@@ -122,6 +175,30 @@ impl<E: IrEmitter> Drop for EmitterOffGuard<'_, E> {
                 "mug: warning: failed to restore IR emitter to off after verify (best-effort): {e}"
             );
         }
+    }
+}
+
+/// Liveness measured on the **aligned face crop** rather than the whole frame, when a detector is
+/// configured: detect the face on the lit frame, align both the OFF and ON frames with those same
+/// landmarks, and analyze the resulting crop pair. Whole-frame analysis dilutes the emitter return
+/// across the dark IR background — the face's reflectance gradient is washed out — so on a real Brio
+/// frame the whole-frame gradient gate rejects a genuine face while the crop passes cleanly. Without
+/// a detector (the model-free mock path) it falls back to whole-frame analysis. A `NoFace` from the
+/// detector propagates so the caller falls through to the PIN.
+pub fn localized_liveness(
+    pair: &FramePair,
+    detector: Option<&dyn FaceDetector>,
+    cfg: &LivenessConfig,
+) -> Result<LivenessReport> {
+    match detector {
+        Some(d) => {
+            let det = d.detect(&pair.emitter_on)?;
+            let off_crop = align_face(&pair.emitter_off, &det.landmarks, ALIGNED_FACE_SIZE)?;
+            let on_crop = align_face(&pair.emitter_on, &det.landmarks, ALIGNED_FACE_SIZE)?;
+            let crop_pair = FramePair::new(off_crop, on_crop)?;
+            analyze(&crop_pair, cfg)
+        }
+        None => analyze(pair, cfg),
     }
 }
 
@@ -443,6 +520,151 @@ mod tests {
         .expect("the detector-aligned face must verify against its aligned enrollment");
     }
 
+    fn fixed_face_detector() -> crate::detect::FixedDetector {
+        use crate::detect::{Detection, FixedDetector};
+        FixedDetector::new(Detection {
+            bbox: (0.0, 0.0, W as f32, H as f32),
+            landmarks: crate::align::FaceLandmarks::new([
+                (38.2946, 51.6963),
+                (73.5318, 51.5014),
+                (56.0252, 71.7366),
+                (41.5493, 92.3655),
+                (70.7299, 92.2041),
+            ]),
+            score: 1.0,
+        })
+    }
+
+    #[test]
+    fn localized_liveness_passes_a_structured_face_crop() {
+        // #79: with a detector, liveness runs on the aligned crop. A structured live face passes.
+        let detector = fixed_face_detector();
+        let report = localized_liveness(
+            &synth::live_pair(W, H),
+            Some(&detector),
+            &LivenessConfig::default(),
+        )
+        .unwrap();
+        assert!(
+            report.passed,
+            "a structured live-face crop must pass liveness: {:?}",
+            report.features
+        );
+    }
+
+    #[test]
+    fn localized_liveness_rejects_a_uniform_whole_frame_step() {
+        // #95 acceptance: a uniform whole-frame brightness step that isn't a structured face return
+        // must be rejected even when a face is (claimed) present — the crop is still flat, so the
+        // structure gates (std / gradient) reject it.
+        let detector = fixed_face_detector();
+        let report = localized_liveness(
+            &synth::flat_photo_pair(W, H),
+            Some(&detector),
+            &LivenessConfig::default(),
+        )
+        .unwrap();
+        assert!(
+            !report.passed,
+            "a uniform whole-frame step must be rejected on the crop: {:?}",
+            report.features
+        );
+    }
+
+    #[test]
+    fn localized_liveness_propagates_no_face() {
+        // No detectable face → liveness can't run on a crop → NoFace propagates (caller → PIN).
+        struct NoFaceDetector;
+        impl FaceDetector for NoFaceDetector {
+            fn detect(&self, _frame: &IrFrame) -> Result<crate::detect::Detection> {
+                Err(MugError::NoFace)
+            }
+        }
+        let report = localized_liveness(
+            &synth::live_pair(W, H),
+            Some(&NoFaceDetector),
+            &LivenessConfig::default(),
+        );
+        assert!(matches!(report, Err(MugError::NoFace)));
+    }
+
+    #[test]
+    fn verify_retries_detection_within_the_warm_loop() {
+        // Reliability (#79, seamless unlock): a transient detection miss on the first warm frames
+        // must NOT drop straight to the PIN — the warm loop keeps capturing until a face is detected,
+        // then proceeds with liveness + identity as normal.
+        let (off, on_a, _on_b) = scripted_frames();
+        let matcher = Matcher::new(PooledExtractor::new(64).unwrap(), 0.34);
+        // Enroll from the aligned face using the always-detecting fixed detector.
+        let enroll_det = fixed_face_detector();
+        let aligned = locate_and_align(&enroll_det, &on_a, ALIGNED_FACE_SIZE).unwrap();
+        let enrolled = FaceEnrollment::new(
+            matcher.embed(&aligned).unwrap(),
+            0.34,
+            LivenessCalibration {
+                enrolled_score: 0.9,
+                score_threshold: LivenessConfig::default().score_threshold,
+            },
+        );
+
+        // A detector that returns NoFace for its first two calls (transient cold-frame misses), then
+        // finds the face at the same template landmarks the enrollment used.
+        struct FlakyDetector {
+            misses: std::cell::Cell<usize>,
+        }
+        impl FaceDetector for FlakyDetector {
+            fn detect(&self, _frame: &IrFrame) -> Result<crate::detect::Detection> {
+                let n = self.misses.get();
+                if n > 0 {
+                    self.misses.set(n - 1);
+                    return Err(MugError::NoFace);
+                }
+                Ok(crate::detect::Detection {
+                    bbox: (0.0, 0.0, W as f32, H as f32),
+                    landmarks: crate::align::FaceLandmarks::new([
+                        (38.2946, 51.6963),
+                        (73.5318, 51.5014),
+                        (56.0252, 71.7366),
+                        (41.5493, 92.3655),
+                        (70.7299, 92.2041),
+                    ]),
+                    score: 1.0,
+                })
+            }
+        }
+        let detector = FlakyDetector {
+            misses: std::cell::Cell::new(2),
+        };
+
+        // 1 cold + 7 warm (the first 2 warm frames miss detection, the next 5 match).
+        let frames = vec![
+            off,
+            on_a.clone(),
+            on_a.clone(),
+            on_a.clone(),
+            on_a.clone(),
+            on_a.clone(),
+            on_a.clone(),
+            on_a,
+        ];
+        let mut source = ScriptedSource {
+            frames: frames.into(),
+            w: W,
+            h: H,
+        };
+        let mut emitter = NoopEmitter;
+        verify(
+            &mut source,
+            &mut emitter,
+            &matcher,
+            Some(&detector),
+            &enrolled,
+            &LivenessConfig::default(),
+            2000,
+        )
+        .expect("a transient detection miss must retry within the warm loop, not fall to the PIN");
+    }
+
     #[test]
     fn decide_match_requires_a_majority() {
         // A clear, consistent match / non-match.
@@ -569,6 +791,37 @@ mod tests {
             2000,
         )
         .expect("a consistently-matching sequence must authenticate");
+    }
+
+    #[test]
+    fn verify_with_a_stalled_warm_capture_times_out() {
+        // A camera that yields the cold frame then stalls (never a usable warm frame, no liveness
+        // rejection recorded) must surface Timeout — factor unavailable — not LivenessRejected, so the
+        // error typing at the AuthGate boundary stays correct (timeouts remain timeouts).
+        let (off, on_a, _on_b) = scripted_frames();
+        let matcher = Matcher::new(PooledExtractor::new(64).unwrap(), 0.34);
+        let enrolled = enroll_from(&on_a, &matcher, 0.34);
+        let frames = vec![off]; // cold only; every warm capture stalls (drained → Timeout)
+        let mut source = ScriptedSource {
+            frames: frames.into(),
+            w: W,
+            h: H,
+        };
+        let mut emitter = NoopEmitter;
+        let err = verify(
+            &mut source,
+            &mut emitter,
+            &matcher,
+            None,
+            &enrolled,
+            &LivenessConfig::default(),
+            120,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, MugError::Timeout(_)),
+            "a stalled warm capture must surface Timeout, got {err:?}"
+        );
     }
 
     #[test]

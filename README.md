@@ -157,8 +157,10 @@ tess install --uninstall   # remove the tess block + module (best-effort), un-wi
 putting the keyring key on disk. The same random key `K` that the PIN seals is sealed a **second**
 time under a fresh, independent random authValue `A_face`; that authValue is stored `0600` at
 `face-unlock.key`, and your face is enrolled (an IR embedding + liveness calibration, never a raw
-image). `tess unlock --face` captures an IR frame pair, runs the active-illumination **liveness**
-check, matches your face, and — on success — reads `A_face` and unseals `K` with **no PIN typed**.
+image). `tess unlock --face` captures a cold IR baseline then streams warm frames, runs the
+active-illumination **liveness** check **on the detected, aligned face crop** (retrying detection
+within the deadline so a transient miss doesn't immediately fall back), matches your face over
+several frames, and — on success — reads `A_face` and unseals `K` with **no PIN typed**.
 Any face failure, timeout, or missing enrollment falls back to the PIN. The PIN always works; face is
 the convenience path.
 
