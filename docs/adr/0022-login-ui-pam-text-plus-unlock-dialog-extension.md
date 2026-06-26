@@ -3,8 +3,9 @@
 ## Status
 
 Proposed. Captures the decision for the seamless face-unlock login UI (issue #98) so a later
-implementation phase doesn't relitigate it. No code ships under this ADR yet; it records the chosen
-architecture and the alternatives rejected. Supersedes nothing.
+implementation phase doesn't relitigate it. Nothing is wired into packaging or the product flows yet —
+a non-wired prototype extension lives in `/gnome-extension/` purely as a design reference. It records
+the chosen architecture and the alternatives rejected. Supersedes nothing.
 
 ## Context
 

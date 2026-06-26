@@ -127,7 +127,7 @@ export default class TesseraFaceStatusExtension extends Extension {
             this._unmount();
     }
 
-    // ── UNSTABLE PRIVATE INTERNALS — verify on every GNOME bump ──────────────
+    // Unstable private internals (re-verify on every GNOME bump):
     // Main.screenShield._dialog is the UnlockDialog; it is created lazily and
     // destroyed on unlock, so we (re)mount on each lock. We only ADD a child
     // (additive monkeypatch = lowest breakage risk); we never replace actors,
