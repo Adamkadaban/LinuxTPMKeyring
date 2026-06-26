@@ -1,0 +1,8 @@
+{
+    "uuid": "tessera-facestatus@tessera.local",
+    "name": "Tessera Face Unlock Status",
+    "description": "Shows face-unlock scan status (Looking for you… / Got it) on the GNOME lock screen. Pure view: subscribes to the root-owned org.tessera.ScanState1 system-bus signal and never makes an authentication decision. PROTOTYPE — not wired or installed by the tessera .deb yet.",
+    "shell-version": ["48"],
+    "session-modes": ["user", "unlock-dialog"],
+    "url": "https://github.com/Adamkadaban/LinuxTPMKeyring"
+}
