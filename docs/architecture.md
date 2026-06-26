@@ -586,7 +586,7 @@ with a detectable, live face clears the liveness gate, and that and the subseque
 identity median. A frame with no detectable face is **skipped** (the next warm frame is tried) rather
 than failing the unlock, so a single missed detection no longer drops to the PIN; a static spoof fails
 liveness on every frame, so the retry doesn't weaken anti-spoof. Bounded by the wall-clock deadline and
-a capture cap, so login never blocks. See [ADR-0022](adr/0022-crop-localized-liveness-warm-loop.md).
+a capture cap, so login never blocks. See [ADR-0023](adr/0023-crop-localized-liveness-warm-loop.md).
 
 **Matcher: detect → align → embed → match.** With the `face-model` feature and both a face-detector
 (`MUG_DETECTOR_MODEL`, YuNet) and an embedder (`MUG_MODEL_PATH`, ArcFace/SFace) configured, the

@@ -58,20 +58,37 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// zeroized on drop and a one-line note is emitted once — locking never fails construction or blocks
 /// an auth path. The wipe-then-unlock-then-free ordering is enforced by field declaration order
 /// (`_lock` before `data`).
+///
+/// The backing is a `Box<[u8]>`, not a `Vec<u8>`: a boxed slice can never reallocate, so `zeroize`
+/// is guaranteed to wipe the whole live buffer with no stale heap copy left behind by a prior
+/// growth (the caveat the `zeroize` docs call out for `Vec`).
 pub struct SecretBytes {
     // Drops before `data` (declaration order): after `Drop::drop` zeroizes `data`, the guard
     // unlocks the pages while `data`'s buffer is still allocated, then `data` frees it.
     _lock: Option<region::LockGuard>,
-    data: Vec<u8>,
+    data: Box<[u8]>,
 }
 
 impl SecretBytes {
-    pub fn new(bytes: Vec<u8>) -> Self {
-        let lock = lock_buffer(&bytes);
-        Self {
-            _lock: lock,
-            data: bytes,
-        }
+    pub fn new(mut bytes: Vec<u8>) -> Self {
+        // Copy into an exact-size, non-reallocating boxed slice and lock it **first**, before
+        // wiping the source — so the destination spends the least time pageable. Going through
+        // `into_boxed_slice()` would reallocate (leaving an un-zeroized copy) whenever the caller's
+        // `Vec` had excess capacity. We then wipe the whole source allocation, including the slack
+        // capacity beyond `len` (a grow-then-truncate caller could have left secret bytes there,
+        // which a plain `Vec::zeroize` — covering only `0..len` — would miss): `resize` to the full
+        // capacity fills the slack with zeros without reallocating, then `zeroize` clears the rest.
+        let secret = Self::from_boxed(bytes.as_slice().into());
+        let capacity = bytes.capacity();
+        bytes.resize(capacity, 0);
+        bytes.zeroize();
+        secret
+    }
+
+    /// Build from an already-exact boxed slice (no `Vec` round-trip), locking its pages.
+    fn from_boxed(data: Box<[u8]>) -> Self {
+        let lock = lock_buffer(&data);
+        Self { _lock: lock, data }
     }
 
     pub fn as_slice(&self) -> &[u8] {
@@ -119,7 +136,8 @@ fn lock_buffer(buf: &[u8]) -> Option<region::LockGuard> {
 impl Clone for SecretBytes {
     fn clone(&self) -> Self {
         // A clone gets its own freshly-locked buffer (the lock guard binds to a specific allocation).
-        Self::new(self.data.clone())
+        // The source is already an exact boxed slice, so clone it directly — no intermediate `Vec`.
+        Self::from_boxed(self.data.clone())
     }
 }
 
@@ -298,6 +316,17 @@ mod tests {
             // zeroize-on-drop, just pageable. Don't fail — that's the documented best-effort path.
             eprintln!("note: mlock denied in this environment; skipping the VmLck assertion");
         }
+    }
+
+    #[test]
+    fn new_from_slack_capacity_vec_preserves_contents() {
+        // A Vec with excess capacity exercises the exact-copy path (into_boxed_slice would have
+        // reallocated here). Contents and length must survive the copy intact.
+        let mut v = Vec::with_capacity(64);
+        v.extend_from_slice(&[1, 2, 3, 4, 5]);
+        let s = SecretBytes::new(v);
+        assert_eq!(s.as_slice(), &[1, 2, 3, 4, 5]);
+        assert_eq!(s.len(), 5);
     }
 
     #[test]

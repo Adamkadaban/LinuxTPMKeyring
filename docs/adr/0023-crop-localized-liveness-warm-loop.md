@@ -1,4 +1,4 @@
-# 0022 — Liveness on the aligned face crop, with warm-loop detection retry
+# 0023 — Liveness on the aligned face crop, with warm-loop detection retry
 
 ## Status
 

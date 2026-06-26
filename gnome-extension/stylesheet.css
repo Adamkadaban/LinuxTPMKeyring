@@ -1,0 +1,16 @@
+.tessera-face-glyph {
+    spacing: 12px;
+    padding: 8px 16px;
+    margin-bottom: 12px;
+    border-radius: 18px;
+    background-color: rgba(0, 0, 0, 0.35);
+}
+
+.tessera-face-label {
+    font-size: 13pt;
+    color: #ffffff;
+}
+
+.tessera-scanning .tessera-face-icon { color: #99c1f1; }
+.tessera-matched  .tessera-face-icon { color: #8ff0a4; }
+.tessera-failed   .tessera-face-icon { color: #f66151; }
