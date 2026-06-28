@@ -8,6 +8,7 @@ use crate::liveness::LivenessConfig;
 
 /// Top-level mug configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MugConfig {
     /// Wall-clock budget for a full liveness frame-pair capture. Keeps the factor bounded so it can
     /// never stall login; on timeout the caller degrades to the PIN.
@@ -19,10 +20,9 @@ pub struct MugConfig {
     /// Path to the IR face-embedding ONNX model. `None` means the matcher is unavailable and the
     /// face factor degrades to the PIN — tess ships no model.
     pub model_path: Option<String>,
-    /// Path to the ONNX face-detector model (YuNet). Reserved/plumbed for the upcoming
-    /// detect→align→embed wiring — **not yet read by any code path**, so setting it currently has no
-    /// effect. Once wired, `None` will mean no detector is configured and the face factor degrades
-    /// to the PIN (tess ships no model).
+    /// Path to the ONNX face-detector model (YuNet), read by the detect→align→embed pipeline. `None`
+    /// means no detector is configured: the real enroll/unlock path fails closed and the face factor
+    /// degrades to the PIN (tess ships no model).
     #[serde(default)]
     pub detector_model_path: Option<String>,
     /// How raw `[0,255]` IR pixels are scaled before they reach the model. Defaults to the common

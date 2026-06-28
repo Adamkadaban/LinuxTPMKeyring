@@ -372,43 +372,98 @@ const ENV_MODEL_PATH: &str = "MUG_MODEL_PATH";
 /// opts into the detector-free path (whole-frame embedding, identity meaningless). No model ships.
 const ENV_DETECTOR_MODEL: &str = "MUG_DETECTOR_MODEL";
 
-/// The env var pointing at a JSON [`MugConfig`] file (thresholds, `pixel_scale`, `model_path`, …).
+/// The env var pointing at a [`MugConfig`] file (thresholds, `pixel_scale`, `model_path`, …). Parsed
+/// as TOML, or as JSON when the path ends in `.json`. Overrides the default config file.
 const ENV_CONFIG: &str = "MUG_CONFIG";
 
-/// Load the mug config: parse the JSON file at `MUG_CONFIG` if that var is set, otherwise use the
-/// secure defaults. A set-but-unreadable or malformed file is an error (never silently ignored) so a
+/// A `MugConfig` file is well under a kilobyte; cap the read so a mispointed config (e.g. `/dev/zero`
+/// or a huge file) fails fast instead of hanging/OOMing on the auth path.
+const MAX_CONFIG_BYTES: u64 = 64 * 1024;
+
+/// Default config file location, following the XDG Base Directory spec: `$XDG_CONFIG_HOME/tess/mug.toml`,
+/// falling back to `$HOME/.config/tess/mug.toml`. Pure (env passed in) so it is unit-testable.
+fn config_path_from(xdg_config_home: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(xdg) = xdg_config_home.filter(|p| !p.as_os_str().is_empty()) {
+        return Some(xdg.join("tess").join("mug.toml"));
+    }
+    home.filter(|p| !p.as_os_str().is_empty())
+        .map(|h| h.join(".config").join("tess").join("mug.toml"))
+}
+
+/// The resolved default config path for this process's environment.
+fn default_config_path() -> Option<PathBuf> {
+    config_path_from(
+        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+    )
+}
+
+/// Read and parse a [`MugConfig`] file. TOML by default; JSON when the path ends in `.json`. A
+/// non-regular, oversized, or malformed file is an error (never silently ignored) so a
 /// misconfiguration surfaces rather than reverting to defaults behind the operator's back.
-fn load_config() -> Result<MugConfig> {
+fn parse_config_file(path: &Path) -> Result<MugConfig> {
     use std::io::Read;
-    /// A `MugConfig` JSON is well under a kilobyte; cap the read so a mispointed `MUG_CONFIG`
-    /// (e.g. `/dev/zero` or a huge file) fails fast instead of hanging/OOMing on the auth path.
-    const MAX_CONFIG_BYTES: u64 = 64 * 1024;
+    let file =
+        std::fs::File::open(path).with_context(|| format!("open mug config {}", path.display()))?;
+    let meta = file
+        .metadata()
+        .with_context(|| format!("stat mug config {}", path.display()))?;
+    if !meta.is_file() {
+        return Err(anyhow!(
+            "mug config {} is not a regular file",
+            path.display()
+        ));
+    }
+    let mut data = String::new();
+    file.take(MAX_CONFIG_BYTES + 1)
+        .read_to_string(&mut data)
+        .with_context(|| format!("read mug config {}", path.display()))?;
+    if data.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(anyhow!(
+            "mug config {} exceeds the {MAX_CONFIG_BYTES}-byte cap",
+            path.display()
+        ));
+    }
+    let is_json = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("json"));
+    if is_json {
+        serde_json::from_str(&data)
+            .with_context(|| format!("parse mug config {} as JSON", path.display()))
+    } else {
+        toml::from_str(&data)
+            .with_context(|| format!("parse mug config {} as TOML", path.display()))
+    }
+}
+
+/// Load the mug config, in precedence order: the file at `MUG_CONFIG` (explicit override) → the
+/// default `~/.config/tess/mug.toml` (when it exists) → secure built-in defaults. Per-field env vars
+/// (`MUG_MODEL_PATH`, `MUG_DETECTOR_MODEL`) are layered on later by `build_matcher`/`build_detector`
+/// only for fields the config left unset.
+fn load_config() -> Result<MugConfig> {
     match std::env::var(ENV_CONFIG) {
-        Ok(path) => {
-            let file =
-                std::fs::File::open(&path).with_context(|| format!("open mug config {path}"))?;
-            let meta = file
-                .metadata()
-                .with_context(|| format!("stat mug config {path}"))?;
-            if !meta.is_file() {
-                return Err(anyhow!("mug config {path} is not a regular file"));
-            }
-            let mut data = String::new();
-            file.take(MAX_CONFIG_BYTES + 1)
-                .read_to_string(&mut data)
-                .with_context(|| format!("read mug config {path}"))?;
-            if data.len() as u64 > MAX_CONFIG_BYTES {
+        Ok(path) => return parse_config_file(Path::new(&path)),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(anyhow!("{ENV_CONFIG} is set but is not valid UTF-8"));
+        }
+        Err(std::env::VarError::NotPresent) => {}
+    }
+    if let Some(path) = default_config_path() {
+        // `try_exists` (not `exists`) so an unreadable default file (e.g. EACCES) surfaces as an
+        // error instead of being silently treated as absent and reverting to defaults.
+        match path.try_exists() {
+            Ok(true) => return parse_config_file(&path),
+            Ok(false) => {}
+            Err(e) => {
                 return Err(anyhow!(
-                    "mug config {path} exceeds the {MAX_CONFIG_BYTES}-byte cap"
+                    "checking for default mug config {}: {e}",
+                    path.display()
                 ));
             }
-            serde_json::from_str(&data).with_context(|| format!("parse mug config {path}"))
-        }
-        Err(std::env::VarError::NotPresent) => Ok(MugConfig::default()),
-        Err(std::env::VarError::NotUnicode(_)) => {
-            Err(anyhow!("{ENV_CONFIG} is set but is not valid UTF-8"))
         }
     }
+    Ok(MugConfig::default())
 }
 
 /// Test/CI-only opt-in (`TESS_ALLOW_MOCK_FACE=1`) allowing the model-free mock matcher to stand in
@@ -927,6 +982,104 @@ pub fn unseal_with_face<S: KeySealer>(sealer: &mut S, paths: &Paths) -> Result<S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_path_prefers_xdg_then_home() {
+        // XDG_CONFIG_HOME wins when set.
+        assert_eq!(
+            config_path_from(
+                Some(PathBuf::from("/x/cfg")),
+                Some(PathBuf::from("/home/u"))
+            ),
+            Some(PathBuf::from("/x/cfg/tess/mug.toml"))
+        );
+        // Falls back to $HOME/.config when XDG is unset.
+        assert_eq!(
+            config_path_from(None, Some(PathBuf::from("/home/u"))),
+            Some(PathBuf::from("/home/u/.config/tess/mug.toml"))
+        );
+        // An empty XDG var is ignored (treated as unset), per the XDG spec.
+        assert_eq!(
+            config_path_from(Some(PathBuf::new()), Some(PathBuf::from("/home/u"))),
+            Some(PathBuf::from("/home/u/.config/tess/mug.toml"))
+        );
+        // Neither set → no default path.
+        assert_eq!(config_path_from(None, None), None);
+    }
+
+    #[test]
+    fn parse_minimal_toml_config_fills_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mug.toml");
+        std::fs::write(
+            &path,
+            "model_path = \"/m/sface.onnx\"\ndetector_model_path = \"/m/yunet.onnx\"\n",
+        )
+        .unwrap();
+        let cfg = parse_config_file(&path).unwrap();
+        assert_eq!(cfg.model_path.as_deref(), Some("/m/sface.onnx"));
+        assert_eq!(cfg.detector_model_path.as_deref(), Some("/m/yunet.onnx"));
+        // Unspecified fields come from the secure defaults (struct-level #[serde(default)]).
+        assert_eq!(
+            cfg.capture_deadline_ms,
+            MugConfig::default().capture_deadline_ms
+        );
+    }
+
+    #[test]
+    fn parse_json_config_still_supported_by_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mug.json");
+        std::fs::write(&path, r#"{"model_path":"/m/s.onnx"}"#).unwrap();
+        let cfg = parse_config_file(&path).unwrap();
+        assert_eq!(cfg.model_path.as_deref(), Some("/m/s.onnx"));
+    }
+
+    #[test]
+    fn parse_config_rejects_a_non_regular_file() {
+        // A directory is not a regular file → surfaced as an error, not silently defaulted.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(parse_config_file(dir.path()).is_err());
+    }
+
+    #[test]
+    fn load_config_discovers_the_default_xdg_file() {
+        let _lock = tess_testenv::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_dir = dir.path().join("tess");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(cfg_dir.join("mug.toml"), "match_threshold = 0.5\n").unwrap();
+        let _xdg = tess_testenv::EnvGuard::set_path("XDG_CONFIG_HOME", dir.path());
+        let _cfg = tess_testenv::EnvGuard::remove(ENV_CONFIG);
+        assert_eq!(load_config().unwrap().match_threshold, 0.5);
+    }
+
+    #[test]
+    fn mug_config_env_overrides_the_default_file() {
+        let _lock = tess_testenv::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_dir = dir.path().join("tess");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(cfg_dir.join("mug.toml"), "match_threshold = 0.5\n").unwrap();
+        let explicit = dir.path().join("explicit.toml");
+        std::fs::write(&explicit, "match_threshold = 0.25\n").unwrap();
+        let _xdg = tess_testenv::EnvGuard::set_path("XDG_CONFIG_HOME", dir.path());
+        let _cfg = tess_testenv::EnvGuard::set_path(ENV_CONFIG, &explicit);
+        // Explicit MUG_CONFIG wins over the default XDG file.
+        assert_eq!(load_config().unwrap().match_threshold, 0.25);
+    }
+
+    #[test]
+    fn load_config_falls_back_to_defaults_when_no_file() {
+        let _lock = tess_testenv::env_lock();
+        let dir = tempfile::tempdir().unwrap(); // empty: no tess/mug.toml inside
+        let _xdg = tess_testenv::EnvGuard::set_path("XDG_CONFIG_HOME", dir.path());
+        let _cfg = tess_testenv::EnvGuard::remove(ENV_CONFIG);
+        assert_eq!(
+            load_config().unwrap().match_threshold,
+            MugConfig::default().match_threshold
+        );
+    }
 
     #[test]
     fn virtual_dir_selects_virtual_when_auto() {

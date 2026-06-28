@@ -970,3 +970,16 @@ be undone — safe to call unconditionally; failure is logged once, never fatal.
 (core dumps now closed by tess; hibernation still operator-level). `crates/tess-core/src/lib.rs` ·
 `crates/tess-cli/src/harden.rs` · `crates/tess-cli/src/{main.rs,pam_helper.rs}` · #94.
 
+## 2026-06-26 — mug config (incl. model paths) from ~/.config/tess/mug.toml (#102)
+**Resolution:** model paths previously needed `MUG_MODEL_PATH`/`MUG_DETECTOR_MODEL` env vars every run;
+the only config-file path was JSON via `MUG_CONFIG`, with no default location. Added a default **TOML**
+config at `$XDG_CONFIG_HOME/tess/mug.toml` (fallback `~/.config/tess/mug.toml`), loaded when `MUG_CONFIG`
+is unset. `MugConfig` gained **struct-level `#[serde(default)]`** so a minimal file (just the two model
+paths) parses with the rest from secure defaults. `parse_config_file` picks TOML or JSON by extension;
+config-file precedence `MUG_CONFIG` > default file > built-in defaults, with the per-field env vars
+filling only paths the file leaves unset (kept the existing config-field-wins behavior — avoids a stale
+env var shadowing a freshly-written file). Added the `toml` dep (6 cargo-vet exemptions for the epage
+toml stack via `regenerate exemptions`; `cargo deny` clean). `config_path_from`/`default_config_path`/
+`parse_config_file` + 4 unit tests; README documents the file. `crates/tess-cli/src/face.rs` ·
+`crates/mug/src/config.rs` · #102.
+
