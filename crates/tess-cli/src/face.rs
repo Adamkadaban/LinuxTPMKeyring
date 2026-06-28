@@ -449,8 +449,19 @@ fn load_config() -> Result<MugConfig> {
         }
         Err(std::env::VarError::NotPresent) => {}
     }
-    if let Some(path) = default_config_path().filter(|p| p.exists()) {
-        return parse_config_file(&path);
+    if let Some(path) = default_config_path() {
+        // `try_exists` (not `exists`) so an unreadable default file (e.g. EACCES) surfaces as an
+        // error instead of being silently treated as absent and reverting to defaults.
+        match path.try_exists() {
+            Ok(true) => return parse_config_file(&path),
+            Ok(false) => {}
+            Err(e) => {
+                return Err(anyhow!(
+                    "checking for default mug config {}: {e}",
+                    path.display()
+                ));
+            }
+        }
     }
     Ok(MugConfig::default())
 }
@@ -1029,6 +1040,45 @@ mod tests {
         // A directory is not a regular file → surfaced as an error, not silently defaulted.
         let dir = tempfile::tempdir().unwrap();
         assert!(parse_config_file(dir.path()).is_err());
+    }
+
+    #[test]
+    fn load_config_discovers_the_default_xdg_file() {
+        let _lock = tess_testenv::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_dir = dir.path().join("tess");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(cfg_dir.join("mug.toml"), "match_threshold = 0.5\n").unwrap();
+        let _xdg = tess_testenv::EnvGuard::set_path("XDG_CONFIG_HOME", dir.path());
+        let _cfg = tess_testenv::EnvGuard::remove(ENV_CONFIG);
+        assert_eq!(load_config().unwrap().match_threshold, 0.5);
+    }
+
+    #[test]
+    fn mug_config_env_overrides_the_default_file() {
+        let _lock = tess_testenv::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_dir = dir.path().join("tess");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(cfg_dir.join("mug.toml"), "match_threshold = 0.5\n").unwrap();
+        let explicit = dir.path().join("explicit.toml");
+        std::fs::write(&explicit, "match_threshold = 0.25\n").unwrap();
+        let _xdg = tess_testenv::EnvGuard::set_path("XDG_CONFIG_HOME", dir.path());
+        let _cfg = tess_testenv::EnvGuard::set_path(ENV_CONFIG, &explicit);
+        // Explicit MUG_CONFIG wins over the default XDG file.
+        assert_eq!(load_config().unwrap().match_threshold, 0.25);
+    }
+
+    #[test]
+    fn load_config_falls_back_to_defaults_when_no_file() {
+        let _lock = tess_testenv::env_lock();
+        let dir = tempfile::tempdir().unwrap(); // empty: no tess/mug.toml inside
+        let _xdg = tess_testenv::EnvGuard::set_path("XDG_CONFIG_HOME", dir.path());
+        let _cfg = tess_testenv::EnvGuard::remove(ENV_CONFIG);
+        assert_eq!(
+            load_config().unwrap().match_threshold,
+            MugConfig::default().match_threshold
+        );
     }
 
     #[test]
