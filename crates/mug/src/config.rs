@@ -8,6 +8,7 @@ use crate::liveness::LivenessConfig;
 
 /// Top-level mug configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MugConfig {
     /// Wall-clock budget for a full liveness frame-pair capture. Keeps the factor bounded so it can
     /// never stall login; on timeout the caller degrades to the PIN.

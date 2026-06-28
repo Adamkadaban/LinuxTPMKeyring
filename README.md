@@ -241,6 +241,21 @@ build time). To enable face identity matching:
      tess enroll --face
    ```
 
+   **Default config file (no env vars needed).** Instead of exporting `MUG_*` on every run, drop a
+   TOML file at `~/.config/tess/mug.toml` (or `$XDG_CONFIG_HOME/tess/mug.toml`). It is loaded
+   automatically when `MUG_CONFIG` is unset, may hold any `MugConfig` field, and — most usefully — the
+   **model paths**, so a one-time setup replaces the env vars:
+   ```toml
+   # ~/.config/tess/mug.toml
+   model_path = "/home/you/.local/share/tess/sface.onnx"
+   detector_model_path = "/home/you/.local/share/tess/yunet.onnx"
+   # every other MugConfig field is optional and falls back to its secure default
+   ```
+   Config-file precedence: `MUG_CONFIG` (explicit path — TOML, or JSON when it ends in `.json`) →
+   `~/.config/tess/mug.toml` → built-in defaults. The per-field `MUG_MODEL_PATH` / `MUG_DETECTOR_MODEL`
+   env vars fill in only the model paths the config file leaves unset. With this file in place,
+   `tess face-test`, `enroll --face`, and `unlock` need no `MUG_*` model vars.
+
    The `warmup` block tunes the hardware IR streaming-warmup gate (when the Brio's emitter
    auto-enables after a short stream rather than a UVC `SET_CUR`): a streamed frame counts as
    emitter-on once its mean brightness reaches `min_mean` **and** clears the cold baseline by
@@ -259,6 +274,8 @@ keyring rekey, no TPM sealing — it touches neither), use the read-only diagnos
 ```sh
 MUG_IR_BACKEND=hardware MUG_MODEL_PATH=/path/to/face.onnx \
   MUG_DETECTOR_MODEL=/path/to/yunet.onnx tess face-test
+# or, with the model paths in ~/.config/tess/mug.toml (see above):
+MUG_IR_BACKEND=hardware tess face-test
 ```
 
 It captures a **reference** then a **probe** (pressing Enter between each), printing the liveness
