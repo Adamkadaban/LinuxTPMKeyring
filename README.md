@@ -226,7 +226,8 @@ build time). To enable face identity matching:
 
    Most ArcFace/SFace networks use `symmetric`; pick the mode matching your model and verify it
    end-to-end with the enroll self-test before relying on it. Set a non-default mode (or any other
-   `MugConfig` field) via a JSON config file pointed at by `MUG_CONFIG`:
+   `MugConfig` field) via a config file pointed at by `MUG_CONFIG` (parsed as TOML, or as JSON when
+   the path ends in `.json` — the example below is JSON):
    ```sh
    cat > mug.json <<'JSON'
    { "capture_deadline_ms": 2500, "match_threshold": 0.34,
